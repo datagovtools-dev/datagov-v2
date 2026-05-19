@@ -21,6 +21,7 @@ class MetadataRecord(Base):
     data_steward: Mapped[str | None] = mapped_column(Text, nullable=True)
     data_owner: Mapped[str | None] = mapped_column(Text, nullable=True)
     data_attribute: Mapped[str] = mapped_column(String(300), nullable=False, index=True)
+    data_year: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     data_sensitivity: Mapped[str] = mapped_column(String(30), nullable=False, default="Confidential")
     data_grouping: Mapped[str | None] = mapped_column(Text, nullable=True)
     business_term: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -16,14 +16,14 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 
 | Module | Description |
 |--------|-------------|
-| **Projects** | Central project registry — create and manage data governance projects with team assignments (DGO, DM, SME, PIC) |
+| **Projects** | Central project registry — create and manage data governance projects with team assignments (DGO, DM, SME, PIC); assign Data Steward and Data Owner with free-text name/email |
 | **Data Sharing Request (DSR)** | End-to-end data sharing request lifecycle with serial 4-step approval workflow and client sign-off |
 | **AI/ML Compliance Checklist (AICK)** | GEN AI usage assessment checklist linked to each DSR — 3-step serial approval with sign-off |
 | **Data Protection Impact Assessment (DPIA)** | Auto-created from DSR; tracks residual risk, data categories, and 2-step governance approval |
 | **Record of Processing Activities (ROPA)** | Document and track all data processing activities |
 | **Data Extermination / BAPD** | Manage data disposal/extermination requests with evidence upload and approval |
 | **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated data quality checks |
-| **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; enrich with AI-generated business definitions via local LLM (Ollama) |
+| **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; enrich with AI-generated business definitions via local Ollama LLM; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges) |
 
 ---
 
@@ -142,13 +142,38 @@ Default admin login:
 
 - **Serial approval workflows** — DSR (4 steps), AICK (3 steps), DPIA (2 steps), BAPD — each step activates only after the previous is approved
 - **Sign-off with e-signature** — draw, drag-and-drop, or upload signature images; decision locked once signed
-- **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using local Ollama LLM
-- **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet)
+- **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using local Ollama LLM (`phi3:mini`); single queued endpoint avoids connection pool exhaustion
+- **Standard Format auto-assessment** — on every metadata import the worker classifies each column's value format (date, categorical, phone, email, integer, decimal, ID/code, free text) and stores it automatically
+- **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved throughout
+- **Metadata attributes grid** — 19-column inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); bulk Save All stamp; bulk grouping per table
+- **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names matching the UI; Excel export inserts 7 project-level columns
+- **Data Steward & Data Owner** — assignable per project via free-text name + email; surfaced in the Metadata Attributes info strip and all exports
 - **RBAC** — role-based access control enforced on both frontend and backend
-- **PDF export** — export any DSR, AI Checklist, or DPIA to a formatted PDF
+- **PDF export** — export any DSR, AI Checklist, DPIA, or Metadata report to a formatted PDF
 - **Audit trail** — all changes logged with user, timestamp, and action
 - **Notification system** — in-app notifications for approval actions and status changes
 - **Data Quality checks** — automated DQ profiling against BigQuery, PostgreSQL, or Supabase
+
+---
+
+## Recent Updates (2026-05-19)
+
+### Metadata Attributes Page — UI Overhaul
+- **Project info strip** above the grid: Project ID · Project Name · Project Year · Business Users · Line of Business · Data Steward · Data Owner (responsive 7-column layout)
+- **Column order refined**: Table Type → Data Year → Grouping → Level → Attribute → Type → Sensitivity → Business Term → Business Definition → Standard Format → PK → Null → Sample
+- **NULL display**: No = green (required field / good quality), Yes = red (nullable / quality risk)
+- **Updated By auto-populated** on first import from the user who clicked Proceed; refreshed on Save All
+- **Bulk Save All**: stamps `updated_date` and `updated_by` on all records in one click
+- **Standard Format auto-assessed** during import by `_assess_standard_format()` in the Celery worker
+
+### Export Improvements
+- **Export dropdown** (hover): Excel (.xlsx) or PDF (A3 landscape)
+- **Excel** exports 25 columns — inserts 7 project-level columns (Project ID → Data Owner) between `#` and Table
+- **PDF** now matches the UI: sensitivity colour pills, blue PK badge, red/green Null, violet AI chip on definitions, monospace fonts for table/attribute/sample, system UI font stack, colgroup column widths
+
+### Projects Page
+- New **Data Steward & Data Owner card** below Project Team (free-text full name + email)
+- Saved to `data_owner_stewards` table; values appear in Metadata Attributes info strip and PDF export
 
 ---
 

@@ -114,6 +114,80 @@ def _is_nullable(values: list[Any]) -> bool:
     return any(v is None or str(v).strip() == "" for v in values)
 
 
+def _assess_standard_format(values: list[Any]) -> str | None:
+    """Infer an expected value format/constraint from column values."""
+    non_null = [
+        str(v).strip() for v in values
+        if v is not None and str(v).strip() and str(v).strip().lower() not in ("nan", "none", "")
+    ]
+    if not non_null:
+        return None
+
+    total = len(non_null)
+    unique_vals = list(dict.fromkeys(non_null))  # deduplicated, order-preserved
+    n_unique = len(unique_vals)
+
+    # Boolean
+    bool_set = {"true", "false", "yes", "no", "y", "n", "0", "1", "t", "f"}
+    if n_unique <= 4 and all(v.lower() in bool_set for v in unique_vals):
+        return "Boolean (Yes/No or True/False)"
+
+    # Categorical / Enum — low cardinality
+    if n_unique <= 15 or (total >= 20 and n_unique / total < 0.1):
+        cats = sorted(unique_vals[:10])
+        suffix = ", ..." if n_unique > 10 else ""
+        return f"Category: {', '.join(cats)}{suffix}"
+
+    # Date patterns
+    date_patterns = [
+        (r"^\d{4}-\d{2}-\d{2}$",          "Date (YYYY-MM-DD)"),
+        (r"^\d{2}/\d{2}/\d{4}$",          "Date (DD/MM/YYYY)"),
+        (r"^\d{2}-\d{2}-\d{4}$",          "Date (DD-MM-YYYY)"),
+        (r"^\d{4}/\d{2}/\d{2}$",          "Date (YYYY/MM/DD)"),
+    ]
+    for pattern, label in date_patterns:
+        if sum(1 for v in non_null if re.match(pattern, v)) / total >= 0.85:
+            return label
+
+    # Datetime
+    if sum(1 for v in non_null if re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", v)) / total >= 0.85:
+        return "Datetime (YYYY-MM-DD HH:MM:SS)"
+
+    # Email
+    if sum(1 for v in non_null if re.match(r"^[\w.+\-]+@[\w\-]+\.[a-zA-Z]{2,}$", v)) / total >= 0.8:
+        return "Email (name@domain.com)"
+
+    # Phone number
+    if sum(1 for v in non_null if re.match(r"^[+\d][\d\s\-().]{6,18}$", v)) / total >= 0.8:
+        return "Phone number"
+
+    # Integer
+    if sum(1 for v in non_null if re.match(r"^-?\d+$", v)) / total >= 0.9:
+        return "Integer (whole number)"
+
+    # Decimal — check consistent decimal places
+    decimal_matches = [v for v in non_null if re.match(r"^-?\d+\.\d+$", v)]
+    if len(decimal_matches) / total >= 0.8:
+        dp_counts = [len(v.split(".")[1]) for v in decimal_matches]
+        if len(set(dp_counts)) == 1:
+            return f"Decimal ({dp_counts[0]} decimal places)"
+        return "Decimal number"
+
+    # ID / Code pattern  e.g. CUST-001, TXN_00123, 12-digit number
+    id_matches = sum(
+        1 for v in non_null
+        if re.match(r"^[A-Z]{2,}[-_]\d+$", v) or re.match(r"^\d{6,20}$", v)
+    )
+    if id_matches / total >= 0.8:
+        return f"ID / Code (e.g. {non_null[0]})"
+
+    # Free text — distinguish short vs long
+    avg_len = sum(len(v) for v in non_null) / total
+    if avg_len > 40:
+        return "Free text (long description)"
+    return "Free text"
+
+
 # ── Task: retrieve_metadata ────────────────────────────────────────────────────
 
 @shared_task(
@@ -135,7 +209,10 @@ def retrieve_metadata(
     pg_schema: str = "public",
     project_name: str = "",
     project_year: int = 0,
+    customer_name: str = "",
+    line_of_business: str | None = None,
     owner_info: dict | None = None,
+    initiated_by: str = "",
 ) -> dict:
     """
     Auto-populate MetadataRecord rows for the selected tables.
@@ -280,8 +357,11 @@ def retrieve_metadata(
             data_type = _detect_data_type(values)
             pk = _is_primary_key_candidate(values)
             nullable = _is_nullable(values)
+            standard_format = _assess_standard_format(values)
             owner_str = owner_info.get("data_owner", "") if owner_info else ""
             steward_str = owner_info.get("data_steward", "") if owner_info else ""
+            current_year = datetime.now(timezone.utc).year
+            today = datetime.now(timezone.utc).date()
 
             # Upsert: match by (project_id, data_domain_table, data_attribute)
             cur.execute(
@@ -294,25 +374,29 @@ def retrieve_metadata(
                 cur.execute(
                     """UPDATE metadata_records SET
                        data_sensitivity=%s, business_term=%s, sample_data=%s,
-                       data_type=%s, is_primary_key=%s, is_nullable=%s, source_row_count=%s
+                       data_type=%s, is_primary_key=%s, is_nullable=%s, source_row_count=%s,
+                       standard_format=%s
                        WHERE id=%s""",
-                    (sensitivity, business_term, sample, data_type, pk, nullable, row_count, existing[0]),
+                    (sensitivity, business_term, sample, data_type, pk, nullable, row_count, standard_format, existing[0]),
                 )
                 updated += 1
             else:
                 cur.execute(
                     """INSERT INTO metadata_records
                        (id, project_id, seq_no, business_users, data_domain_table,
-                        table_type, project_name, project_year, data_steward, data_owner,
-                        data_attribute, data_sensitivity, business_term, definition_status,
+                        line_of_business, table_type, project_name, project_year, data_steward, data_owner,
+                        data_attribute, data_year, data_sensitivity, business_term, definition_status,
                         sample_data, data_type, is_primary_key, is_nullable,
-                        data_level, remarks, source_type, source_row_count)
-                       VALUES (gen_random_uuid(), %s, %s, '', %s, 'Source', %s, %s,
-                               %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s,
-                               'Raw', '-', %s, %s)""",
-                    (proj_uuid, seq, domain_table, project_name, project_year,
-                     steward_str, owner_str, col, sensitivity, business_term,
-                     sample, data_type, pk, nullable, source_type, row_count),
+                        data_level, standard_format, remarks, source_type, source_row_count,
+                        updated_date, updated_by)
+                       VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, 'Source', %s, %s,
+                               %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s,
+                               'Raw', %s, '-', %s, %s, %s, %s)""",
+                    (proj_uuid, seq, customer_name, domain_table, line_of_business,
+                     project_name, project_year, steward_str, owner_str, col,
+                     current_year, sensitivity, business_term,
+                     sample, data_type, pk, nullable, standard_format, source_type, row_count,
+                     today, initiated_by),
                 )
                 created += 1
 

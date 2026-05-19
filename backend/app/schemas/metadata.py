@@ -69,6 +69,7 @@ class MetadataRecordOut(BaseModel):
     data_steward: Optional[str] = None
     data_owner: Optional[str] = None
     data_attribute: str
+    data_year: Optional[int] = None
     data_sensitivity: str
     data_grouping: Optional[str] = None
     business_term: Optional[str] = None
@@ -94,10 +95,12 @@ class MetadataRecordUpdate(BaseModel):
     table_type: Optional[str] = None
     data_steward: Optional[str] = None
     data_owner: Optional[str] = None
+    data_year: Optional[int] = None
     data_sensitivity: Optional[str] = None
     data_grouping: Optional[str] = None
     business_term: Optional[str] = None
     business_definition: Optional[str] = None
+    standard_format: Optional[str] = None
     definition_status: Optional[str] = None
     data_level: Optional[str] = None
     remarks: Optional[str] = None

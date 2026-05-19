@@ -297,7 +297,10 @@ async def proceed_metadata(
             pg_schema=body.pg_schema or "public",
             project_name=project.project_name,
             project_year=getattr(project, "project_year", 2024),
+            customer_name=getattr(project, "customer_name", ""),
+            line_of_business=getattr(project, "line_of_business", None),
             owner_info=owner_map,
+            initiated_by=f"{current_user.full_name} <{current_user.email}>",
         )
         task_id = task.id
         queued = len(body.table_names) if body.table_names else 0
@@ -385,8 +388,9 @@ async def batch_save_metadata(
 
             allowed = {
                 "line_of_business", "table_type", "data_steward", "data_owner",
-                "data_sensitivity", "data_grouping", "business_term",
-                "business_definition", "definition_status", "data_level", "remarks",
+                "data_year", "data_sensitivity", "data_grouping", "business_term",
+                "business_definition", "standard_format", "definition_status",
+                "data_level", "remarks",
             }
             for k, v in rec_data.items():
                 if k != "id" and k in allowed and v is not None:
@@ -439,6 +443,35 @@ async def bulk_grouping(
     ))
     await db.commit()
     return {"updated": len(records), "data_grouping": body.data_grouping}
+
+
+# ── Bulk stamp: mark all records in a project as updated by current user ──────
+
+@router.post("/bulk-stamp/{project_id}", response_model=dict)
+async def bulk_stamp(
+    project_id: uuid.UUID,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> dict:
+    """Stamp updated_date + updated_by on every record in the project."""
+    result = await db.execute(
+        select(MetadataRecord).where(MetadataRecord.project_id == project_id)
+    )
+    records = result.scalars().all()
+    today = date.today()
+    updated_by = f"{current_user.full_name} <{current_user.email}>"
+
+    for r in records:
+        r.updated_date = today
+        r.updated_by = updated_by
+
+    db.add(AuditLog(
+        user_id=current_user.id, module="metadata", action="bulk_stamp",
+        entity_type="metadata", entity_id=str(project_id),
+        details={"stamped": len(records)},
+    ))
+    await db.commit()
+    return {"stamped": len(records)}
 
 
 # ── FR-META-014: AI regenerate for single row ─────────────────────────────────

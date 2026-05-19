@@ -16,6 +16,7 @@ import { formatDate } from "@/lib/utils";
 import { printA4, pdfField } from "@/lib/exportPdf";
 
 interface UserOption { id: string; full_name: string; email: string }
+interface OwnerRecord { id: string; role_type: string; full_name: string; email: string }
 interface ProjectOut {
   id: string; project_code: string | null; project_name: string; customer_name: string;
   line_of_business: string | null; use_case: string | null;
@@ -62,6 +63,17 @@ export default function ProjectDetailPage() {
     queryFn: () => api.get<UserOption[]>("/rbac/users/options"),
   });
 
+  const { data: owners = [] } = useQuery<OwnerRecord[]>({
+    queryKey: ["project-owners", id],
+    queryFn: () => api.get<OwnerRecord[]>(`/metadata/owners/${id}`),
+    enabled: !!id,
+  });
+
+  const [ownerForms, setOwnerForms] = React.useState({
+    lead_business_steward: { full_name: "", email: "" },
+    data_owner:            { full_name: "", email: "" },
+  });
+
   const userOptions = users.map(u => ({ value: u.id, label: u.full_name, sublabel: u.email }));
 
   function startEdit() {
@@ -84,6 +96,12 @@ export default function ProjectDetailPage() {
       metadata_officer_id: project.metadata_officer_id ?? "",
       dq_officer_id: project.dq_officer_id ?? "",
       pic_data_compliance_id: project.pic_data_compliance_id ?? "",
+    });
+    const steward = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
+    const owner   = owners.find(o => o.role_type === "data_owner");
+    setOwnerForms({
+      lead_business_steward: { full_name: steward?.full_name ?? "", email: steward?.email ?? "" },
+      data_owner:            { full_name: owner?.full_name   ?? "", email: owner?.email   ?? "" },
     });
     setEditing(true);
     setServerError("");
@@ -114,6 +132,25 @@ export default function ProjectDetailPage() {
     update.mutate();
   }
 
+  const saveOwnersMutation = useMutation({
+    mutationFn: async () => {
+      const roles: [string, { full_name: string; email: string }][] = [
+        ["lead_business_steward", ownerForms.lead_business_steward],
+        ["data_owner",            ownerForms.data_owner],
+      ];
+      for (const [role_type, data] of roles) {
+        if (data.full_name.trim()) {
+          await api.post(`/metadata/owners/${id}`, {
+            role_type,
+            full_name: data.full_name.trim(),
+            email: data.email.trim(),
+          });
+        }
+      }
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-owners", id] }),
+  });
+
   const update = useMutation({
     mutationFn: () => api.put(`/projects/${id}`, {
       project_code: form.project_code || null,
@@ -137,6 +174,7 @@ export default function ProjectDetailPage() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project", id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
+      saveOwnersMutation.mutate();
       setEditing(false);
     },
     onError: (e: any) => setServerError(e.message),
@@ -159,6 +197,9 @@ export default function ProjectDetailPage() {
 
   function handleExportPDF() {
     if (!project) return;
+    const dataStewardRec = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
+    const dataOwnerRec   = owners.find(o => o.role_type === "data_owner");
+
     const teamRows = [
       ["Subject Matter Expert (SME)", project.sme_id],
       ["Delivery Manager",        project.delivery_manager_id],
@@ -172,6 +213,16 @@ export default function ProjectDetailPage() {
         <td>${label}</td>
         <td>${userName(uid as string | null)}</td>
         <td>${userEmail(uid as string | null)}</td>
+      </tr>`).join("");
+
+    const ownerRows = [
+      ["Data Steward", dataStewardRec],
+      ["Data Owner",   dataOwnerRec],
+    ].map(([label, rec]) => `
+      <tr>
+        <td>${label}</td>
+        <td>${(rec as OwnerRecord | undefined)?.full_name ?? "—"}</td>
+        <td>${(rec as OwnerRecord | undefined)?.email ?? ""}</td>
       </tr>`).join("");
 
     const body = `
@@ -202,6 +253,14 @@ export default function ProjectDetailPage() {
         <table>
           <thead><tr><th>Role</th><th>Name</th><th>Email</th></tr></thead>
           <tbody>${teamRows}</tbody>
+        </table>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Data Steward &amp; Data Owner</div>
+        <table>
+          <thead><tr><th>Role</th><th>Full Name</th><th>Email</th></tr></thead>
+          <tbody>${ownerRows}</tbody>
         </table>
       </div>
     `;
@@ -345,6 +404,78 @@ export default function ProjectDetailPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Data Steward & Data Owner */}
+        {(() => {
+          const dataSteward = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
+          const dataOwner   = owners.find(o => o.role_type === "data_owner");
+          return (
+            <Card>
+              <CardHeader><CardTitle>Data Steward &amp; Data Owner</CardTitle></CardHeader>
+              <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {editing ? (
+                  <>
+                    {/* Data Steward */}
+                    <div className="flex flex-col gap-2">
+                      <p className="text-sm font-medium text-surface-700">Data Steward</p>
+                      <Input
+                        label="Full Name"
+                        value={ownerForms.lead_business_steward.full_name}
+                        onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, full_name: e.target.value } }))}
+                        placeholder="e.g. John Doe"
+                      />
+                      <Input
+                        label="Email Address"
+                        type="email"
+                        value={ownerForms.lead_business_steward.email}
+                        onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, email: e.target.value } }))}
+                        placeholder="e.g. john.doe@company.com"
+                      />
+                    </div>
+                    {/* Data Owner */}
+                    <div className="flex flex-col gap-2">
+                      <p className="text-sm font-medium text-surface-700">Data Owner</p>
+                      <Input
+                        label="Full Name"
+                        value={ownerForms.data_owner.full_name}
+                        onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, full_name: e.target.value } }))}
+                        placeholder="e.g. Jane Smith"
+                      />
+                      <Input
+                        label="Email Address"
+                        type="email"
+                        value={ownerForms.data_owner.email}
+                        onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, email: e.target.value } }))}
+                        placeholder="e.g. jane.smith@company.com"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <p className="text-xs text-surface-400 mb-1">Data Steward</p>
+                      {dataSteward ? (
+                        <span className="flex flex-col">
+                          <span className="font-medium text-surface-900">{dataSteward.full_name}</span>
+                          <span className="text-xs text-surface-400">{dataSteward.email}</span>
+                        </span>
+                      ) : <span className="text-surface-400">—</span>}
+                    </div>
+                    <div>
+                      <p className="text-xs text-surface-400 mb-1">Data Owner</p>
+                      {dataOwner ? (
+                        <span className="flex flex-col">
+                          <span className="font-medium text-surface-900">{dataOwner.full_name}</span>
+                          <span className="text-xs text-surface-400">{dataOwner.email}</span>
+                        </span>
+                      ) : <span className="text-surface-400">—</span>}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })()}
 
         {serverError && (
           <p className="rounded-md bg-red-50 border border-red-200 px-4 py-2 text-sm text-red-600">{serverError}</p>
