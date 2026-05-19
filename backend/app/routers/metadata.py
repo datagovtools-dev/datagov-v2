@@ -1,0 +1,492 @@
+"""Metadata Management router — FR-META-001 to FR-META-022 (Phase 5)."""
+import uuid
+from datetime import date
+from typing import Annotated
+
+import os
+import tempfile
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from sqlalchemy import select, update, func, distinct
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.deps import get_db
+from app.core.rbac import require_permission
+from app.models.metadata import DataOwnerSteward, MetadataRecord
+from app.models.project import Project
+from app.models.user import AuditLog, User
+from app.schemas.metadata import (
+    AIRegenerateRequest, BulkGroupingRequest, DataOwnerStewardCreate,
+    DataOwnerStewardOut, MetadataBatchSaveRequest, MetadataBatchSaveResult,
+    MetadataRecordOut, MetadataRecordUpdate, OWNER_ROLE_TYPES,
+    ProceedMetadataRequest, ProceedResponse, SourceTableInfo,
+)
+
+router = APIRouter(prefix="/metadata", tags=["metadata"])
+DB = Annotated[AsyncSession, Depends(get_db)]
+
+
+# ── Global stats ──────────────────────────────────────────────────────────────
+
+@router.get("/stats", response_model=dict)
+async def get_metadata_stats(
+    db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:read"))],
+) -> dict:
+    """Return total projects, tables, and attributes with metadata records."""
+    result = await db.execute(
+        select(
+            func.count(distinct(MetadataRecord.project_id)).label("projects"),
+            func.count(distinct(
+                MetadataRecord.project_id.cast(str) + "||" + MetadataRecord.data_domain_table
+            )).label("tables"),
+            func.count(MetadataRecord.id).label("attributes"),
+        )
+    )
+    row = result.one()
+    return {"projects": row.projects, "tables": row.tables, "attributes": row.attributes}
+
+
+# ── FR-META-022: Data Owner & Steward Management ──────────────────────────────
+
+@router.get("/owners/{project_id}", response_model=list[DataOwnerStewardOut])
+async def list_owners(
+    project_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:read"))],
+) -> list[DataOwnerSteward]:
+    result = await db.execute(
+        select(DataOwnerSteward)
+        .where(DataOwnerSteward.project_id == project_id)
+        .order_by(DataOwnerSteward.role_type)
+    )
+    return result.scalars().all()
+
+
+@router.post("/owners/{project_id}", response_model=DataOwnerStewardOut, status_code=201)
+async def upsert_owner(
+    project_id: uuid.UUID,
+    body: DataOwnerStewardCreate,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> DataOwnerSteward:
+    if body.role_type not in OWNER_ROLE_TYPES:
+        raise HTTPException(status_code=400, detail=f"role_type must be one of {OWNER_ROLE_TYPES}")
+
+    existing = (await db.execute(
+        select(DataOwnerSteward).where(
+            DataOwnerSteward.project_id == project_id,
+            DataOwnerSteward.role_type == body.role_type,
+            DataOwnerSteward.email == body.email,
+        )
+    )).scalar_one_or_none()
+
+    if existing:
+        existing.full_name = body.full_name
+        existing.email = body.email
+        await db.commit()
+        await db.refresh(existing)
+        return existing
+
+    record = DataOwnerSteward(project_id=project_id, **body.model_dump())
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+@router.delete("/owners/{project_id}/{owner_id}", status_code=204)
+async def delete_owner(
+    project_id: uuid.UUID, owner_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> None:
+    record = (await db.execute(
+        select(DataOwnerSteward).where(
+            DataOwnerSteward.id == owner_id,
+            DataOwnerSteward.project_id == project_id,
+        )
+    )).scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Owner/steward not found")
+    await db.delete(record)
+    await db.commit()
+
+
+# ── Excel Upload — discover sheets as tables ─────────────────────────────────
+
+@router.post("/upload-excel")
+async def upload_excel_metadata(
+    file: UploadFile = File(...),
+    _: Annotated[User, Depends(require_permission("metadata:create"))] = None,
+) -> dict:
+    """Upload an Excel or CSV file and return sheet names + column/row counts as discoverable tables."""
+    ext = os.path.splitext(file.filename or "upload.xlsx")[1].lower()
+    if ext not in (".xlsx", ".xls", ".csv"):
+        raise HTTPException(status_code=400, detail="Only .xlsx / .xls / .csv files are supported")
+
+    temp_key = f"meta_excel_{uuid.uuid4().hex}{ext}"
+    temp_path = os.path.join(tempfile.gettempdir(), temp_key)
+
+    content = await file.read()
+    with open(temp_path, "wb") as f:
+        f.write(content)
+
+    try:
+        sheets = []
+        if ext == ".csv":
+            import csv as csv_mod
+            try:
+                text = content.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = content.decode("latin-1", errors="replace")
+            reader = csv_mod.reader(text.splitlines())
+            rows = list(reader)
+            col_count = len(rows[0]) if rows else 0
+            row_count = max(0, len(rows) - 1)
+            sheet_name = os.path.splitext(file.filename or "data")[0]
+            sheets.append({"sheet_name": sheet_name, "column_count": col_count, "row_count": row_count})
+        else:
+            import openpyxl
+            wb = openpyxl.load_workbook(temp_path, read_only=True, data_only=True)
+            for name in wb.sheetnames:
+                ws = wb[name]
+                rows = list(ws.iter_rows(values_only=True))
+                col_count = len(rows[0]) if rows else 0
+                row_count = max(0, len(rows) - 1)
+                sheets.append({"sheet_name": name, "column_count": col_count, "row_count": row_count})
+            wb.close()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}") from exc
+
+    return {"temp_key": temp_key, "sheets": sheets}
+
+
+# ── FR-META-001: Source Table Discovery ───────────────────────────────────────
+
+@router.get("/tables/{project_id}", response_model=list[SourceTableInfo])
+async def list_source_tables(
+    project_id: uuid.UUID,
+    db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:read"))],
+    source_type: str = Query(default="gcp"),
+    gcp_project: str = Query(default=""),
+    bq_dataset: str = Query(default=""),
+    connection_string: str = Query(default=""),
+    pg_schema: str = Query(default="public"),
+) -> list[SourceTableInfo]:
+    """List available tables and flag which are already documented."""
+    # Fetch tables that already have records for this project
+    documented_result = await db.execute(
+        select(MetadataRecord.data_domain_table)
+        .where(MetadataRecord.project_id == project_id)
+        .distinct()
+    )
+    documented_tables = {r[0] for r in documented_result.fetchall()}
+
+    tables: list[SourceTableInfo] = []
+
+    if source_type == "postgresql" and connection_string:
+        try:
+            import psycopg2
+            src_conn = psycopg2.connect(connection_string)
+            src_cur = src_conn.cursor()
+            src_cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = %s AND table_type = 'BASE TABLE' ORDER BY table_name",
+                (pg_schema,),
+            )
+            for (table_name,) in src_cur.fetchall():
+                src_cur.execute(
+                    "SELECT COUNT(*) FROM information_schema.columns "
+                    "WHERE table_schema = %s AND table_name = %s",
+                    (pg_schema, table_name),
+                )
+                col_count = src_cur.fetchone()[0]
+                try:
+                    src_cur.execute(f'SELECT COUNT(*) FROM "{pg_schema}"."{table_name}"')
+                    row_count = src_cur.fetchone()[0]
+                except Exception:
+                    row_count = None
+                full_name = f"{pg_schema}.{table_name}"
+                tables.append(SourceTableInfo(
+                    table_name=table_name,
+                    column_count=col_count,
+                    documented=full_name in documented_tables or table_name in documented_tables,
+                    row_count=row_count,
+                    source_type="postgresql",
+                ))
+            src_conn.close()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"PostgreSQL error: {exc}") from exc
+
+    elif source_type == "gcp" and gcp_project and bq_dataset:
+        try:
+            from google.cloud import bigquery
+            client = bigquery.Client(project=gcp_project)
+            for tbl in client.list_tables(f"{gcp_project}.{bq_dataset}"):
+                full_name = f"{bq_dataset}.{tbl.table_id}"
+                table_obj = client.get_table(f"{gcp_project}.{bq_dataset}.{tbl.table_id}")
+                tables.append(SourceTableInfo(
+                    table_name=tbl.table_id,
+                    column_count=len(table_obj.schema),
+                    documented=full_name in documented_tables,
+                    row_count=table_obj.num_rows,
+                    source_type="gcp",
+                ))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"GCP error: {exc}") from exc
+    else:
+        # Fallback: return tables already in DB for this project
+        for dt in documented_tables:
+            recs_result = await db.execute(
+                select(MetadataRecord)
+                .where(MetadataRecord.project_id == project_id,
+                       MetadataRecord.data_domain_table == dt)
+            )
+            recs = recs_result.scalars().all()
+            cols = len(recs)
+            row_count = next((r.source_row_count for r in recs if r.source_row_count is not None), None)
+            actual_source_type = next((r.source_type for r in recs if r.source_type), "db")
+            tables.append(SourceTableInfo(
+                table_name=dt, column_count=cols, documented=True, source_type=actual_source_type,
+                row_count=row_count,
+            ))
+
+    return tables
+
+
+# ── FR-META-001: Proceed (trigger async auto-population) ─────────────────────
+
+@router.post("/proceed", response_model=ProceedResponse)
+async def proceed_metadata(
+    body: ProceedMetadataRequest,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("metadata:create"))],
+) -> ProceedResponse:
+    """Trigger the async Celery task to auto-populate metadata attributes."""
+    project = (await db.execute(
+        select(Project).where(Project.id == body.project_id)
+    )).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    # Get owner info for pre-filling
+    owners = (await db.execute(
+        select(DataOwnerSteward).where(DataOwnerSteward.project_id == body.project_id)
+    )).scalars().all()
+    owner_map = {o.role_type: f"{o.full_name} <{o.email}>" for o in owners}
+
+    db.add(AuditLog(user_id=current_user.id, module="metadata", action="proceed",
+                    entity_type="metadata", entity_id=str(body.project_id)))
+    await db.commit()
+
+    task_id = "sync"
+    queued = 0
+    try:
+        from app.worker.tasks.metadata import retrieve_metadata
+        # Normalise excel keys: prefer temp_file_keys list, fall back to single key
+        resolved_keys = body.temp_file_keys or ([body.temp_file_key] if body.temp_file_key else None)
+        task = retrieve_metadata.delay(
+            project_id=str(body.project_id),
+            source_type=body.source_type,
+            gcp_project=body.gcp_project,
+            bq_dataset=body.bq_dataset,
+            table_names=body.table_names,
+            temp_file_keys=resolved_keys,
+            file_names=body.file_names,
+            connection_string=body.connection_string,
+            pg_schema=body.pg_schema or "public",
+            project_name=project.project_name,
+            project_year=getattr(project, "project_year", 2024),
+            owner_info=owner_map,
+        )
+        task_id = task.id
+        queued = len(body.table_names) if body.table_names else 0
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Could not dispatch metadata task: %s", exc)
+
+    return ProceedResponse(
+        task_id=task_id,
+        message="Metadata auto-population queued",
+        queued_records=queued,
+    )
+
+
+# ── FR-META-001: Get attribute grid ──────────────────────────────────────────
+
+@router.get("/{project_id}", response_model=list[MetadataRecordOut])
+async def get_metadata(
+    project_id: uuid.UUID,
+    db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:read"))],
+    table_filter: str = Query(default=""),
+) -> list[MetadataRecord]:
+    q = select(MetadataRecord).where(MetadataRecord.project_id == project_id)
+    if table_filter:
+        q = q.where(MetadataRecord.data_domain_table == table_filter)
+    q = q.order_by(MetadataRecord.data_domain_table, MetadataRecord.seq_no)
+    result = await db.execute(q)
+    return result.scalars().all()
+
+
+# ── FR-META-019: Single record update ────────────────────────────────────────
+
+@router.put("/{record_id}", response_model=MetadataRecordOut)
+async def update_metadata_record(
+    record_id: uuid.UUID,
+    body: MetadataRecordUpdate,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> MetadataRecord:
+    record = (await db.execute(
+        select(MetadataRecord).where(MetadataRecord.id == record_id)
+    )).scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Metadata record not found")
+
+    for k, v in body.model_dump(exclude_none=True).items():
+        setattr(record, k, v)
+
+    # FR-META-019: stamp updated_date and updated_by per row
+    record.updated_date = date.today()
+    record.updated_by = f"{current_user.full_name} <{current_user.email}>"
+
+    await db.commit()
+    await db.refresh(record)
+    return record
+
+
+# ── FR-META-021: Batch save ───────────────────────────────────────────────────
+
+@router.post("/save", response_model=MetadataBatchSaveResult)
+async def batch_save_metadata(
+    body: MetadataBatchSaveRequest,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> MetadataBatchSaveResult:
+    saved = 0
+    errors: list[dict] = []
+    today = date.today()
+    updated_by = f"{current_user.full_name} <{current_user.email}>"
+
+    for rec_data in body.records:
+        rec_id = rec_data.get("id")
+        if not rec_id:
+            errors.append({"error": "missing id", "data": str(rec_data)[:100]})
+            continue
+        try:
+            rec_uuid = uuid.UUID(str(rec_id))
+            record = (await db.execute(
+                select(MetadataRecord).where(MetadataRecord.id == rec_uuid)
+            )).scalar_one_or_none()
+            if not record:
+                errors.append({"id": str(rec_id), "error": "not found"})
+                continue
+
+            allowed = {
+                "line_of_business", "table_type", "data_steward", "data_owner",
+                "data_sensitivity", "data_grouping", "business_term",
+                "business_definition", "definition_status", "data_level", "remarks",
+            }
+            for k, v in rec_data.items():
+                if k != "id" and k in allowed and v is not None:
+                    setattr(record, k, v)
+            record.updated_date = today
+            record.updated_by = updated_by
+            saved += 1
+        except Exception as exc:
+            errors.append({"id": str(rec_id), "error": str(exc)})
+
+    await db.commit()
+
+    db.add(AuditLog(
+        user_id=current_user.id, module="metadata", action="batch_save",
+        entity_type="metadata", entity_id=str(body.project_id),
+        details={"saved": saved, "errors": len(errors)},
+    ))
+    await db.commit()
+
+    return MetadataBatchSaveResult(saved=saved, errors=errors)
+
+
+# ── FR-META-012: Bulk Grouping ────────────────────────────────────────────────
+
+@router.post("/bulk-grouping", response_model=dict)
+async def bulk_grouping(
+    body: BulkGroupingRequest,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> dict:
+    result = await db.execute(
+        select(MetadataRecord).where(
+            MetadataRecord.project_id == body.project_id,
+            MetadataRecord.data_domain_table == body.table_filter,
+        )
+    )
+    records = result.scalars().all()
+    today = date.today()
+    updated_by = f"{current_user.full_name} <{current_user.email}>"
+
+    for r in records:
+        r.data_grouping = body.data_grouping
+        r.updated_date = today
+        r.updated_by = updated_by
+
+    db.add(AuditLog(
+        user_id=current_user.id, module="metadata", action="bulk_grouping",
+        entity_type="metadata", entity_id=str(body.project_id),
+        details={"table": body.table_filter, "grouping": body.data_grouping, "rows": len(records)},
+    ))
+    await db.commit()
+    return {"updated": len(records), "data_grouping": body.data_grouping}
+
+
+# ── FR-META-014: AI regenerate for single row ─────────────────────────────────
+
+@router.post("/regenerate-definition", response_model=dict)
+async def regenerate_definition(
+    body: AIRegenerateRequest,
+    db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> dict:
+    record = (await db.execute(
+        select(MetadataRecord).where(MetadataRecord.id == body.record_id)
+    )).scalar_one_or_none()
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    try:
+        from app.worker.tasks.metadata import generate_ai_definition
+        task = generate_ai_definition.delay(record_id=str(body.record_id))
+        return {"task_id": task.id, "message": "AI definition generation queued"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not queue task: {exc}") from exc
+
+
+# ── FR-META-014: Regenerate ALL pending definitions for a project ─────────────
+
+@router.post("/regenerate-all/{project_id}", response_model=dict)
+async def regenerate_all_definitions(
+    project_id: uuid.UUID,
+    db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:update"))],
+) -> dict:
+    """Queue AI definition generation for every pending record in one server-side call."""
+    result = await db.execute(
+        select(MetadataRecord.id).where(
+            MetadataRecord.project_id == project_id,
+            MetadataRecord.definition_status != "ai_generated",
+        )
+    )
+    ids = [str(row[0]) for row in result.fetchall()]
+    if not ids:
+        return {"queued": 0, "message": "Nothing to generate"}
+
+    try:
+        from app.worker.tasks.metadata import generate_ai_definition
+        for record_id in ids:
+            generate_ai_definition.delay(record_id=record_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not queue tasks: {exc}") from exc
+
+    return {"queued": len(ids), "message": f"{len(ids)} tasks queued"}

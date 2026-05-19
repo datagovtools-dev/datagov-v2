@@ -1,0 +1,47 @@
+# OWASP ZAP Automation Framework config — P6-010
+# Usage: docker run -v $(pwd):/zap/wrk/:rw owasp/zap2docker-stable zap-full-scan.py -t http://api:8000 -c zap-scan-config.yaml
+
+env:
+  contexts:
+    - name: AI Governance API
+      urls:
+        - http://api:8000/api/v1
+      authentication:
+        method: json
+        loginUrl: http://api:8000/api/v1/auth/login
+        loginRequestData: '{"email":"{%username%}","password":"{%password%}"}'
+        usernameParameter: email
+        passwordParameter: password
+        tokenRegex: '"access_token":"(.+?)"'
+      users:
+        - name: admin
+          credentials:
+            username: "${E2E_ADMIN_EMAIL}"
+            password: "${E2E_ADMIN_PASSWORD}"
+
+jobs:
+  - type: spider
+    parameters:
+      context: AI Governance API
+      user: admin
+      maxDuration: 2
+      acceptCookies: true
+
+  - type: activeScan
+    parameters:
+      context: AI Governance API
+      user: admin
+      scanPolicyName: Default Policy
+      maxRuleDurationInMins: 1
+      maxScanDurationInMins: 30
+
+  - type: report
+    parameters:
+      template: traditional-html
+      reportDir: /zap/wrk/reports
+      reportFile: zap-scan-report.html
+
+  - type: outputSummary
+    parameters:
+      format: Long
+      summaryFile: /zap/wrk/reports/zap-summary.json

@@ -1,0 +1,56 @@
+# Environment secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Alembic — keep migrations, ignore local temp
+backend/alembic/__pycache__/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Docker volumes / local data
+postgres_data/
+redis_data/
+tmp_data/
+*.sqlite
+*.db
+
+# Local one-off SQL scripts
+clear_prepared_sig.sql
+*.dump
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

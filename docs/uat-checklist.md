@@ -1,0 +1,117 @@
+# UAT Checklist — P6-012
+# AI Governance Tools Platform — MVP Functional Requirements
+
+**Environment:** Staging  
+**Tester:** Data Governance Team  
+**Target:** All 68 MVP functional requirements pass
+
+---
+
+## Module 1: RBAC & Project Management
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-ACC-001 | Super Admin can create, edit, delete roles | ☐ | ☐ | |
+| FR-ACC-002 | Data Owner can view/modify access to owned datasets | ☐ | ☐ | |
+| FR-ACC-003 | Data Steward has domain-scoped view/edit only | ☐ | ☐ | |
+| FR-ACC-004 | Regular User receives access-denied for restricted areas | ☐ | ☐ | |
+| FR-ACC-005 | Auditor has read-only audit trail access | ☐ | ☐ | |
+| FR-PRJ-001 | Super Admin can create project with all 13 mandatory fields | ☐ | ☐ | |
+| FR-PRJ-002 | Cascading Year→Customer→Project filter works | ☐ | ☐ | |
+| FR-PRJ-003 | All workspace sections inactive until project selected | ☐ | ☐ | |
+
+## Module 2: Data Sharing Request (DSR)
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-DSR-001 | DSR created with auto-generated tracking ID (DSR-YYYY-NNNN) | ☐ | ☐ | |
+| FR-DSR-002 | Multi-level approval workflow functions correctly | ☐ | ☐ | |
+| FR-DSR-003 | Notifications sent at each workflow transition | ☐ | ☐ | |
+| FR-DSR-004 | DSA linkage blocks approval when no DSA attached | ☐ | ☐ | |
+| FR-DSR-005 | Access auto-revoked on expiry | ☐ | ☐ | |
+| FR-DSR-006 | PDF/XLSX/CSV export with status history | ☐ | ☐ | |
+| FR-DSR-007 | Immutable audit log for all DSR actions | ☐ | ☐ | |
+| FR-DSR-008 | AI compliance checklist triggers when is_ai_use=true | ☐ | ☐ | |
+
+## Module 3: DPIA
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-DPIA-001 | DPIA created with 5×5 risk matrix | ☐ | ☐ | |
+| FR-DPIA-002 | Risk score auto-computed (likelihood × impact) | ☐ | ☐ | |
+| FR-DPIA-003 | DPO approval workflow (Draft→Review→Approved) | ☐ | ☐ | |
+| FR-DPIA-004 | Bidirectional ROPA linkage | ☐ | ☐ | |
+| FR-DPIA-005 | ROPA deletion triggers DPIA validation warning | ☐ | ☐ | |
+| FR-DPIA-006 | PDF/XLSX reports with risk level filter | ☐ | ☐ | |
+
+## Module 4: ROPA
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-ROPA-001 | ROPA record created with 7 mandatory fields | ☐ | ☐ | |
+| FR-ROPA-002 | Version history with timestamps and author | ☐ | ☐ | |
+| FR-ROPA-003 | Link ROPA to GCP tables or systems | ☐ | ☐ | |
+| FR-ROPA-004 | Auto-update on linked asset deletion/modification | ☐ | ☐ | |
+| FR-ROPA-005 | CSV/XLSX/PDF reports with filters | ☐ | ☐ | |
+
+## Module 5: BAPD (Data Extermination)
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-BAPD-001 | BAPD created for retention-expired datasets only | ☐ | ☐ | |
+| FR-BAPD-002 | Dual approval required (Data Owner AND Compliance Officer) | ☐ | ☐ | |
+| FR-BAPD-003 | Proof of Deletion PDF generated and stored in GCS | ☐ | ☐ | |
+| FR-BAPD-004 | Daily retention eligibility scan identifies expired datasets | ☐ | ☐ | |
+| FR-BAPD-005 | PDF/XLSX reports include full approval chain | ☐ | ☐ | |
+| FR-BAPD-006 | Immutable audit log for all BAPD actions | ☐ | ☐ | |
+
+## Module 6: Data Quality
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-DQ-001 | GCP BigQuery source connection validates successfully | ☐ | ☐ | |
+| FR-DQ-002 | GCP connection error displays meaningful message | ☐ | ☐ | |
+| FR-DQ-003 | Excel upload shows 10-row preview with type badges | ☐ | ☐ | |
+| FR-DQ-004 | Async DQ generation computes completeness/uniqueness/consistency | ☐ | ☐ | |
+| FR-DQ-005 | Governance review with approve/reject/revision | ☐ | ☐ | |
+| FR-DQ-006 | Approved run archived to BigQuery + GCS | ☐ | ☐ | |
+| FR-DQ-007 | Email notifications sent on run complete/review/result | ☐ | ☐ | |
+| FR-DQ-008 | Re-run creates new version with delta comparison | ☐ | ☐ | |
+
+## Module 7: Metadata Management + AI
+
+| FR | Description | Pass | Fail | Notes |
+|----|-------------|------|------|-------|
+| FR-META-001 | Source table discovery shows documented/undocumented status | ☐ | ☐ | |
+| FR-META-002 to 010 | Core attribute auto-population (seq_no, table, project, steward, owner, attribute) | ☐ | ☐ | |
+| FR-META-011 | PII keyword detection → Highly Confidential | ☐ | ☐ | |
+| FR-META-012 | Bulk grouping applies to all columns in table | ☐ | ☐ | |
+| FR-META-013 | Business term auto-expansion from abbreviation map | ☐ | ☐ | |
+| FR-META-014 | Ollama AI generates business definitions per row | ☐ | ☐ | |
+| FR-META-015 | is_primary_key derived from DQ uniqueness data | ☐ | ☐ | |
+| FR-META-016 | is_nullable derived from DQ completeness data | ☐ | ☐ | |
+| FR-META-017 | sample_data shows first non-null value or "(All Blank)" | ☐ | ☐ | |
+| FR-META-018 | data_type correctly inferred from schema or sample values | ☐ | ☐ | |
+| FR-META-019 | updated_date and updated_by stamped per row on save | ☐ | ☐ | |
+| FR-META-020 | data_level defaults to Raw, overridable | ☐ | ☐ | |
+| FR-META-021 | Batch save persists all pending edits atomically | ☐ | ☐ | |
+| FR-META-022 | Data Owner & Steward management (5 role types) | ☐ | ☐ | |
+
+## Cross-Cutting Requirements
+
+| NFR | Description | Pass | Fail | Notes |
+|-----|-------------|------|------|-------|
+| NFR-001 | Page load < 3 seconds (desktop, good connection) | ☐ | ☐ | |
+| NFR-004 | HTTPS enforced, rate limiting on login (5 attempts/10min/IP) | ☐ | ☐ | |
+| NFR-005 | 403 returned for insufficient permissions | ☐ | ☐ | |
+| NFR-006 | Audit log rows cannot be modified or deleted | ☐ | ☐ | |
+| NFR-008 | PDF export < 30s for up to 10,000 rows | ☐ | ☐ | |
+| NFR-010 | Email notifications delivered within 5 minutes | ☐ | ☐ | |
+| NFR-012 | Responsive layout on tablet and mobile | ☐ | ☐ | |
+
+---
+
+**Sign-off:**  
+DGO Lead: _________________ Date: _________  
+Compliance Officer: _________________ Date: _________  
+Tech Lead: _________________ Date: _________

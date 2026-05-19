@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 248 250 252;      /* surface-50 */
+    --foreground: 15 23 42;         /* surface-900 */
+    --card: 255 255 255;
+    --card-foreground: 15 23 42;
+    --primary: 99 102 241;          /* primary-500 */
+    --primary-foreground: 255 255 255;
+    --muted: 241 245 249;           /* surface-100 */
+    --muted-foreground: 100 116 139;
+    --border: 226 232 240;          /* surface-200 */
+    --input: 226 232 240;
+    --ring: 99 102 241;
+    --radius: 0.5rem;
+    --sidebar-width: 17rem;
+    --topnav-height: 4rem;
+  }
+
+  .dark {
+    --background: 15 23 42;
+    --foreground: 248 250 252;
+    --card: 30 41 59;
+    --card-foreground: 248 250 252;
+    --muted: 51 65 85;
+    --muted-foreground: 148 163 184;
+    --border: 51 65 85;
+    --input: 51 65 85;
+  }
+
+  * {
+    border-color: rgb(var(--border));
+  }
+
+  body {
+    @apply bg-surface-50 text-surface-900 font-sans antialiased;
+  }
+
+  h1 { @apply text-2xl font-semibold tracking-tight; }
+  h2 { @apply text-xl font-semibold tracking-tight; }
+  h3 { @apply text-lg font-medium; }
+  h4 { @apply text-base font-medium; }
+}
+
+@layer components {
+  /* Status badge base */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+
+  /* Form input base */
+  .input-base {
+    @apply flex w-full rounded-md border border-surface-200 bg-white px-3 py-2 text-sm
+           placeholder:text-surface-300
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Card container */
+  .card {
+    @apply rounded-lg border border-surface-200 bg-white shadow-card p-4;
+  }
+
+  /* Page header */
+  .page-header {
+    @apply flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-surface-200 mb-6;
+  }
+}
