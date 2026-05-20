@@ -38,7 +38,7 @@ async def get_metadata_stats(
         select(
             func.count(distinct(MetadataRecord.project_id)).label("projects"),
             func.count(distinct(
-                MetadataRecord.project_id.cast(str) + "||" + MetadataRecord.data_domain_table
+                func.concat(MetadataRecord.project_id, "||", MetadataRecord.data_domain_table)
             )).label("tables"),
             func.count(MetadataRecord.id).label("attributes"),
         )
