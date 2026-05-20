@@ -15,6 +15,14 @@ from app.core.rbac import require_permission
 from app.models.metadata import DataOwnerSteward, MetadataRecord
 from app.models.project import Project
 from app.models.user import AuditLog, User
+from app.services.ai_generation import (
+    AIGenerationError,
+    apply_generated_definition,
+    build_candidate_from_config,
+    config_is_ready,
+    generate_metadata_definition,
+    get_ai_config,
+)
 from app.schemas.metadata import (
     AIRegenerateRequest, BulkGroupingRequest, DataOwnerStewardCreate,
     DataOwnerStewardOut, MetadataBatchSaveRequest, MetadataBatchSaveResult,
@@ -480,7 +488,7 @@ async def bulk_stamp(
 async def regenerate_definition(
     body: AIRegenerateRequest,
     db: DB,
-    _: Annotated[User, Depends(require_permission("metadata:update"))],
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
 ) -> dict:
     record = (await db.execute(
         select(MetadataRecord).where(MetadataRecord.id == body.record_id)
@@ -489,11 +497,34 @@ async def regenerate_definition(
         raise HTTPException(status_code=404, detail="Record not found")
 
     try:
-        from app.worker.tasks.metadata import generate_ai_definition
-        task = generate_ai_definition.delay(record_id=str(body.record_id))
-        return {"task_id": task.id, "message": "AI definition generation queued"}
+        config = await get_ai_config(db)
+        if not config_is_ready(config):
+            raise AIGenerationError("AI generation is not configured. Ask an administrator to set up Ollama Cloud.", 400)
+        candidate = build_candidate_from_config(config)
+        definition = await generate_metadata_definition(record, candidate)
+        apply_generated_definition(record, definition, current_user)
+        db.add(AuditLog(
+            user_id=current_user.id,
+            module="metadata",
+            action="regenerate_ai_definition",
+            entity_type="metadata_record",
+            entity_id=str(record.id),
+            details={"provider": candidate.provider, "model_name": candidate.model_name},
+        ))
+        await db.commit()
+        await db.refresh(record)
+        return {
+            "record_id": str(record.id),
+            "status": record.definition_status,
+            "definition": record.business_definition,
+            "provider": candidate.provider,
+            "model_name": candidate.model_name,
+            "message": "AI definition generated",
+        }
+    except AIGenerationError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not queue task: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Could not generate AI definition") from exc
 
 
 # ── FR-META-014: Regenerate ALL pending definitions for a project ─────────────
@@ -502,24 +533,66 @@ async def regenerate_definition(
 async def regenerate_all_definitions(
     project_id: uuid.UUID,
     db: DB,
-    _: Annotated[User, Depends(require_permission("metadata:update"))],
+    current_user: Annotated[User, Depends(require_permission("metadata:update"))],
+    limit: int | None = Query(default=None, ge=1, le=25),
 ) -> dict:
-    """Queue AI definition generation for every pending record in one server-side call."""
+    """Generate pending definitions in bounded chunks for serverless runtimes."""
+    config = await get_ai_config(db)
+    if not config_is_ready(config):
+        raise HTTPException(
+            status_code=400,
+            detail="AI generation is not configured. Ask an administrator to set up Ollama Cloud.",
+        )
+    candidate = build_candidate_from_config(config)
+    chunk_size = min(limit or candidate.batch_size, 25)
+
     result = await db.execute(
-        select(MetadataRecord.id).where(
+        select(MetadataRecord).where(
             MetadataRecord.project_id == project_id,
-            MetadataRecord.definition_status != "ai_generated",
+            (MetadataRecord.business_definition.is_(None)) | (MetadataRecord.definition_status != "ai_generated"),
+        ).order_by(MetadataRecord.data_domain_table, MetadataRecord.seq_no).limit(chunk_size)
+    )
+    records = result.scalars().all()
+    if not records:
+        return {"processed": 0, "failed": 0, "remaining": 0, "message": "Nothing to generate", "failures": []}
+
+    processed = 0
+    failures: list[dict[str, str]] = []
+    for record in records:
+        try:
+            definition = await generate_metadata_definition(record, candidate)
+            apply_generated_definition(record, definition, current_user)
+            processed += 1
+        except AIGenerationError as exc:
+            failures.append({"record_id": str(record.id), "error": str(exc)})
+
+    if processed:
+        db.add(AuditLog(
+            user_id=current_user.id,
+            module="metadata",
+            action="regenerate_all_ai_definitions",
+            entity_type="project",
+            entity_id=str(project_id),
+            details={
+                "processed": processed,
+                "failed": len(failures),
+                "provider": candidate.provider,
+                "model_name": candidate.model_name,
+            },
+        ))
+    await db.commit()
+
+    remaining_result = await db.execute(
+        select(func.count(MetadataRecord.id)).where(
+            MetadataRecord.project_id == project_id,
+            (MetadataRecord.business_definition.is_(None)) | (MetadataRecord.definition_status != "ai_generated"),
         )
     )
-    ids = [str(row[0]) for row in result.fetchall()]
-    if not ids:
-        return {"queued": 0, "message": "Nothing to generate"}
-
-    try:
-        from app.worker.tasks.metadata import generate_ai_definition
-        for record_id in ids:
-            generate_ai_definition.delay(record_id=record_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Could not queue tasks: {exc}") from exc
-
-    return {"queued": len(ids), "message": f"{len(ids)} tasks queued"}
+    remaining = int(remaining_result.scalar_one())
+    return {
+        "processed": processed,
+        "failed": len(failures),
+        "remaining": remaining,
+        "message": f"Generated {processed} definitions",
+        "failures": failures[:5],
+    }

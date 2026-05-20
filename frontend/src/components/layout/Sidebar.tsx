@@ -89,11 +89,14 @@ export function Sidebar({ collapsed = false, onToggle }: SidebarProps) {
         <Link
           href="/settings"
           className={cn(
-            "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium text-surface-600 hover:bg-surface-50 hover:text-surface-900 transition-colors",
+            "flex items-center gap-3 rounded-md px-2 py-2 text-sm font-medium transition-colors",
+            pathname.startsWith("/settings")
+              ? "bg-primary-50 text-primary-700"
+              : "text-surface-600 hover:bg-surface-50 hover:text-surface-900",
             collapsed && "justify-center",
           )}
         >
-          <Settings className="h-4 w-4 shrink-0" />
+          <Settings className={cn("h-4 w-4 shrink-0", pathname.startsWith("/settings") && "text-primary-600")} />
           {!collapsed && <span>Settings</span>}
         </Link>
         <button

@@ -46,3 +46,15 @@ async def test_audit_log_requires_auth(client: AsyncClient):
 async def test_notifications_requires_auth(client: AsyncClient):
     resp = await client.get("/api/v1/notifications")
     assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_ai_settings_requires_auth(client: AsyncClient):
+    resp = await client.get("/api/v1/settings/ai")
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_ai_status_requires_auth(client: AsyncClient):
+    resp = await client.get("/api/v1/settings/ai/status")
+    assert resp.status_code == 401

@@ -6,7 +6,7 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import get_settings
 from app.core.redis_client import close_redis, get_redis, is_redis_enabled
-from app.routers import auth, rbac, projects, dashboard, dsr, dpia, ropa, bapd, dq, metadata, audit, notifications
+from app.routers import auth, rbac, projects, dashboard, dsr, dpia, ropa, bapd, dq, metadata, audit, notifications, settings as settings_router
 
 settings = get_settings()
 
@@ -52,6 +52,7 @@ app.include_router(dq.router,        prefix="/api/v1")
 app.include_router(metadata.router,  prefix="/api/v1")
 app.include_router(audit.router,         prefix="/api/v1")
 app.include_router(notifications.router, prefix="/api/v1")
+app.include_router(settings_router.router, prefix="/api/v1")
 
 
 @app.get("/health", tags=["health"])

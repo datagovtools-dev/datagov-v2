@@ -426,8 +426,9 @@ def generate_ai_definition(self, record_id: str) -> dict:
     import httpx
 
     db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
-    ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-    model = os.getenv("OLLAMA_MODEL", "phi3:mini")
+    ollama_url = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST", "http://ollama:11434")
+    model = os.getenv("OLLAMA_MODEL", "llama3:8b")
+    api_key = os.getenv("OLLAMA_API_KEY", "")
 
     if not db_url:
         return {"error": "no DATABASE_URL"}
@@ -466,6 +467,7 @@ def generate_ai_definition(self, record_id: str) -> dict:
         response = httpx.post(
             f"{ollama_url}/api/generate",
             json={"model": model, "prompt": prompt, "stream": False},
+            headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
             timeout=120.0,
         )
         if response.status_code == 200:

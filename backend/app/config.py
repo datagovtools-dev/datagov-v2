@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     # Security
     secret_key: str
+    ai_config_encryption_key: str = ""
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
     bcrypt_rounds: int = 12

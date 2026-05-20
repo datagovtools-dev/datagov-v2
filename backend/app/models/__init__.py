@@ -7,6 +7,7 @@ from app.models.bapd import RetentionPolicy, BAPDRecord, BAPDApproval
 from app.models.metadata import MetadataRecord, DataOwnerSteward
 from app.models.dq import DQRun, DQResult, DQFinding, DQGCPArchive
 from app.models.notification import Notification, NotificationPreference
+from app.models.ai_config import AIProviderConfig
 
 __all__ = [
     "User", "Role", "UserProjectRole", "AuditLog",
@@ -18,4 +19,5 @@ __all__ = [
     "MetadataRecord", "DataOwnerSteward",
     "DQRun", "DQResult", "DQFinding", "DQGCPArchive",
     "Notification", "NotificationPreference",
+    "AIProviderConfig",
 ]

@@ -39,6 +39,16 @@ interface MetadataRecord {
   created_at: string;
 }
 
+interface AISettingsStatus {
+  enabled: boolean;
+  configured: boolean;
+  provider: string;
+  mode: string;
+  base_url: string;
+  model_name: string;
+  api_key_configured: boolean;
+}
+
 const SENSITIVITY_OPTIONS = ["Public", "Internal", "Confidential", "Highly Confidential"];
 const DATA_LEVEL_OPTIONS = ["Raw", "Staging", "Aggregate"];
 
@@ -85,6 +95,7 @@ function MetadataGridContent() {
   const [showBulkGrouping, setShowBulkGrouping] = useState(false);
   const [regenQueued, setRegenQueued] = useState<Set<string>>(new Set());
   const [regenAllRunning, setRegenAllRunning] = useState(false);
+  const [regenError, setRegenError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { data: project } = useQuery<{ id: string; project_code: string | null; project_name: string; project_year: number; customer_name: string; line_of_business: string | null }>({
@@ -99,6 +110,11 @@ function MetadataGridContent() {
     enabled: !!projectId,
   });
 
+  const { data: aiStatus } = useQuery<AISettingsStatus>({
+    queryKey: ["ai-settings-status"],
+    queryFn: () => api.get<AISettingsStatus>("/settings/ai/status"),
+  });
+
   const { data: records = [], isLoading } = useQuery<MetadataRecord[]>({
     queryKey: ["metadata", projectId, tableFilter],
     queryFn: () => {
@@ -108,6 +124,8 @@ function MetadataGridContent() {
     },
     refetchInterval: regenAllRunning ? 5000 : false,
   });
+
+  const aiReady = aiStatus?.configured ?? false;
 
   // Distinct tables for the filter dropdown
   const allTables = [...new Set(records.map((r) => r.data_domain_table))].sort();
@@ -162,27 +180,53 @@ function MetadataGridContent() {
   });
 
   async function handleRegenerate(recordId: string) {
+    if (!aiReady) {
+      setRegenError("AI generation is not configured. Open Settings > AI Setup and save an Ollama Cloud API key.");
+      return;
+    }
+    setRegenError("");
     setRegenQueued((s) => new Set([...s, recordId]));
     try {
       await api.post("/metadata/regenerate-definition", { record_id: recordId });
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["metadata", projectId] });
-        setRegenQueued((s) => { const n = new Set(s); n.delete(recordId); return n; });
-      }, 8000);
-    } catch {
+      await qc.invalidateQueries({ queryKey: ["metadata", projectId] });
+    } catch (e: any) {
+      setRegenError(e.message || "Could not generate AI definition.");
+    } finally {
       setRegenQueued((s) => { const n = new Set(s); n.delete(recordId); return n; });
     }
   }
 
   async function handleRegenAll() {
+    if (!aiReady) {
+      setRegenError("AI generation is not configured. Open Settings > AI Setup and save an Ollama Cloud API key.");
+      return;
+    }
     const targets = records.filter((r) => !r.business_definition || r.definition_status !== "ai_generated");
     if (!targets.length) return;
+    setRegenError("");
     setRegenAllRunning(true);
     setRegenQueued(new Set(targets.map((r) => r.id)));
-    // Single server-side call queues all pending tasks at once — avoids connection pool exhaustion
-    await api.post(`/metadata/regenerate-all/${projectId}`, {});
-    // refetchInterval (5s) takes over — clear any leftover manual interval
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    try {
+      let remaining = targets.length;
+      while (remaining > 0) {
+        const result = await api.post<{ processed: number; failed: number; remaining: number; failures?: { error: string }[] }>(
+          `/metadata/regenerate-all/${projectId}?limit=5`,
+          {},
+        );
+        remaining = result.remaining;
+        await qc.invalidateQueries({ queryKey: ["metadata", projectId] });
+        if (result.processed === 0 && result.failed > 0) {
+          setRegenError(result.failures?.[0]?.error || "AI generation stopped after an error.");
+          break;
+        }
+      }
+    } catch (e: any) {
+      setRegenError(e.message || "Could not generate AI definitions.");
+    } finally {
+      setRegenAllRunning(false);
+      setRegenQueued(new Set());
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    }
   }
 
   // Stop auto-refetch when ALL records across the full dataset have definitions
@@ -417,7 +461,8 @@ function MetadataGridContent() {
           <Button
             variant="outline"
             onClick={handleRegenAll}
-            disabled={regenAllRunning || records.length === 0}
+            disabled={regenAllRunning || records.length === 0 || !aiReady}
+            title={aiReady ? `Using ${aiStatus?.provider ?? "AI"} ${aiStatus?.model_name ?? ""}` : "Configure Ollama Cloud in Settings > AI Setup"}
           >
             {regenAllRunning
               ? `Generating… (${regenQueued.size} queued)`
@@ -438,6 +483,12 @@ function MetadataGridContent() {
           )}
         </div>
       </div>
+
+      {regenError && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          {regenError}
+        </div>
+      )}
 
       {/* Project info strip */}
       {project && (
@@ -528,7 +579,7 @@ function MetadataGridContent() {
         </span>
         <span className="flex items-center gap-1">
           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 border border-violet-300">AI</span>
-          = Ollama-generated definition
+          = AI-generated definition{aiStatus?.configured ? ` (${aiStatus.model_name})` : ""}
         </span>
         <span>Amber left border = unsaved changes</span>
       </div>
@@ -741,9 +792,9 @@ function MetadataGridContent() {
                             <button className="text-xs text-surface-500 hover:text-primary-600"
                               onClick={() => setEditingId(r.id)} title="Edit row">✎</button>
                             <button className="text-xs text-violet-500 hover:text-violet-700 disabled:opacity-40"
-                              disabled={regenQueued.has(r.id)}
+                              disabled={regenQueued.has(r.id) || !aiReady}
                               onClick={() => handleRegenerate(r.id)}
-                              title="Regenerate AI definition">✦</button>
+                              title={aiReady ? "Regenerate AI definition" : "Configure AI setup first"}>✦</button>
                           </>
                         )}
                       </div>
