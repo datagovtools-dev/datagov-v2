@@ -9,7 +9,7 @@ test.describe("DSR Flow", () => {
   test("new DSR form is accessible", async ({ authenticatedPage: page }) => {
     await page.goto("/dsr/new");
     await expect(page.getByRole("heading", { name: /New.*Request/i })).toBeVisible();
-    await expect(page.getByLabelText(/requester/i)).toBeVisible();
+    await expect(page.getByLabel(/requester/i)).toBeVisible();
   });
 
   test("submitting empty DSR form shows validation", async ({ authenticatedPage: page }) => {

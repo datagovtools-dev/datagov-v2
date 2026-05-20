@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from app.config import get_settings
-from app.core.redis_client import close_redis, get_redis
+from app.core.redis_client import close_redis, get_redis, is_redis_enabled
 from app.routers import auth, rbac, projects, dashboard, dsr, dpia, ropa, bapd, dq, metadata, audit, notifications
 
 settings = get_settings()
@@ -13,7 +13,8 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await get_redis()
+    if is_redis_enabled():
+        await get_redis()
     yield
     await close_redis()
 

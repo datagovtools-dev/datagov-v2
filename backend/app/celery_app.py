@@ -12,6 +12,7 @@ celery_app = Celery(
         "app.worker.tasks.exports",
         "app.worker.tasks.scheduled",
         "app.worker.tasks.metadata",
+        "app.worker.tasks.dq",
     ],
 )
 

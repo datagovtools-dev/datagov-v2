@@ -1,17 +1,23 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, MappedColumn
 from sqlalchemy import MetaData
+from sqlalchemy.pool import NullPool
 from app.config import get_settings
 
 settings = get_settings()
 
-engine = create_async_engine(
-    settings.database_url,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-    echo=settings.debug,
-)
+engine_options = {
+    "pool_pre_ping": True,
+    "echo": settings.debug,
+}
+
+if settings.database_null_pool:
+    engine_options["poolclass"] = NullPool
+else:
+    engine_options["pool_size"] = 10
+    engine_options["max_overflow"] = 20
+
+engine = create_async_engine(settings.database_url, **engine_options)
 
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False

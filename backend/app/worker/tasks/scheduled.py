@@ -89,7 +89,7 @@ def dsr_expiry_check() -> dict:
         cur.execute(
             """
             SELECT id, tracking_id FROM data_sharing_requests
-            WHERE due_date <= %s AND due_date > %s
+            WHERE duration_end <= %s AND duration_end > %s
               AND status NOT IN ('rejected', 'archived', 'executed')
             """,
             (warn_threshold, today_str),
@@ -102,7 +102,7 @@ def dsr_expiry_check() -> dict:
             """
             UPDATE data_sharing_requests
             SET status = 'archived'
-            WHERE due_date < %s
+            WHERE duration_end < %s
               AND status = 'approved'
             RETURNING id
             """,

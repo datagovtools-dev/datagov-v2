@@ -21,15 +21,16 @@ class Settings(BaseSettings):
     # Database
     database_url: str
     database_url_sync: str
+    database_null_pool: bool = False
 
     # Redis
-    redis_url: str
+    redis_url: str = ""
     redis_denylist_db: int = 1
     redis_cache_db: int = 2
 
     # Celery
-    celery_broker_url: str
-    celery_result_backend: str
+    celery_broker_url: str = "memory://"
+    celery_result_backend: str = "cache+memory://"
 
     # GCP
     gcp_project_id: str = ""
@@ -52,7 +53,10 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from_name: str = "AI Governance Tools"
     smtp_from_email: str = "noreply@ai-governance.local"
+    email_from: str = "noreply@ai-governance.local"
+    smtp_tls: bool = True
     sendgrid_api_key: str = ""
+    frontend_url: str = "https://app.example.com"
 
     # Rate limiting
     rate_limit_login_max: int = 5

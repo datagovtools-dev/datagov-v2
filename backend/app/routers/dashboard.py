@@ -28,9 +28,7 @@ async def get_dashboard(db: DB, current_user: CurrentUser) -> DashboardResponse:
     today = date.today()
     month_start = today.replace(day=1)
 
-    active_projects = (await db.execute(
-        select(func.count()).where(Project.status == "active")
-    )).scalar_one()
+    active_projects = (await db.execute(select(func.count()).select_from(Project))).scalar_one()
 
     open_dsrs = (await db.execute(
         select(func.count()).where(DataSharingRequest.status.in_(["draft", "submitted", "under_review"]))
@@ -112,7 +110,7 @@ async def get_dashboard(db: DB, current_user: CurrentUser) -> DashboardResponse:
         action_items.append(ActionItem(
             module="dpia",
             entity_id=str(dpia.id),
-            title=f"DPIA {dpia.title or dpia.id} — under review",
+            title=f"DPIA {dpia.tracking_id or dpia.id} — under review",
             status=dpia.status,
             urgency="medium",
             due_label=None,
