@@ -8,6 +8,10 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 export const metadata: Metadata = {
   title: "AI Governance Tools",
   description: "Integrated Data Governance Platform",
+  icons: {
+    icon: [{ url: "/favicon.svg", type: "image/svg+xml" }],
+    shortcut: ["/favicon.svg"],
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
