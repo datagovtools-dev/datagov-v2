@@ -46,6 +46,8 @@ interface AISettingsStatus {
   mode: string;
   base_url: string;
   model_name: string;
+  timeout_seconds: number;
+  batch_size: number;
   api_key_configured: boolean;
 }
 
@@ -208,9 +210,10 @@ function MetadataGridContent() {
     setRegenQueued(new Set(targets.map((r) => r.id)));
     try {
       let remaining = targets.length;
+      const batchSize = Math.min(Math.max(aiStatus?.batch_size ?? 5, 1), 25);
       while (remaining > 0) {
         const result = await api.post<{ processed: number; failed: number; remaining: number; failures?: { error: string }[] }>(
-          `/metadata/regenerate-all/${projectId}?limit=5`,
+          `/metadata/regenerate-all/${projectId}?limit=${batchSize}`,
           {},
         );
         remaining = result.remaining;

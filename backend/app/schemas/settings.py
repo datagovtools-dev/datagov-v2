@@ -32,6 +32,8 @@ class AISettingsStatus(BaseModel):
     mode: str
     base_url: str
     model_name: str
+    timeout_seconds: int
+    batch_size: int
     api_key_configured: bool
 
     model_config = {"protected_namespaces": ()}

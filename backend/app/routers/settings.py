@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
@@ -62,6 +63,8 @@ def _to_status(config: AIProviderConfig | None) -> AISettingsStatus:
         mode=out.mode,
         base_url=out.base_url,
         model_name=out.model_name,
+        timeout_seconds=out.timeout_seconds,
+        batch_size=out.batch_size,
         api_key_configured=out.api_key_configured,
     )
 
@@ -125,7 +128,11 @@ async def update_ai_settings(
             "api_key_configured": bool(config.encrypted_api_key),
         },
     ))
-    await db.commit()
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Could not save AI settings.") from exc
     await db.refresh(config)
     return _to_out(config)
 
