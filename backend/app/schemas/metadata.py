@@ -41,6 +41,13 @@ class SourceTableInfo(BaseModel):
     source_type: str            # gcp | excel
 
 
+class UploadedMetadataTable(BaseModel):
+    table_name: str
+    columns: list[str]
+    sample_rows: list[list[Any]] = []
+    row_count: int = 0
+
+
 class ProceedMetadataRequest(BaseModel):
     project_id: uuid.UUID
     source_type: str            # gcp | excel | postgresql
@@ -50,6 +57,7 @@ class ProceedMetadataRequest(BaseModel):
     temp_file_key: Optional[str] = None        # for excel source (single, legacy)
     temp_file_keys: Optional[list[str]] = None # for excel source (multi-file)
     file_names: Optional[list[str]] = None     # original filenames matching temp_file_keys order
+    uploaded_tables: Optional[list[UploadedMetadataTable]] = None
     connection_string: Optional[str] = None  # for postgresql/supabase source
     pg_schema: Optional[str] = "public"      # for postgresql/supabase source
 
@@ -130,3 +138,4 @@ class ProceedResponse(BaseModel):
     task_id: str
     message: str
     queued_records: int
+    processed_records: int = 0

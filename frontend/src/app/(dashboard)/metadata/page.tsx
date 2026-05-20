@@ -19,6 +19,20 @@ interface SourceTableInfo {
   source_type: string;
 }
 
+interface UploadedMetadataTable {
+  table_name: string;
+  columns: string[];
+  sample_rows: unknown[][];
+  row_count: number;
+}
+
+interface ProceedResponse {
+  task_id: string;
+  message: string;
+  queued_records: number;
+  processed_records?: number;
+}
+
 export default function MetadataHomePage() {
   const router = useRouter();
   const qc = useQueryClient();
@@ -31,7 +45,9 @@ export default function MetadataHomePage() {
   const [pgSchema, setPgSchema] = useState("public");
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [proceeded, setProceeded] = useState(false);
+  const [proceedResult, setProceedResult] = useState<ProceedResponse | null>(null);
   const [excelSheets, setExcelSheets] = useState<SourceTableInfo[]>([]);
+  const [uploadedTables, setUploadedTables] = useState<UploadedMetadataTable[]>([]);
   const [tempFileKeys, setTempFileKeys] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadedFileNames, setUploadedFileNames] = useState<string[]>([]);
@@ -60,7 +76,7 @@ export default function MetadataHomePage() {
   });
 
   const proceedMutation = useMutation({
-    mutationFn: () => api.post("/metadata/proceed", {
+    mutationFn: () => api.post<ProceedResponse>("/metadata/proceed", {
       project_id: projectId,
       source_type: sourceType,
       gcp_project: gcpProject || undefined,
@@ -70,10 +86,21 @@ export default function MetadataHomePage() {
       pg_schema: pgSchema || undefined,
       temp_file_keys: tempFileKeys.length > 0 ? tempFileKeys : undefined,
       file_names: uploadedFileNames.length > 0 ? uploadedFileNames : undefined,
+      uploaded_tables: sourceType === "excel"
+        ? uploadedTables.filter((table) => selectedTables.has(table.table_name))
+        : undefined,
     }),
-    onSuccess: () => {
+    onSuccess: (result) => {
       setProceeded(true);
+      setProceedResult(result);
+      if (sourceType === "excel") {
+        setExcelSheets((sheets) => sheets.map((sheet) => (
+          selectedTables.has(sheet.table_name) ? { ...sheet, documented: true } : sheet
+        )));
+      }
       qc.invalidateQueries({ queryKey: ["meta-tables"] });
+      qc.invalidateQueries({ queryKey: ["metadata", projectId] });
+      qc.invalidateQueries({ queryKey: ["metadata-stats"] });
     },
   });
 
@@ -82,12 +109,16 @@ export default function MetadataHomePage() {
     if (!fileArr.length) return;
     setUploading(true);
     setExcelSheets([]);
+    setUploadedTables([]);
     setTempFileKeys([]);
     setUploadedFileNames([]);
     setSelectedTables(new Set());
+    setProceeded(false);
+    setProceedResult(null);
     try {
       const token = useAuthStore.getState().accessToken;
       const allSheets: SourceTableInfo[] = [];
+      const allUploadedTables: UploadedMetadataTable[] = [];
       const keys: string[] = [];
       const names: string[] = [];
       for (const file of fileArr) {
@@ -103,19 +134,26 @@ export default function MetadataHomePage() {
         const data = await res.json();
         keys.push(data.temp_key);
         names.push(file.name);
+        const uploadedPayload = (data.tables ?? []) as UploadedMetadataTable[];
         for (const s of data.sheets as { sheet_name: string; column_count: number; row_count: number }[]) {
+          const tableName = fileArr.length > 1 ? `${file.name} - ${s.sheet_name}` : s.sheet_name;
           allSheets.push({
-            table_name: fileArr.length > 1 ? `${file.name} - ${s.sheet_name}` : s.sheet_name,
+            table_name: tableName,
             column_count: s.column_count,
             documented: false,
             row_count: s.row_count,
             source_type: "excel",
           });
+          const payloadTable = uploadedPayload.find((table) => table.table_name === s.sheet_name);
+          if (payloadTable) {
+            allUploadedTables.push({ ...payloadTable, table_name: tableName });
+          }
         }
       }
       setTempFileKeys(keys);
       setUploadedFileNames(names);
       setExcelSheets(allSheets);
+      setUploadedTables(allUploadedTables);
     } catch (e: unknown) {
       alert(e instanceof Error ? e.message : "Upload failed");
     } finally {
@@ -184,7 +222,7 @@ export default function MetadataHomePage() {
             <label className="block text-sm font-medium text-surface-700 mb-1">Project</label>
             <select
               value={projectId}
-              onChange={(e) => { setProjectId(e.target.value); setSelectedTables(new Set()); }}
+              onChange={(e) => { setProjectId(e.target.value); setSelectedTables(new Set()); setProceeded(false); setProceedResult(null); }}
               className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400 text-surface-700"
             >
               <option value="">Select project…</option>
@@ -195,7 +233,7 @@ export default function MetadataHomePage() {
             <label className="block text-sm font-medium text-surface-700 mb-1">Source Type</label>
             <div className="flex gap-2">
               {(["gcp", "postgresql", "excel"] as const).map((t) => (
-                <button key={t} onClick={() => setSourceType(t)}
+                <button key={t} onClick={() => { setSourceType(t); setProceeded(false); setProceedResult(null); }}
                   className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
                     sourceType === t
                       ? "border-primary-500 bg-primary-50 text-primary-700"
@@ -340,7 +378,7 @@ export default function MetadataHomePage() {
 
           {proceeded && (
             <div className="bg-primary-50 border-b border-primary-100 px-4 py-2 text-sm text-primary-700">
-              Auto-population queued. Attributes will appear in the grid shortly.{" "}
+              {proceedResult?.message ?? "Metadata auto-population completed."}{" "}
               <button onClick={() => router.push(`/metadata/${projectId}`)} className="underline font-medium">Open attribute grid →</button>
             </div>
           )}

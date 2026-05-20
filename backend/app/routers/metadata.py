@@ -23,6 +23,11 @@ from app.services.ai_generation import (
     generate_metadata_definition,
     get_ai_config,
 )
+from app.services.metadata_population import (
+    parse_csv_upload_content,
+    parse_excel_upload_file,
+    populate_metadata_records,
+)
 from app.schemas.metadata import (
     AIRegenerateRequest, BulkGroupingRequest, DataOwnerStewardCreate,
     DataOwnerStewardOut, MetadataBatchSaveRequest, MetadataBatchSaveResult,
@@ -139,33 +144,14 @@ async def upload_excel_metadata(
         f.write(content)
 
     try:
-        sheets = []
         if ext == ".csv":
-            import csv as csv_mod
-            try:
-                text = content.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                text = content.decode("latin-1", errors="replace")
-            reader = csv_mod.reader(text.splitlines())
-            rows = list(reader)
-            col_count = len(rows[0]) if rows else 0
-            row_count = max(0, len(rows) - 1)
-            sheet_name = os.path.splitext(file.filename or "data")[0]
-            sheets.append({"sheet_name": sheet_name, "column_count": col_count, "row_count": row_count})
+            sheets, tables = parse_csv_upload_content(content, file.filename or "data.csv")
         else:
-            import openpyxl
-            wb = openpyxl.load_workbook(temp_path, read_only=True, data_only=True)
-            for name in wb.sheetnames:
-                ws = wb[name]
-                rows = list(ws.iter_rows(values_only=True))
-                col_count = len(rows[0]) if rows else 0
-                row_count = max(0, len(rows) - 1)
-                sheets.append({"sheet_name": name, "column_count": col_count, "row_count": row_count})
-            wb.close()
+            sheets, tables = parse_excel_upload_file(temp_path)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}") from exc
 
-    return {"temp_key": temp_key, "sheets": sheets}
+    return {"temp_key": temp_key, "sheets": sheets, "tables": tables}
 
 
 # ── FR-META-001: Source Table Discovery ───────────────────────────────────────
@@ -262,7 +248,7 @@ async def list_source_tables(
     return tables
 
 
-# ── FR-META-001: Proceed (trigger async auto-population) ─────────────────────
+# ── FR-META-001: Proceed (auto-populate selected metadata) ───────────────────
 
 @router.post("/proceed", response_model=ProceedResponse)
 async def proceed_metadata(
@@ -270,7 +256,7 @@ async def proceed_metadata(
     db: DB,
     current_user: Annotated[User, Depends(require_permission("metadata:create"))],
 ) -> ProceedResponse:
-    """Trigger the async Celery task to auto-populate metadata attributes."""
+    """Auto-populate metadata attributes for the selected tables."""
     project = (await db.execute(
         select(Project).where(Project.id == body.project_id)
     )).scalar_one_or_none()
@@ -285,21 +271,18 @@ async def proceed_metadata(
 
     db.add(AuditLog(user_id=current_user.id, module="metadata", action="proceed",
                     entity_type="metadata", entity_id=str(body.project_id)))
-    await db.commit()
 
-    task_id = "sync"
-    queued = 0
     try:
-        from app.worker.tasks.metadata import retrieve_metadata
-        # Normalise excel keys: prefer temp_file_keys list, fall back to single key
-        resolved_keys = body.temp_file_keys or ([body.temp_file_key] if body.temp_file_key else None)
-        task = retrieve_metadata.delay(
-            project_id=str(body.project_id),
+        result = await populate_metadata_records(
+            db,
+            project_id=body.project_id,
             source_type=body.source_type,
             gcp_project=body.gcp_project,
             bq_dataset=body.bq_dataset,
             table_names=body.table_names,
-            temp_file_keys=resolved_keys,
+            uploaded_tables=body.uploaded_tables,
+            temp_file_key=body.temp_file_key,
+            temp_file_keys=body.temp_file_keys,
             file_names=body.file_names,
             connection_string=body.connection_string,
             pg_schema=body.pg_schema or "public",
@@ -310,16 +293,21 @@ async def proceed_metadata(
             owner_info=owner_map,
             initiated_by=f"{current_user.full_name} <{current_user.email}>",
         )
-        task_id = task.id
-        queued = len(body.table_names) if body.table_names else 0
+        await db.commit()
+    except (ValueError, FileNotFoundError) as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("Could not dispatch metadata task: %s", exc)
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Metadata auto-population failed: {exc}") from exc
 
+    processed = int(result.get("processed", 0))
+    table_count = len(result.get("tables", []))
     return ProceedResponse(
-        task_id=task_id,
-        message="Metadata auto-population queued",
-        queued_records=queued,
+        task_id="sync",
+        message=f"Metadata auto-population completed for {table_count} table{'s' if table_count != 1 else ''}.",
+        queued_records=processed,
+        processed_records=processed,
     )
 
 
