@@ -3,10 +3,12 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import { Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Input } from "@/components/ui/Input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/Table";
 import { formatDate } from "@/lib/utils";
 
 interface DPIAListItem {
@@ -55,124 +57,141 @@ function label(status: string) {
 
 export default function DPIAListPage() {
   const [search, setSearch] = useState("");
-  const [dpiaStatusFilter, setDpiaStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
   const [page, setPage] = useState(1);
 
+  const { data: filtersData } = useQuery<{ years: number[]; categories: string[] }>({
+    queryKey: ["project-filters"],
+    queryFn: () => api.get<{ years: number[]; categories: string[] }>("/projects/filters"),
+  });
+  const yearOptions: number[] = filtersData?.years ?? [];
+
   const { data, isLoading } = useQuery<PaginatedDPIA>({
-    queryKey: ["dpias", dpiaStatusFilter, page],
+    queryKey: ["dpias", search, statusFilter, yearFilter, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "20" });
-      if (dpiaStatusFilter) params.set("status", dpiaStatusFilter);
+      if (search) params.set("search", search);
+      if (statusFilter) params.set("status", statusFilter);
+      if (yearFilter) params.set("year", yearFilter);
       return api.get<PaginatedDPIA>(`/dpia?${params}`);
     },
   });
 
-  const filtered = search
-    ? data?.items.filter((d) =>
-        (d.tracking_id ?? "").toLowerCase().includes(search.toLowerCase()) ||
-        (d.dsr_tracking_id ?? "").toLowerCase().includes(search.toLowerCase()) ||
-        (d.project_code ?? "").toLowerCase().includes(search.toLowerCase()) ||
-        (d.project_name ?? "").toLowerCase().includes(search.toLowerCase()) ||
-        (d.customer_name ?? "").toLowerCase().includes(search.toLowerCase())
-      )
-    : data?.items;
+  function handleSearch(v: string) { setSearch(v); setPage(1); }
+  function handleStatus(v: string) { setStatusFilter(v === "all" ? "" : v); setPage(1); }
+  function handleYear(v: string) { setYearFilter(v === "all" ? "" : v); setPage(1); }
 
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-surface-900">Data Protection Impact Assessment</h1>
-        <p className="text-sm text-surface-500 mt-1">Identify and mitigate privacy risks in data processing activities</p>
+    <div>
+      <div className="page-header">
+        <div>
+          <h1>Data Protection Impact Assessment</h1>
+          <p className="text-sm text-surface-500 mt-0.5">
+            Identify and mitigate privacy risks in data processing activities
+            {data ? ` · ${data.total} record${data.total !== 1 ? "s" : ""}` : ""}
+          </p>
+        </div>
       </div>
 
-      <div className="flex gap-3 flex-wrap">
-        <Input
-          placeholder="Search DPIA ID, DSR ID, project…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-72"
-        />
-        <select
-          value={dpiaStatusFilter}
-          onChange={(e) => { setDpiaStatusFilter(e.target.value); setPage(1); }}
-          className="border border-surface-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
-        >
-          <option value="">All DPIA Statuses</option>
-          {DPIA_STATUS_OPTIONS.map((s) => (
-            <option key={s} value={s}>{label(s)}</option>
-          ))}
-        </select>
-      </div>
-
-      <div className="bg-white rounded-xl shadow-sm border border-surface-200 overflow-auto">
-        <table className="min-w-full divide-y divide-surface-100">
-          <thead className="bg-surface-50">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">DPIA ID</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">DSR ID</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">Project ID</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">Project Name</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">Client</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">DSR Status</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">DPIA Status</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">Sharing End</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-surface-500 uppercase tracking-wider">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-surface-100">
-            {isLoading ? (
-              <tr><td colSpan={9} className="px-4 py-8 text-center text-surface-400">Loading…</td></tr>
-            ) : !filtered?.length ? (
-              <tr><td colSpan={9} className="px-4 py-8 text-center text-surface-400">No assessments found</td></tr>
-            ) : filtered.map((d) => (
-              <tr key={d.id} className="hover:bg-surface-50">
-                <td className="px-4 py-3">
-                  <Link href={`/dpia/${d.id}`} className="font-mono text-sm font-medium text-primary-600 hover:underline">
-                    {d.tracking_id ?? d.id.slice(0, 8)}
-                  </Link>
-                </td>
-                <td className="px-4 py-3">
-                  {d.dsr_tracking_id ? (
-                    <span className="font-mono text-sm text-surface-700">{d.dsr_tracking_id}</span>
-                  ) : (
-                    <span className="text-surface-400 text-sm">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <span className="font-mono text-xs text-surface-500">{d.project_code ?? "—"}</span>
-                </td>
-                <td className="px-4 py-3 text-sm font-medium text-surface-800">{d.project_name ?? "—"}</td>
-                <td className="px-4 py-3 text-sm text-surface-600">{d.customer_name ?? "—"}</td>
-                <td className="px-4 py-3">
-                  {d.dsr_status ? (
-                    <Badge variant={dsrVariant(d.dsr_status)}>{label(d.dsr_status)}</Badge>
-                  ) : (
-                    <span className="text-surface-400 text-sm">—</span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <Badge variant={dpiaVariant(d.status)}>{label(d.status)}</Badge>
-                </td>
-                <td className="px-4 py-3 text-sm text-surface-500">
-                  {d.dsr_sharing_end ? formatDate(d.dsr_sharing_end) : "—"}
-                </td>
-                <td className="px-4 py-3">
-                  <Link href={`/dpia/${d.id}`}>
-                    <Button variant="outline" size="sm">View</Button>
-                  </Link>
-                </td>
-              </tr>
+      {/* Filters */}
+      <div className="flex flex-wrap gap-3 mb-5">
+        <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400 pointer-events-none" />
+          <input className="input-base pl-9" placeholder="Search by DPIA ID, DSR ID or project…"
+            value={search} onChange={(e) => handleSearch(e.target.value)} />
+        </div>
+        <Select value={statusFilter || "all"} onValueChange={handleStatus}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="All DPIA Statuses" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All DPIA Statuses</SelectItem>
+            {DPIA_STATUS_OPTIONS.map((s) => (
+              <SelectItem key={s} value={s}>{label(s)}</SelectItem>
             ))}
-          </tbody>
-        </table>
+          </SelectContent>
+        </Select>
+        <Select value={yearFilter || "all"} onValueChange={handleYear}>
+          <SelectTrigger className="w-36"><SelectValue placeholder="All Years" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Years</SelectItem>
+            {yearOptions.map((y) => (
+              <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
+
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>DPIA ID</TableHead>
+            <TableHead>DSR ID</TableHead>
+            <TableHead>Project ID</TableHead>
+            <TableHead>Project Name</TableHead>
+            <TableHead>Client</TableHead>
+            <TableHead>DSR Status</TableHead>
+            <TableHead>DPIA Status</TableHead>
+            <TableHead>Sharing End</TableHead>
+            <TableHead className="w-24">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {isLoading ? (
+            <TableRow><TableCell colSpan={9} className="text-center py-10 text-surface-400">Loading…</TableCell></TableRow>
+          ) : !data?.items.length ? (
+            <TableRow>
+              <TableCell colSpan={9} className="text-center py-12 text-surface-400">
+                <p className="font-medium">No assessments found</p>
+                <p className="text-sm mt-1">DPIA records will appear here once created.</p>
+              </TableCell>
+            </TableRow>
+          ) : data.items.map((d) => (
+            <TableRow key={d.id}>
+              <TableCell>
+                <Link href={`/dpia/${d.id}`} className="font-mono text-sm font-medium text-primary-700 hover:underline">
+                  {d.tracking_id ?? d.id.slice(0, 8)}
+                </Link>
+              </TableCell>
+              <TableCell className="font-mono text-sm text-surface-700">
+                {d.dsr_tracking_id ?? <span className="text-surface-300">—</span>}
+              </TableCell>
+              <TableCell className="font-mono text-xs text-surface-500">
+                {d.project_code ?? <span className="text-surface-300">—</span>}
+              </TableCell>
+              <TableCell className="max-w-[160px] truncate">{d.project_name ?? "—"}</TableCell>
+              <TableCell className="max-w-[140px] truncate text-surface-600">{d.customer_name ?? "—"}</TableCell>
+              <TableCell>
+                {d.dsr_status
+                  ? <Badge variant={dsrVariant(d.dsr_status)}>{label(d.dsr_status)}</Badge>
+                  : <span className="text-surface-300">—</span>
+                }
+              </TableCell>
+              <TableCell>
+                <Badge variant={dpiaVariant(d.status)}>{label(d.status)}</Badge>
+              </TableCell>
+              <TableCell className="text-surface-500">
+                {d.dsr_sharing_end ? formatDate(d.dsr_sharing_end) : <span className="text-surface-300">—</span>}
+              </TableCell>
+              <TableCell>
+                <Link href={`/dpia/${d.id}`}>
+                  <Button size="sm" variant="outline">View</Button>
+                </Link>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
 
       {data && data.pages > 1 && (
-        <div className="flex items-center justify-between text-sm text-surface-600">
-          <span>{data.total} total assessments</span>
-          <div className="flex gap-2">
-            <Button variant="outline" size="sm" disabled={page === 1} onClick={() => setPage(page - 1)}>Previous</Button>
-            <span className="px-3 py-1">Page {page} of {data.pages}</span>
-            <Button variant="outline" size="sm" disabled={page === data.pages} onClick={() => setPage(page + 1)}>Next</Button>
+        <div className="flex items-center justify-between mt-4">
+          <p className="text-sm text-surface-500">Page {data.page} of {data.pages} · {data.total} total</p>
+          <div className="flex gap-1">
+            <Button size="icon" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button size="icon" variant="outline" disabled={page >= data.pages} onClick={() => setPage(p => p + 1)}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       )}

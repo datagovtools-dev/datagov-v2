@@ -99,6 +99,7 @@ async def list_dpias(
     _: Annotated[User, Depends(require_permission("dpia:read"))],
     project_id: uuid.UUID | None = Query(default=None),
     status_filter: str = Query(default="", alias="status"),
+    year: int | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> PaginatedDPIA:
@@ -119,6 +120,8 @@ async def list_dpias(
         base = base.where(DPIARecord.project_id == project_id)
     if status_filter:
         base = base.where(DPIARecord.status == status_filter)
+    if year is not None:
+        base = base.where(extract("year", DPIARecord.created_at) == year)
     total = (await db.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
 
     q = (
@@ -135,6 +138,8 @@ async def list_dpias(
         q = q.where(DPIARecord.project_id == project_id)
     if status_filter:
         q = q.where(DPIARecord.status == status_filter)
+    if year is not None:
+        q = q.where(extract("year", DPIARecord.created_at) == year)
 
     rows = (await db.execute(
         q.order_by(DPIARecord.created_at.desc())

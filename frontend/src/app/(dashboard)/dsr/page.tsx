@@ -36,9 +36,6 @@ interface PaginatedDSR {
 
 const STATUS_OPTIONS = ["draft", "submitted", "under_review", "approved", "rejected", "executed", "archived"];
 
-const CURRENT_YEAR = new Date().getFullYear();
-const YEAR_OPTIONS = Array.from({ length: CURRENT_YEAR - 2023 }, (_, i) => 2024 + i);
-
 function statusVariant(status: string): "draft" | "pending" | "in-review" | "approved" | "rejected" | "done" | "default" {
   const map: Record<string, "draft" | "pending" | "in-review" | "approved" | "rejected" | "done" | "default"> = {
     draft: "draft", submitted: "pending", under_review: "in-review",
@@ -52,6 +49,12 @@ export default function DSRListPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [yearFilter, setYearFilter] = useState("");
   const [page, setPage] = useState(1);
+
+  const { data: filtersData } = useQuery<{ years: number[]; categories: string[] }>({
+    queryKey: ["project-filters"],
+    queryFn: () => api.get<{ years: number[]; categories: string[] }>("/projects/filters"),
+  });
+  const yearOptions: number[] = filtersData?.years ?? [];
 
   const { data, isLoading } = useQuery<PaginatedDSR>({
     queryKey: ["dsrs", search, statusFilter, yearFilter, page],
@@ -91,9 +94,9 @@ export default function DSRListPage() {
             value={search} onChange={(e) => handleSearch(e.target.value)} />
         </div>
         <Select value={statusFilter || "all"} onValueChange={handleStatus}>
-          <SelectTrigger className="w-44"><SelectValue placeholder="All Statuses" /></SelectTrigger>
+          <SelectTrigger className="w-48"><SelectValue placeholder="All DSR Statuses" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="all">All DSR Statuses</SelectItem>
             {STATUS_OPTIONS.map((s) => (
               <SelectItem key={s} value={s}>{s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</SelectItem>
             ))}
@@ -103,7 +106,7 @@ export default function DSRListPage() {
           <SelectTrigger className="w-36"><SelectValue placeholder="All Years" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Years</SelectItem>
-            {YEAR_OPTIONS.map((y) => (
+            {yearOptions.map((y) => (
               <SelectItem key={y} value={String(y)}>{y}</SelectItem>
             ))}
           </SelectContent>

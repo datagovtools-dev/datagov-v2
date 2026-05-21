@@ -3,13 +3,13 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, Pencil, Save, X, Send } from "lucide-react";
+import { ArrowLeft, Download, Lock, Pencil, Save, X, Send } from "lucide-react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { formatDate, formatDateTime } from "@/lib/utils";
-import { printA4, pdfField, pdfBadge } from "@/lib/exportPdf";
+import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 
 // ── Template ──────────────────────────────────────────────────────────────────
 
@@ -315,8 +315,28 @@ function SignaturePad({ value, onSign, onClear, disabled }: {
   value: string | null; onSign: (sig: string) => void; onClear: () => void; disabled?: boolean;
 }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const drawing = React.useRef(false);
   const lastPos = React.useRef<{ x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = React.useState(false);
+
+  function loadImageFile(file: File) {
+    if (!file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => onSign(ev.target!.result as string);
+    reader.readAsDataURL(file);
+  }
+  function handleDragOver(e: React.DragEvent) { e.preventDefault(); setIsDragging(true); }
+  function handleDragLeave(e: React.DragEvent) { e.preventDefault(); setIsDragging(false); }
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault(); setIsDragging(false);
+    const file = e.dataTransfer.files[0];
+    if (file) loadImageFile(file);
+  }
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (file) { loadImageFile(file); e.target.value = ""; }
+  }
 
   function getPos(e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) {
     const rect = canvasRef.current!.getBoundingClientRect();
@@ -372,27 +392,51 @@ function SignaturePad({ value, onSign, onClear, disabled }: {
   }
 
   return (
-    <div className="relative border border-surface-300 rounded-md bg-white overflow-hidden cursor-crosshair h-14">
-      <span className="absolute inset-0 flex items-center justify-center text-xs text-surface-300 pointer-events-none select-none">
-        Draw signature here
-      </span>
-      <canvas ref={canvasRef} width={500} height={56} className="w-full h-full touch-none"
-        onMouseDown={onMouseDown} onMouseMove={stroke} onMouseUp={endDraw} onMouseLeave={endDraw}
-        onTouchStart={onTouchStart} onTouchMove={stroke} onTouchEnd={endDraw}
-      />
+    <div>
+      <div
+        className={`relative border rounded-md bg-white overflow-hidden h-14 transition-colors ${
+          isDragging
+            ? "border-primary-400 bg-primary-50 cursor-copy"
+            : "border-surface-300 cursor-crosshair"
+        }`}
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <span className="absolute inset-0 flex items-center justify-center text-xs pointer-events-none select-none">
+          {isDragging
+            ? <span className="text-primary-500 font-medium">Drop image here</span>
+            : <span className="text-surface-300">Draw signature here</span>
+          }
+        </span>
+        <canvas ref={canvasRef} width={500} height={56}
+          className={`w-full h-full touch-none ${isDragging ? "pointer-events-none" : ""}`}
+          onMouseDown={onMouseDown} onMouseMove={stroke} onMouseUp={endDraw} onMouseLeave={endDraw}
+          onTouchStart={onTouchStart} onTouchMove={stroke} onTouchEnd={endDraw}
+        />
+      </div>
+      <div className="flex items-center gap-1 mt-1">
+        <span className="text-xs text-surface-400">or</span>
+        <button type="button" onClick={() => fileInputRef.current?.click()}
+          className="text-xs text-primary-600 hover:underline">
+          upload signature image
+        </button>
+        <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
+      </div>
     </div>
   );
 }
 
 // ── SignOff ───────────────────────────────────────────────────────────────────
 
-function SignOffSection({ value, onChange, disabled, showErrors }: {
+function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalStep }: {
   value: Record<string, string>;
   onChange: (field: string, val: string) => void;
   disabled?: boolean;
   showErrors?: boolean;
+  activeApprovalStep?: number;
 }) {
-  function err(f: string) { return showErrors && !value[f]?.trim() ? "border-red-500 ring-1 ring-red-400" : ""; }
   function handleSign(prefix: "prepared" | "acknowledged", sig: string) {
     onChange(`${prefix}_signature`, sig);
     onChange(`${prefix}_date`, new Date().toISOString().split("T")[0]);
@@ -425,52 +469,58 @@ function SignOffSection({ value, onChange, disabled, showErrors }: {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Prepared By */}
+        {/* Prepared By — DM, available at Step 2 */}
         <div className="space-y-2">
-          <div>
-            <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Prepared By</p>
-            <p className="text-xs text-surface-500 font-normal">Delivery Manager</p>
-          </div>
-          <input type="text" placeholder="Full name *" value={value.prepared_by ?? ""} disabled={disabled}
-            onChange={(e) => onChange("prepared_by", e.target.value)}
-            className={`input-base text-sm w-full ${err("prepared_by")}`} />
-          <input type="text" placeholder="Position / Organization *" value={value.prepared_position ?? ""} disabled={disabled}
-            onChange={(e) => onChange("prepared_position", e.target.value)}
-            className={`input-base text-sm w-full ${err("prepared_position")}`} />
+          <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">
+            Prepared By{" "}
+            <span className="text-primary-500 normal-case font-normal">(auto-filled · Delivery Manager)</span>
+          </p>
+          <input type="text" placeholder="Full name" value={value.prepared_by ?? ""} disabled
+            className="input-base text-sm w-full bg-surface-50 text-surface-600" />
+          <input type="text" placeholder="Position" value={value.prepared_position ?? ""} disabled
+            className="input-base text-sm w-full bg-surface-50 text-surface-600" />
           <div>
             <p className="text-xs text-surface-500 mb-1">Signature</p>
             <SignaturePad
               value={value.prepared_signature || null}
               onSign={(sig) => handleSign("prepared", sig)}
               onClear={() => handleClear("prepared")}
-              disabled={disabled}
+              disabled={disabled || activeApprovalStep !== 2}
             />
+            {!disabled && activeApprovalStep !== 2 && (
+              <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
+                <Lock className="h-3 w-3" /> Available at DM Sign-off step
+              </p>
+            )}
           </div>
           {value.prepared_date && (
             <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.prepared_date}</span></p>
           )}
         </div>
 
-        {/* Acknowledged By */}
+        {/* Acknowledged By — SME, available at Step 3 */}
         <div className="space-y-2">
-          <div>
-            <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Acknowledged By</p>
-            <p className="text-xs text-surface-500 font-normal">Subject Matter Expert (SME)</p>
-          </div>
-          <input type="text" placeholder="Full name *" value={value.acknowledged_by ?? ""} disabled={disabled}
-            onChange={(e) => onChange("acknowledged_by", e.target.value)}
-            className={`input-base text-sm w-full ${err("acknowledged_by")}`} />
-          <input type="text" placeholder="Position / Organization *" value={value.acknowledged_position ?? ""} disabled={disabled}
-            onChange={(e) => onChange("acknowledged_position", e.target.value)}
-            className={`input-base text-sm w-full ${err("acknowledged_position")}`} />
+          <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">
+            Acknowledged By{" "}
+            <span className="text-primary-500 normal-case font-normal">(auto-filled · Project SME)</span>
+          </p>
+          <input type="text" placeholder="Full name" value={value.acknowledged_by ?? ""} disabled
+            className="input-base text-sm w-full bg-surface-50 text-surface-600" />
+          <input type="text" placeholder="Position" value={value.acknowledged_position ?? ""} disabled
+            className="input-base text-sm w-full bg-surface-50 text-surface-600" />
           <div>
             <p className="text-xs text-surface-500 mb-1">Signature</p>
             <SignaturePad
               value={value.acknowledged_signature || null}
               onSign={(sig) => handleSign("acknowledged", sig)}
               onClear={() => handleClear("acknowledged")}
-              disabled={disabled}
+              disabled={disabled || activeApprovalStep !== 3}
             />
+            {!disabled && activeApprovalStep !== 3 && (
+              <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
+                <Lock className="h-3 w-3" /> Available at SME Sign-off step
+              </p>
+            )}
           </div>
           {value.acknowledged_date && (
             <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.acknowledged_date}</span></p>
@@ -693,8 +743,8 @@ export default function AIChecklistDetailPage() {
     const body = `
       <h1 class="doc-title">GEN AI Usage Assessment Checklist</h1>
       <div class="doc-subtitle">
-        ${dsr.project_name} &nbsp;·&nbsp; ${dsr.tracking_id}
-        ${isApproved ? "&nbsp;" + pdfBadge("Approved", "approved") : "&nbsp;" + pdfBadge("In Progress", "draft")}
+        ${dsr.tracking_id.replace("DSR", "AICK")} &nbsp;·&nbsp; ${dsr.project_name} &nbsp;·&nbsp; ${dsr.tracking_id.split("-")[1]}
+        &nbsp;·&nbsp; ${pdfStatusBadge(isApproved ? "approved" : checklist?.status ?? "draft")}
       </div>
 
       <div class="section">
@@ -1004,6 +1054,7 @@ export default function AIChecklistDetailPage() {
               onChange={setSignOff}
               disabled={!editing}
               showErrors={showErrors}
+              activeApprovalStep={aickApprovals.find(a => a.status === "requested")?.step_order}
             />
           </CardContent>
         </Card>

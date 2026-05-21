@@ -62,8 +62,9 @@ export default function MetadataHomePage() {
     queryFn: () => api.get("/metadata/stats"),
   });
 
-  const { data: tables, isLoading: loadingTables, refetch: refetchTables } = useQuery<SourceTableInfo[]>({
-    queryKey: ["meta-tables", projectId, sourceType, gcpProject, bqDataset, connectionString, pgSchema],
+  // Live discovery query — only used when Discover Tables is clicked (GCP/PG)
+  const { refetch: refetchTables } = useQuery<SourceTableInfo[]>({
+    queryKey: ["meta-tables-discover", projectId, sourceType, gcpProject, bqDataset, connectionString, pgSchema],
     queryFn: () => {
       const p = new URLSearchParams({ source_type: sourceType });
       if (gcpProject) p.set("gcp_project", gcpProject);
@@ -72,6 +73,13 @@ export default function MetadataHomePage() {
       if (pgSchema) p.set("pg_schema", pgSchema);
       return api.get<SourceTableInfo[]>(`/metadata/tables/${projectId}?${p}`);
     },
+    enabled: false,
+  });
+
+  // Source Tables section — always shows ALL documented tables for the project across all source types
+  const { data: projectTables, isLoading: loadingAllTables } = useQuery<SourceTableInfo[]>({
+    queryKey: ["meta-project-tables", projectId],
+    queryFn: () => api.get<SourceTableInfo[]>(`/metadata/tables/${projectId}`),
     enabled: !!projectId,
   });
 
@@ -163,7 +171,8 @@ export default function MetadataHomePage() {
 
   const [statusFilter, setStatusFilter] = useState<"all" | "documented" | "undocumented">("all");
 
-  const allTables = sourceType === "excel" ? excelSheets : (tables ?? []);
+  // Source Tables: if a file was just uploaded show fresh sheets, otherwise show all DB tables for the project
+  const allTables = excelSheets.length > 0 ? excelSheets : (projectTables ?? []);
   const displayTables = statusFilter === "all" ? allTables
     : statusFilter === "documented" ? allTables.filter((t) => t.documented)
     : allTables.filter((t) => !t.documented);
@@ -343,7 +352,7 @@ export default function MetadataHomePage() {
           <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
             <div className="flex items-center gap-3">
               <h2 className="font-semibold text-surface-800">Source Tables</h2>
-              {(loadingTables || uploading) && <span className="text-xs text-surface-400">{uploading ? "Reading sheets…" : "Loading…"}</span>}
+              {(loadingAllTables || uploading) && <span className="text-xs text-surface-400">{uploading ? "Reading sheets…" : "Loading…"}</span>}
               <div className="flex gap-1">
                 {(["all", "undocumented", "documented"] as const).map((f) => (
                   <button key={f} onClick={() => setStatusFilter(f)}
@@ -400,10 +409,10 @@ export default function MetadataHomePage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {!displayTables.length && !loadingTables && !uploading ? (
+              {!displayTables.length && !loadingAllTables && !uploading ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-10 text-surface-400">
-                    {sourceType === "excel" ? "Upload an Excel file above to discover sheets" : "No tables found — configure source above and click Discover Tables"}
+                    {sourceType === "excel" && excelSheets.length === 0 ? "Upload an Excel file above to add new sheets, or no tables documented yet" : "No tables found"}
                   </TableCell>
                 </TableRow>
               ) : displayTables.map((t) => (

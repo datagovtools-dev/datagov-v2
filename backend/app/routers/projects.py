@@ -27,6 +27,8 @@ async def list_projects(
     search: str = Query(default="", max_length=100),
     year: int = Query(default=0),
     category: str = Query(default=""),
+    client: str = Query(default=""),
+    is_monetized: str = Query(default=""),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> PaginatedProjects:
@@ -41,6 +43,10 @@ async def list_projects(
         q = q.where(Project.project_year == year)
     if category:
         q = q.where(Project.project_category == category)
+    if client:
+        q = q.where(Project.customer_name == client)
+    if is_monetized in ("true", "false"):
+        q = q.where(Project.is_monetized == (is_monetized == "true"))
 
     count_q = select(func.count()).select_from(q.subquery())
     total = (await db.execute(count_q)).scalar_one()
@@ -70,7 +76,11 @@ async def get_filters(
         select(Project.project_category).distinct().order_by(Project.project_category)
     )
     categories = [r.project_category for r in cat_rows]
-    return ProjectFiltersResponse(years=years, categories=categories)
+    client_rows = await db.execute(
+        select(Project.customer_name).distinct().order_by(Project.customer_name)
+    )
+    clients = [r.customer_name for r in client_rows if r.customer_name]
+    return ProjectFiltersResponse(years=years, categories=categories, clients=clients)
 
 
 @router.get("/{project_id}", response_model=ProjectOut)

@@ -229,20 +229,25 @@ async def list_source_tables(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"GCP error: {exc}") from exc
     else:
-        # Fallback: return tables already in DB for this project
-        for dt in documented_tables:
-            recs_result = await db.execute(
-                select(MetadataRecord)
-                .where(MetadataRecord.project_id == project_id,
-                       MetadataRecord.data_domain_table == dt)
+        # Fallback: return all documented tables for this project across all source types
+        result = await db.execute(
+            select(
+                MetadataRecord.data_domain_table,
+                MetadataRecord.source_type,
+                func.count(MetadataRecord.id).label("col_count"),
+                func.max(MetadataRecord.source_row_count).label("row_count"),
             )
-            recs = recs_result.scalars().all()
-            cols = len(recs)
-            row_count = next((r.source_row_count for r in recs if r.source_row_count is not None), None)
-            actual_source_type = next((r.source_type for r in recs if r.source_type), "db")
+            .where(MetadataRecord.project_id == project_id)
+            .group_by(MetadataRecord.data_domain_table, MetadataRecord.source_type)
+            .order_by(MetadataRecord.data_domain_table)
+        )
+        for row in result.fetchall():
             tables.append(SourceTableInfo(
-                table_name=dt, column_count=cols, documented=True, source_type=actual_source_type,
-                row_count=row_count,
+                table_name=row.data_domain_table,
+                column_count=row.col_count,
+                documented=True,
+                source_type=row.source_type or "db",
+                row_count=row.row_count,
             ))
 
     return tables

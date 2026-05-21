@@ -3,13 +3,14 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Pencil, Save, Send, X } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Save, Send, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { formatDate } from "@/lib/utils";
+import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -362,6 +363,119 @@ export default function DPIADetailPage() {
     saveMutation.mutate(payload);
   }
 
+  function handleExportPDF() {
+    if (!dpia) return;
+
+    const STEP_LABELS: Record<number, string> = { 1: "PIC Data Compliance Approval", 2: "DM Approval" };
+
+    const sharingEnd = dsrForDpia?.project_end_date ?? dsrForDpia?.duration_end ?? null;
+    const aickId = dsrForDpia?.ai_checklist ? dsrForDpia.tracking_id.replace("DSR", "AICK") : null;
+    const projectInfoHtml = `<div class="section">
+      <div class="section-title">Project Information</div>
+      <div class="grid2">
+        ${pdfField("Project ID", project?.project_code ?? dpia.project_code)}
+        ${pdfField("PII Flag", piiLabel)}
+        ${pdfField("DSR ID", dsrForDpia?.tracking_id)}
+        ${pdfField("AICK ID", aickId)}
+        ${pdfField("Project Name", project?.project_name ?? dpia.project_name)}
+        ${pdfField("Customer / Client", project?.customer_name ?? dpia.customer_name)}
+        ${pdfField("Sharing Start Date", dsrForDpia?.duration_start ? formatDate(dsrForDpia.duration_start) : null)}
+        ${pdfField("Sharing End Date", sharingEnd ? formatDate(sharingEnd) : null)}
+      </div>
+    </div>`;
+
+    const piiList = piiCats.length > 0
+      ? `<ul style="list-style:disc;padding-left:16px;font-size:9pt;color:#1a202c;column-count:2;column-gap:16px">${piiCats.map((c: string) => `<li>${c}</li>`).join("")}</ul>`
+      : `<span style="color:#a0aec0">No data categories selected.</span>`;
+    const piiBg = hasHighPii ? "background:#FED7D7;color:#742A2A" : hasPii ? "background:#FEFCBF;color:#744210" : "background:#C6F6D5;color:#22543D";
+    const dataCatHtml = `<div class="section">
+      <div class="section-title">Data Categories Involved</div>
+      <div style="margin-bottom:6px"><span style="font-size:8pt;font-weight:600;padding:2px 10px;border-radius:9999px;${piiBg}">${piiLabel}</span></div>
+      ${piiList}
+    </div>`;
+
+    const regHtml = `<div class="section">
+      <div class="section-title">Regulatory References</div>
+      <p style="font-size:8pt;color:#718096;margin-bottom:6px">Based on Undang-Undang Pelindungan Data Pribadi (UU PDP) No. 27/2022:</p>
+      <table><thead><tr><th>Pasal</th><th>Description</th></tr></thead><tbody>
+        ${REGULATORY_REFS.map((r) => `<tr><td style="font-weight:600;color:#1B2A4A;white-space:nowrap">${r.pasal}</td><td>${r.desc}</td></tr>`).join("")}
+      </tbody></table>
+    </div>`;
+
+    const govTablesHtml = GOVERNANCE_SECTIONS.map(({ key, label, code }) => {
+      const items = (dpia.governance_json?.[key] ?? []) as GovernanceItem[];
+      const rows = items.map((item) => {
+        const statusLabel: Record<string, string> = { yes: "Yes", no: "No", in_progress: "In Progress", na: "N/A", "": "—" };
+        const responsible = item.responsible === "Internal" ? "ADI-DI" : (project?.customer_name ?? dpia.customer_name ?? "Client");
+        return `<tr><td>${item.item}</td><td>${responsible}</td><td>${statusLabel[item.status] ?? item.status}</td><td>${item.remarks || "—"}</td></tr>`;
+      }).join("");
+      return `<p style="font-size:9pt;font-weight:600;margin:10px 0 4px">[${code}] ${label}</p>
+        <table style="table-layout:fixed;width:100%">
+          <colgroup><col style="width:42%"><col style="width:18%"><col style="width:12%"><col style="width:28%"></colgroup>
+          <thead><tr><th>Activity</th><th>Responsible</th><th>Status</th><th>Remarks</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }).join("");
+    const govHtml = `<div class="section"><div class="section-title">Governance Activities</div>${govTablesHtml}</div>`;
+
+    const riskHtml = `<div class="section">
+      <div class="section-title">Risk Assessment</div>
+      <div class="grid2">${pdfField("Risk Description", dpia.risk_description, true)}</div>
+    </div>`;
+
+    const mitigationHtml = `<div class="section">
+      <div class="section-title">Mitigation &amp; Residual Risk</div>
+      <div class="grid2">
+        ${pdfField("Mitigation Measures", dpia.mitigation_measures, true)}
+        ${pdfField("Residual Risk Level", dpia.residual_risk)}
+      </div>
+    </div>`;
+
+    const timelineItems = [...(dpia.approvals ?? [])].sort((a, b) => a.step_order - b.step_order).map((step) => {
+      const statusBadge =
+        step.status === "approved" ? pdfBadge("Approved", "approved") :
+        step.status === "rejected" ? pdfBadge("Rejected", "rejected") :
+        pdfBadge(step.status === "pending" ? "Not Yet" : "Requested", "pending");
+      const actioned = step.actioned_at
+        ? `<div class="tl-meta">${new Date(step.actioned_at).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</div>`
+        : "";
+      return `<li><span class="tl-step">${step.step_order}.</span><div>
+        <div class="tl-label">${STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}</div>
+        <div class="tl-meta">${step.approver_name || "—"}</div>
+        <div style="margin-top:2px">${statusBadge}</div>${actioned}
+      </div></li>`;
+    }).join("");
+    const timelineHtml = `<div class="section">
+      <div class="section-title">Approval Timeline</div>
+      <ul class="timeline">${timelineItems}</ul>
+    </div>`;
+
+    const dpiaYear = dpia.tracking_id?.split("-")[1] ?? String(new Date().getFullYear());
+    const piiBadgeHtml = hasHighPii
+      ? "&nbsp;·&nbsp;" + pdfBadge("High PII Risk", "danger")
+      : hasPii
+      ? "&nbsp;·&nbsp;" + pdfBadge("Contains PII", "warning")
+      : "";
+
+    const body = `
+      <h1 class="doc-title">Data Protection Impact Assessment</h1>
+      <div class="doc-subtitle">
+        ${dpia.tracking_id ?? "DPIA"} &nbsp;·&nbsp; ${dpia.process_name} &nbsp;·&nbsp; ${dpiaYear}
+        &nbsp;·&nbsp; ${pdfStatusBadge(dpia.status)}
+        ${piiBadgeHtml}
+        &nbsp;·&nbsp; v${dpia.version}
+      </div>
+      ${projectInfoHtml}
+      ${dataCatHtml}
+      ${timelineHtml}
+      ${regHtml}
+      ${govHtml}
+      ${riskHtml}
+      ${mitigationHtml}
+    `;
+    printA4(`${dpia.tracking_id ?? "DPIA"} — DPIA`, body);
+  }
+
   if (isLoading) return <div className="p-6 text-surface-400">Loading…</div>;
   if (!dpia) return <div className="p-6 text-red-500">DPIA not found</div>;
 
@@ -409,6 +523,9 @@ export default function DPIADetailPage() {
               <p className="text-sm text-surface-500">Data Protection Impact Assessment</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
+              <Button variant="outline" size="sm" onClick={handleExportPDF}>
+                <Download size={14} className="mr-1.5" />Export PDF
+              </Button>
               {dpia.status === "draft" && (
                 editing ? (
                   <>

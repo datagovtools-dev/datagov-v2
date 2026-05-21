@@ -125,8 +125,8 @@ export default function DashboardPage() {
           <CardContent className="flex flex-col gap-2">
             {QUICK_ACTIONS.map(({ label, href, icon: Icon }) => (
               <Link key={href} href={href} className="w-full">
-                <Button variant="outline" className="justify-start gap-3 h-10 w-full">
-                  <Icon className="h-4 w-4 text-primary-500" />{label}
+                <Button variant="outline" className="justify-start gap-3 h-auto min-h-10 w-full text-left items-start py-2">
+                  <Icon className="h-4 w-4 text-primary-500 mt-0.5 shrink-0" />{label}
                 </Button>
               </Link>
             ))}

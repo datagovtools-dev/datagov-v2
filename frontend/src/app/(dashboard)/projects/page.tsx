@@ -22,12 +22,14 @@ interface ProjectItem {
   created_at: string;
 }
 interface PaginatedProjects { items: ProjectItem[]; total: number; page: number; page_size: number; pages: number }
-interface Filters { years: number[]; categories: string[] }
+interface Filters { years: number[]; categories: string[]; clients: string[] }
 
 export default function ProjectsPage() {
   const [search, setSearch] = React.useState("");
-  const [year, setYear] = React.useState("");
+  const [client, setClient] = React.useState("");
   const [category, setCategory] = React.useState("");
+  const [year, setYear] = React.useState("");
+  const [monetized, setMonetized] = React.useState("");
   const [page, setPage] = React.useState(1);
 
   const { data: filters } = useQuery<Filters>({
@@ -39,18 +41,22 @@ export default function ProjectsPage() {
     ...(search ? { search } : {}),
     ...(year ? { year } : {}),
     ...(category ? { category } : {}),
+    ...(client ? { client } : {}),
+    ...(monetized ? { is_monetized: monetized } : {}),
     page: String(page),
     page_size: "20",
   });
 
   const { data, isLoading } = useQuery<PaginatedProjects>({
-    queryKey: ["projects", search, year, category, page],
+    queryKey: ["projects", search, year, category, client, monetized, page],
     queryFn: () => api.get<PaginatedProjects>(`/projects?${params}`),
   });
 
   function handleSearch(v: string) { setSearch(v); setPage(1); }
-  function handleYear(v: string) { setYear(v === "all" ? "" : v); setPage(1); }
+  function handleClient(v: string) { setClient(v === "all" ? "" : v); setPage(1); }
   function handleCategory(v: string) { setCategory(v === "all" ? "" : v); setPage(1); }
+  function handleYear(v: string) { setYear(v === "all" ? "" : v); setPage(1); }
+  function handleMonetized(v: string) { setMonetized(v === "all" ? "" : v); setPage(1); }
 
   return (
     <div>
@@ -74,18 +80,33 @@ export default function ProjectsPage() {
           <input className="input-base pl-9" placeholder="Search by project, client or project ID…"
             value={search} onChange={e => handleSearch(e.target.value)} />
         </div>
-        <Select value={year || "all"} onValueChange={handleYear}>
-          <SelectTrigger className="w-32"><SelectValue placeholder="Year" /></SelectTrigger>
+        <Select value={client || "all"} onValueChange={handleClient}>
+          <SelectTrigger className="w-48"><SelectValue placeholder="All Clients" /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Years</SelectItem>
-            {filters?.years.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
+            <SelectItem value="all">All Clients</SelectItem>
+            {(filters?.clients ?? [] as string[]).map((c: string) => <SelectItem key={c} value={c}>{c}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={category || "all"} onValueChange={handleCategory}>
-          <SelectTrigger className="w-44"><SelectValue placeholder="Category" /></SelectTrigger>
+          <SelectTrigger className="w-44"><SelectValue placeholder="All Categories" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Categories</SelectItem>
             {(filters?.categories ?? []).map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={year || "all"} onValueChange={handleYear}>
+          <SelectTrigger className="w-32"><SelectValue placeholder="All Years" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Years</SelectItem>
+            {(filters?.years ?? [] as number[]).map((y: number) => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Select value={monetized || "all"} onValueChange={handleMonetized}>
+          <SelectTrigger className="w-44"><SelectValue placeholder="All Monetized" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Monetized</SelectItem>
+            <SelectItem value="true">Monetized</SelectItem>
+            <SelectItem value="false">Not Monetized</SelectItem>
           </SelectContent>
         </Select>
       </div>

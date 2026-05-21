@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { formatDate, formatDateTime } from "@/lib/utils";
-import { printA4, pdfField, pdfBadge } from "@/lib/exportPdf";
+import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -794,10 +794,10 @@ export default function DSRDetailPage() {
     </div>`;
 
     const body = `
-      <h1 class="doc-title">${dsr.tracking_id} — Data Sharing Request</h1>
+      <h1 class="doc-title">Data Sharing Request</h1>
       <div class="doc-subtitle">
-        ${dsr.project_name} &nbsp;·&nbsp;
-        Status: ${isSigned ? pdfBadge("Signed & Locked", "approved") : pdfBadge(dsr.status.replace(/_/g, " "), "draft")}
+        ${dsr.tracking_id} &nbsp;·&nbsp; ${dsr.project_name} &nbsp;·&nbsp; ${dsr.tracking_id.split("-")[1]}
+        &nbsp;·&nbsp; ${pdfStatusBadge(dsr.status, isSigned)}
         ${dsr.is_ai_use ? "&nbsp;" + pdfBadge("AI Use", "ai") : ""}
       </div>
 

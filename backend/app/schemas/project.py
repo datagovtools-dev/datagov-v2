@@ -88,6 +88,7 @@ class ProjectListItem(BaseModel):
 class ProjectFiltersResponse(BaseModel):
     years: list[int]
     categories: list[str]
+    clients: list[str]
 
 
 class PaginatedProjects(BaseModel):

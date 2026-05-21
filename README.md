@@ -149,10 +149,40 @@ Default admin login:
 - **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names matching the UI; Excel export inserts 7 project-level columns
 - **Data Steward & Data Owner** — assignable per project via free-text name + email; surfaced in the Metadata Attributes info strip and all exports
 - **RBAC** — role-based access control enforced on both frontend and backend
-- **PDF export** — export any DSR, AI Checklist, DPIA, or Metadata report to a formatted PDF
+- **PDF export** — export any DSR, AI Checklist, DPIA, or Metadata report to a formatted PDF; all document PDFs share a standardised header/subtitle format with colour-coded status and flag badges
+- **Advanced overview filters** — DSR, DPIA, AI Checklist, and Projects overview pages have module-specific status filters and dynamic year filters; Projects additionally filters by Client, Category, and Monetized flag
 - **Audit trail** — all changes logged with user, timestamp, and action
 - **Notification system** — in-app notifications for approval actions and status changes
 - **Data Quality checks** — automated DQ profiling against BigQuery, PostgreSQL, or Supabase
+
+---
+
+## Recent Updates (2026-05-21)
+
+### Filtering & Overview Pages
+- **DSR overview** — Status filter renamed to "All DSR Statuses"; Year filter is now dynamic (sourced from distinct project years in the database)
+- **AI Checklist overview** — Status filter uses checklist-specific values ("All AI Checklist Statuses"): In Progress, Pending Sign-Off, Completed & Signed; backend `checklist_status` query param maps to SQL conditions on `validated_at` and DSR status; dynamic Year filter
+- **DPIA overview** — Full page rewrite matching DSR/AI Checklist style: paginated table, "All DPIA Statuses" filter, dynamic Year filter, chevron pagination
+- **Projects overview** — Four new filter dropdowns: All Clients · All Categories · All Years · All Monetized; backend adds `client` and `is_monetized` query params; `ProjectFiltersResponse` extended with `clients` list
+
+### Export PDF — DPIA Detail Page
+- Export PDF button added to DPIA detail page (matching DSR and AI Checklist)
+- Sections in UI order: Project Information → Data Categories → Approval Timeline → Regulatory References → Governance Activities (A–D) → Risk Assessment → Mitigation & Residual Risk
+- Governance tables A–D use `table-layout:fixed` with uniform `colgroup` column widths (42 % Activity / 18 % Responsible / 12 % Status / 28 % Remarks)
+
+### PDF Header Standardisation
+- All document PDFs (DSR, DPIA, AI Checklist) now use a consistent subtitle format: `[Tracking ID] · [Project Name] · [Year] · [Status badge] · [flags] · v[version]`
+- Document h1 is the document type name only (tracking ID moved to subtitle)
+- DSR adds AI Use flag; DPIA adds Contains PII flag; status badges are colour-coded (approved/review/warning/danger/draft)
+- New `pdfStatusBadge()` helper and badge types (`warning`, `review`, `danger`) added to `exportPdf.ts`
+
+### Dashboard
+- Quick Actions buttons — text is now left-aligned (was centred)
+
+### Metadata Management — Source Logic Rework
+- **Source Tables section** always shows **all documented tables for the project across all source types** (GCP, Excel, PostgreSQL together), driven by a dedicated query independent of the Source Configuration state
+- **Source Configuration panel** remains dedicated to importing/uploading new data for the selected source type; uploading an Excel file temporarily shows fresh sheets in Source Tables until the upload is cleared
+- Backend fallback for `/metadata/tables/{project_id}` now returns all documented tables for the project (grouped by `data_domain_table` + `source_type`) instead of filtering by the selected source type
 
 ---
 

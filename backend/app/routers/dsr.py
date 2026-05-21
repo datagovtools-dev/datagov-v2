@@ -198,6 +198,7 @@ async def list_dsrs(
     project_id: uuid.UUID | None = Query(default=None),
     is_ai_use: bool | None = Query(default=None),
     year: int | None = Query(default=None),
+    checklist_status: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ) -> PaginatedDSR:
@@ -226,6 +227,18 @@ async def list_dsrs(
         q = q.where(DataSharingRequest.is_ai_use == is_ai_use)
     if year is not None:
         q = q.where(extract("year", DataSharingRequest.created_at) == year)
+    if checklist_status == "signed":
+        q = q.where(AIComplianceChecklist.validated_at.isnot(None))
+    elif checklist_status == "pending_signoff":
+        q = q.where(
+            AIComplianceChecklist.validated_at.is_(None),
+            DataSharingRequest.status.in_(["approved", "executed"]),
+        )
+    elif checklist_status == "in_progress":
+        q = q.where(
+            AIComplianceChecklist.validated_at.is_(None),
+            DataSharingRequest.status.notin_(["approved", "executed"]),
+        )
 
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows = (await db.execute(

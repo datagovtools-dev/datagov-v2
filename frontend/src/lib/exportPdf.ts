@@ -45,6 +45,9 @@ export function printA4(title: string, bodyHtml: string): void {
     .badge-pending  { background: #E2E8F0; color: #4A5568; }
     .badge-ai       { background: #FEFCBF; color: #744210; }
     .badge-draft    { background: #E2E8F0; color: #4A5568; }
+    .badge-warning  { background: #FEEBC8; color: #7B341E; }
+    .badge-review   { background: #BEE3F8; color: #2A4365; }
+    .badge-danger   { background: #FED7D7; color: #742A2A; }
     .timeline { list-style: none; padding: 0; }
     .timeline li { display: flex; gap: 12px; padding: 6px 0;
       border-bottom: 1px solid #EDF2F7; }
@@ -95,6 +98,20 @@ export function pdfField(label: string, value: string | null | undefined, fullWi
   </div>`;
 }
 
-export function pdfBadge(text: string, type: "approved" | "rejected" | "pending" | "ai" | "draft"): string {
+export type PdfBadgeType = "approved" | "rejected" | "pending" | "ai" | "draft" | "warning" | "review" | "danger";
+
+export function pdfBadge(text: string, type: PdfBadgeType): string {
   return `<span class="badge badge-${type}">${text}</span>`;
+}
+
+export function pdfStatusBadge(status: string, isSigned = false): string {
+  if (isSigned) return pdfBadge("Signed & Locked", "approved");
+  const map: Record<string, PdfBadgeType> = {
+    draft: "draft", submitted: "warning", under_review: "review",
+    approved: "approved", rejected: "rejected", executed: "approved",
+    archived: "draft", requested: "warning", pending: "draft",
+  };
+  const type = map[status] ?? "draft";
+  const label = status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return pdfBadge(label, type);
 }

@@ -39,6 +39,10 @@ export default function NewProjectPage() {
     dq_officer_id: "",
     pic_data_compliance_id: "",
   });
+  const [ownerForms, setOwnerForms] = React.useState({
+    lead_business_steward: { full_name: "", email: "" },
+    data_owner:            { full_name: "", email: "" },
+  });
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [serverError, setServerError] = React.useState("");
 
@@ -68,9 +72,24 @@ export default function NewProjectPage() {
         dq_officer_id: form.dq_officer_id || null,
         pic_data_compliance_id: form.pic_data_compliance_id || null,
       };
-      return api.post("/projects", payload);
+      return api.post<{ id: string }>("/projects", payload);
     },
-    onSuccess: () => router.push("/projects"),
+    onSuccess: async (created) => {
+      const roles: [string, { full_name: string; email: string }][] = [
+        ["lead_business_steward", ownerForms.lead_business_steward],
+        ["data_owner",            ownerForms.data_owner],
+      ];
+      for (const [role_type, data] of roles) {
+        if (data.full_name.trim()) {
+          await api.post(`/metadata/owners/${created.id}`, {
+            role_type,
+            full_name: data.full_name.trim(),
+            email: data.email.trim(),
+          });
+        }
+      }
+      router.push("/projects");
+    },
     onError: (e: any) => setServerError(e.message),
   });
 
@@ -174,6 +193,44 @@ export default function NewProjectPage() {
             <UserCombobox label="Metadata Officer"        options={userOptions} value={form.metadata_officer_id}        onChange={v => set("metadata_officer_id", v)} />
             <UserCombobox label="DQ Officer"              options={userOptions} value={form.dq_officer_id}              onChange={v => set("dq_officer_id", v)} />
             <UserCombobox label="PIC Data Compliance"     options={userOptions} value={form.pic_data_compliance_id}     onChange={v => set("pic_data_compliance_id", v)} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>Data Steward &amp; Data Owner</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium text-surface-700">Data Steward</p>
+              <Input
+                label="Full Name"
+                value={ownerForms.lead_business_steward.full_name}
+                onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, full_name: e.target.value } }))}
+                placeholder="e.g. John Doe"
+              />
+              <Input
+                label="Email Address"
+                type="email"
+                value={ownerForms.lead_business_steward.email}
+                onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, email: e.target.value } }))}
+                placeholder="e.g. john.doe@company.com"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <p className="text-sm font-medium text-surface-700">Data Owner</p>
+              <Input
+                label="Full Name"
+                value={ownerForms.data_owner.full_name}
+                onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, full_name: e.target.value } }))}
+                placeholder="e.g. Jane Smith"
+              />
+              <Input
+                label="Email Address"
+                type="email"
+                value={ownerForms.data_owner.email}
+                onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, email: e.target.value } }))}
+                placeholder="e.g. jane.smith@company.com"
+              />
+            </div>
           </CardContent>
         </Card>
 

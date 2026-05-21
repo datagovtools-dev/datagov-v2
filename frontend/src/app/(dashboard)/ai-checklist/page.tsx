@@ -7,6 +7,7 @@ import { Search, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/Table";
 import { formatDate } from "@/lib/utils";
 
@@ -32,27 +33,44 @@ interface PaginatedDSR {
   pages: number;
 }
 
+const CHECKLIST_STATUS_OPTIONS = [
+  { value: "in_progress",    label: "In Progress" },
+  { value: "pending_signoff", label: "Pending Sign-Off" },
+  { value: "signed",         label: "Completed & Signed" },
+];
+
 function checklistStatus(dsr: DSRListItem): { label: string; variant: "approved" | "warning" | "draft" } {
-  const isSigned = dsr.is_signed || dsr.tracking_id === "DSR-2026-0001";
-  if (isSigned) return { label: "Completed & Signed", variant: "approved" };
+  if (dsr.is_signed) return { label: "Completed & Signed", variant: "approved" };
   if (dsr.status === "approved" || dsr.status === "executed") return { label: "Pending Sign-Off", variant: "warning" };
   return { label: "In Progress", variant: "draft" };
 }
 
 export default function AIChecklistPage() {
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
   const [page, setPage] = useState(1);
 
+  const { data: filtersData } = useQuery<{ years: number[]; categories: string[] }>({
+    queryKey: ["project-filters"],
+    queryFn: () => api.get<{ years: number[]; categories: string[] }>("/projects/filters"),
+  });
+  const yearOptions: number[] = filtersData?.years ?? [];
+
   const { data, isLoading } = useQuery<PaginatedDSR>({
-    queryKey: ["ai-checklist", search, page],
+    queryKey: ["ai-checklist", search, statusFilter, yearFilter, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "20", is_ai_use: "true" });
       if (search) params.set("search", search);
+      if (statusFilter) params.set("checklist_status", statusFilter);
+      if (yearFilter) params.set("year", yearFilter);
       return api.get<PaginatedDSR>(`/dsr?${params}`);
     },
   });
 
   function handleSearch(v: string) { setSearch(v); setPage(1); }
+  function handleStatus(v: string) { setStatusFilter(v === "all" ? "" : v); setPage(1); }
+  function handleYear(v: string) { setYearFilter(v === "all" ? "" : v); setPage(1); }
 
   return (
     <div>
@@ -66,13 +84,31 @@ export default function AIChecklistPage() {
         </div>
       </div>
 
-      {/* Search */}
+      {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-5">
         <div className="relative flex-1 min-w-[200px] max-w-xs">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400 pointer-events-none" />
           <input className="input-base pl-9" placeholder="Search by DSR ID or project…"
             value={search} onChange={(e) => handleSearch(e.target.value)} />
         </div>
+        <Select value={statusFilter || "all"} onValueChange={handleStatus}>
+          <SelectTrigger className="w-52"><SelectValue placeholder="All AI Checklist Statuses" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All AI Checklist Statuses</SelectItem>
+            {CHECKLIST_STATUS_OPTIONS.map((s) => (
+              <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={yearFilter || "all"} onValueChange={handleYear}>
+          <SelectTrigger className="w-36"><SelectValue placeholder="All Years" /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Years</SelectItem>
+            {yearOptions.map((y) => (
+              <SelectItem key={y} value={String(y)}>{y}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <Table>
@@ -102,8 +138,6 @@ export default function AIChecklistPage() {
             </TableRow>
           ) : data.items.map((dsr) => {
             const cl = checklistStatus(dsr);
-            const isSigned = dsr.is_signed || dsr.tracking_id === "DSR-2026-0001";
-            const signedDate = dsr.signed_at;
             return (
               <TableRow key={dsr.id}>
                 <TableCell className="font-mono text-sm font-medium text-primary-700">{dsr.tracking_id.replace("DSR", "AICK")}</TableCell>
@@ -112,7 +146,7 @@ export default function AIChecklistPage() {
                 <TableCell className="max-w-[160px] truncate">{dsr.project_name}</TableCell>
                 <TableCell className="max-w-[140px] truncate text-surface-600">{dsr.recipient}</TableCell>
                 <TableCell>
-                  {isSigned
+                  {dsr.is_signed
                     ? <Badge variant="approved">Signed &amp; Locked</Badge>
                     : <Badge variant="draft">{dsr.status.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</Badge>
                   }
@@ -120,7 +154,7 @@ export default function AIChecklistPage() {
                 <TableCell>
                   <Badge variant={cl.variant}>{cl.label}</Badge>
                 </TableCell>
-                <TableCell>{signedDate ? formatDate(signedDate) : ""}</TableCell>
+                <TableCell>{dsr.signed_at ? formatDate(dsr.signed_at) : <span className="text-surface-300">—</span>}</TableCell>
                 <TableCell>{formatDate(dsr.duration_end)}</TableCell>
                 <TableCell>
                   <Link href={`/ai-checklist/${dsr.id}`}>
