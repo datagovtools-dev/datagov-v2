@@ -16,14 +16,16 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 
 | Module | Description |
 |--------|-------------|
-| **Projects** | Central project registry — create and manage data governance projects with team assignments (DGO, DM, SME, PIC); assign Data Steward and Data Owner with free-text name/email |
-| **Data Sharing Request (DSR)** | End-to-end data sharing request lifecycle with serial 4-step approval workflow and client sign-off |
-| **AI/ML Compliance Checklist (AICK)** | GEN AI usage assessment checklist linked to each DSR — 3-step serial approval with sign-off |
-| **Data Protection Impact Assessment (DPIA)** | Auto-created from DSR; tracks residual risk, data categories, and 2-step governance approval |
-| **Record of Processing Activities (ROPA)** | Document and track all data processing activities |
-| **Data Extermination / BAPD** | Manage data disposal/extermination requests with evidence upload and approval |
-| **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated data quality checks |
-| **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; enrich with AI-generated business definitions via local Ollama LLM; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges) |
+| **Projects** | Central project registry — create and manage data governance projects with team assignments (DGO, DM, SME, PIC); assign Data Steward and Data Owner with free-text name/email; filter by Client, Category, Year, and Monetized flag; export project summary to PDF |
+| **Data Sharing Request (DSR)** | End-to-end data sharing request lifecycle with serial 4-step approval workflow and client sign-off; auto-creates an AICK and DPIA on submission; filter by DSR status and year; export to PDF |
+| **AI/ML Compliance Checklist (AICK)** | GEN AI usage assessment checklist auto-created with each DSR — 3-step serial approval with sign-off; filter by checklist status (In Progress / Pending Sign-Off / Completed & Signed) and year; export to PDF |
+| **Data Protection Impact Assessment (DPIA)** | Auto-created from DSR; tracks residual risk, data categories, regulatory references, and governance activities (4 sections A–D); 2-step approval workflow; filter by DPIA status and year; export to PDF |
+| **Record of Processing Activities (ROPA)** | Document and track all data processing activities; filter by legal basis |
+| **Data Extermination / BAPD** | Manage data disposal/extermination requests with evidence upload and approval; manage retention policies (8 built-in policy types); auto-discover datasets eligible for disposal based on retention expiry |
+| **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated data quality checks; DQ run results go through a review/approval workflow (pending → running → completed → under_review → approved/rejected) |
+| **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; Source Tables section shows all documented tables for a project across all source types; enrich with AI-generated business definitions via configurable Ollama (local or cloud); batch-process definitions in chunks to avoid connection pool exhaustion; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; bulk grouping assignment per table; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges) |
+| **Settings** | Manage users, roles, notification preferences, and AI/LLM configuration (provider, mode, base URL, model name, API key, batch size, timeout); test connection from the settings page |
+| **Audit Log** | Full audit trail of all actions across modules; filter by module, action, entity, actor, and date range |
 
 ---
 
@@ -35,7 +37,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 | **Backend** | FastAPI (Python) + SQLAlchemy + Alembic |
 | **Database** | PostgreSQL |
 | **Cache / Queue** | Redis + Celery |
-| **AI / LLM** | Ollama (`phi3:mini`) — local, no external API needed |
+| **AI / LLM** | Ollama — configurable provider (local or cloud), model name, base URL, API key, and batch size via Settings UI |
 | **Infrastructure** | Docker Compose + Nginx (reverse proxy) |
 | **Cloud Integrations** | GCP BigQuery, GCS, PostgreSQL/Supabase |
 | **CI/CD** | GitHub Actions |
@@ -47,7 +49,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   Nginx     │────▶│  Frontend   │     │   Ollama    │
-│  (Port 80)  │     │  Next.js    │     │  phi3:mini  │
+│  (Port 80)  │     │  Next.js    │     │ (local/cloud│
 └─────┬───────┘     └─────────────┘     └──────┬──────┘
       │                                         │
       ▼                                         ▼
@@ -141,19 +143,21 @@ Default admin login:
 ## Key Features
 
 - **Serial approval workflows** — DSR (4 steps), AICK (3 steps), DPIA (2 steps), BAPD — each step activates only after the previous is approved
+- **Automatic linked-record creation** — submitting a DSR auto-creates a paired AICK and DPIA for the same project
 - **Sign-off with e-signature** — draw, drag-and-drop, or upload signature images; decision locked once signed
-- **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using local Ollama LLM (`phi3:mini`); single queued endpoint avoids connection pool exhaustion
+- **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using a configurable Ollama provider (local or cloud mode); batch-chunked endpoint avoids connection pool exhaustion; single-record regeneration also available
 - **Standard Format auto-assessment** — on every metadata import the worker classifies each column's value format (date, categorical, phone, email, integer, decimal, ID/code, free text) and stores it automatically
-- **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved throughout
-- **Metadata attributes grid** — 19-column inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); bulk Save All stamp; bulk grouping per table
-- **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names matching the UI; Excel export inserts 7 project-level columns
+- **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved; Source Tables section shows all documented tables across all source types
+- **Metadata attributes grid** — 19-column inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); bulk Save All stamp; bulk grouping assignment per table
+- **Retention policies & eligibility detection** — BAPD manages 8 built-in retention policy types; eligible datasets (past expiry) are auto-discovered and surfaced as a warning panel
+- **Data Quality review workflow** — DQ runs progress through pending → running → completed → under_review → approved/rejected states
+- **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names; Excel export inserts 7 project-level columns; all document PDFs (Project, DSR, AICK, DPIA) share a standardised header with colour-coded status and flag badges
 - **Data Steward & Data Owner** — assignable per project via free-text name + email; surfaced in the Metadata Attributes info strip and all exports
 - **RBAC** — role-based access control enforced on both frontend and backend
-- **PDF export** — export any DSR, AI Checklist, DPIA, or Metadata report to a formatted PDF; all document PDFs share a standardised header/subtitle format with colour-coded status and flag badges
-- **Advanced overview filters** — DSR, DPIA, AI Checklist, and Projects overview pages have module-specific status filters and dynamic year filters; Projects additionally filters by Client, Category, and Monetized flag
-- **Audit trail** — all changes logged with user, timestamp, and action
+- **Advanced overview filters** — each module's overview has module-specific status filters and dynamic year filters; Projects additionally filters by Client, Category, and Monetized flag; ROPA filters by Legal Basis
+- **Configurable AI settings** — provider, mode (local/cloud), base URL, model name, API key, batch size, and timeout configurable via the Settings UI with a live test-connection check
+- **Audit trail** — all changes logged with user, timestamp, and action; filterable by module, action, entity, actor, and date range
 - **Notification system** — in-app notifications for approval actions and status changes
-- **Data Quality checks** — automated DQ profiling against BigQuery, PostgreSQL, or Supabase
 
 ---
 
