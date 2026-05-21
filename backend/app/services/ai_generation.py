@@ -111,16 +111,54 @@ def build_candidate_from_config(config: AIProviderConfig | None, api_key: str | 
     )
 
 
+def _clean_table_name(table: str) -> str:
+    """Strip file extension and sheet suffix so the model gets clean domain context."""
+    for ext in (".xlsx", ".xls", ".csv"):
+        idx = table.lower().find(ext)
+        if idx > 0:
+            table = table[:idx]
+            break
+    # Remove trailing ' - Sheet1' style suffixes
+    for sep in (" - ", " – ", "_"):
+        parts = table.rsplit(sep, 1)
+        if len(parts) == 2 and parts[1].lower().startswith("sheet"):
+            table = parts[0]
+    return table.strip(" -_")
+
+
 def build_metadata_definition_prompt(record: MetadataRecord) -> str:
+    table_context = _clean_table_name(record.data_domain_table or "")
+
+    ctx_lines = [
+        f"Source table: {table_context}",
+        f"Column: {record.data_attribute}",
+        f"Business term: {record.business_term or record.data_attribute}",
+        f"Data type: {record.data_type or 'text'}",
+    ]
+    if record.data_grouping:
+        ctx_lines.append(f"Data domain / grouping: {record.data_grouping}")
+    if record.line_of_business:
+        ctx_lines.append(f"Line of business: {record.line_of_business}")
+    if record.standard_format:
+        ctx_lines.append(f"Value format: {record.standard_format}")
+    if record.sample_data:
+        ctx_lines.append(f"Example value: {record.sample_data}")
+    if record.data_sensitivity:
+        ctx_lines.append(f"Sensitivity classification: {record.data_sensitivity}")
+
+    context = "\n".join(ctx_lines)
+
     return (
-        "You are a data governance expert. Write a clear, concise business definition "
-        "for a database column.\n"
-        f"Table: {record.data_domain_table}\n"
-        f"Column: {record.data_attribute}\n"
-        f"Business Term: {record.business_term or record.data_attribute}\n"
-        f"Data Type: {record.data_type or 'unknown'}\n"
-        f"Sample Value: {record.sample_data or 'not available'}\n\n"
-        "Write only the definition in 1-2 sentences. Do not include headers or column names in your answer."
+        "You are a senior data governance specialist writing entries for a business data dictionary.\n\n"
+        "Write a business definition for the data attribute described below.\n\n"
+        f"{context}\n\n"
+        "Rules — follow all of them strictly:\n"
+        "1. DO NOT quote, repeat, or rephrase the column name or business term — describe what the data represents without naming it\n"
+        "2. Write exactly 2 to 3 sentences, between 40 and 80 words total — no more, no less\n"
+        "3. Describe the business meaning: what real-world fact or event it captures, how it is used in business operations or decisions, and what the typical range or values indicate\n"
+        "4. Draw context from the source table name, data domain/grouping, and example value to make the definition specific, not generic\n"
+        "5. Write in plain, professional language for a non-technical business audience\n"
+        "6. Output the definition only — no labels, no headers, no bullet points, no preamble\n"
     )
 
 
