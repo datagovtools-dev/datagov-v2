@@ -38,6 +38,7 @@ class MetadataRecord(Base):
     remarks: Mapped[str] = mapped_column(Text, nullable=False, default="-")
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
     source_row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    distinct_values: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

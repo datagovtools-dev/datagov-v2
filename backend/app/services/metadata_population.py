@@ -100,6 +100,16 @@ def _is_nullable(values: list[Any]) -> bool:
     return any(value is None or str(value).strip() == "" for value in values)
 
 
+def _get_distinct_values(values: list[Any], standard_format: str | None) -> str | None:
+    """Return comma-separated distinct values for categorical/boolean columns only."""
+    if not standard_format:
+        return None
+    if not (standard_format.startswith("Category:") or standard_format.startswith("Boolean")):
+        return None
+    non_null = sorted({str(v).strip() for v in values if v is not None and str(v).strip()})
+    return ", ".join(non_null[:20]) if non_null else None
+
+
 def _assess_standard_format(values: list[Any]) -> str | None:
     non_null = [
         str(value).strip() for value in values
@@ -505,6 +515,7 @@ async def populate_metadata_records(
             primary_key = _is_primary_key_candidate(values)
             nullable = _is_nullable(values)
             standard_format = _assess_standard_format(values)
+            distinct_vals = _get_distinct_values(values, standard_format)
 
             if existing:
                 existing.data_sensitivity = sensitivity
@@ -515,6 +526,7 @@ async def populate_metadata_records(
                 existing.is_nullable = nullable
                 existing.source_row_count = row_count
                 existing.standard_format = standard_format
+                existing.distinct_values = distinct_vals
                 existing.updated_date = today
                 existing.updated_by = initiated_by
                 updated += 1
@@ -542,6 +554,7 @@ async def populate_metadata_records(
                     is_nullable=nullable,
                     data_level="Raw",
                     standard_format=standard_format,
+                    distinct_values=distinct_vals,
                     remarks="-",
                     source_type=source_type,
                     source_row_count=row_count,

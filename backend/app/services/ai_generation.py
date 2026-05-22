@@ -139,26 +139,66 @@ def build_metadata_definition_prompt(record: MetadataRecord) -> str:
         ctx_lines.append(f"Data domain / grouping: {record.data_grouping}")
     if record.line_of_business:
         ctx_lines.append(f"Line of business: {record.line_of_business}")
-    if record.standard_format:
-        ctx_lines.append(f"Value format: {record.standard_format}")
-    if record.sample_data:
-        ctx_lines.append(f"Example value: {record.sample_data}")
+    if record.distinct_values:
+        ctx_lines.append(f"Possible values: {record.distinct_values}")
+    else:
+        if record.standard_format:
+            ctx_lines.append(f"Value format / range: {record.standard_format}")
+        if record.sample_data:
+            ctx_lines.append(f"Example value: {record.sample_data}")
     if record.data_sensitivity:
-        ctx_lines.append(f"Sensitivity classification: {record.data_sensitivity}")
+        ctx_lines.append(f"Sensitivity: {record.data_sensitivity}")
+    if record.is_primary_key is not None:
+        ctx_lines.append(f"Primary key: {'Yes' if record.is_primary_key else 'No'}")
+    if record.is_nullable is not None:
+        ctx_lines.append(f"Nullable: {'Yes' if record.is_nullable else 'No'}")
 
     context = "\n".join(ctx_lines)
+
+    conditional_rules: list[str] = []
+    if record.data_sensitivity in ("Highly Confidential", "Restricted"):
+        conditional_rules.append(
+            "• Because sensitivity is Highly Confidential / Restricted: include a brief note "
+            "that this value is personally identifiable and governed by data privacy policy"
+        )
+    if record.is_primary_key:
+        conditional_rules.append(
+            "• Because this is a primary key: note that it uniquely identifies each record"
+        )
+    if record.is_nullable:
+        conditional_rules.append(
+            "• Because nullable is Yes: briefly note when or why this value may be absent"
+        )
+    conditional_block = (
+        "\nAdditional conditional rules:\n" + "\n".join(conditional_rules)
+        if conditional_rules else ""
+    )
+
+    is_categorical = bool(record.distinct_values) or (
+        record.standard_format is not None and (
+            record.standard_format.startswith("Category:") or
+            record.standard_format.startswith("Boolean")
+        )
+    )
+    sentence_count_note = (
+        "3 sentences (the third describing what the range of possible values means in practice)"
+        if is_categorical else
+        "2 sentences"
+    )
 
     return (
         "You are a senior data governance specialist writing entries for a business data dictionary.\n\n"
         "Write a business definition for the data attribute described below.\n\n"
         f"{context}\n\n"
-        "Rules — follow all of them strictly:\n"
-        "1. DO NOT quote, repeat, or rephrase the column name or business term — describe what the data represents without naming it\n"
-        "2. Write exactly 2 to 3 sentences, between 40 and 80 words total — no more, no less\n"
-        "3. Describe the business meaning: what real-world fact or event it captures, how it is used in business operations or decisions, and what the typical range or values indicate\n"
-        "4. Draw context from the source table name, data domain/grouping, and example value to make the definition specific, not generic\n"
-        "5. Write in plain, professional language for a non-technical business audience\n"
-        "6. Output the definition only — no labels, no headers, no bullet points, no preamble\n"
+        "Rules — follow all strictly:\n"
+        f"1. Write {sentence_count_note}:\n"
+        "   • Sentence 1: what real-world fact or event this value records — anchor it to the source table, domain, and example/possible values\n"
+        "   • Sentence 2: how it is used in a business process, decision, or reporting need\n"
+        "   • Sentence 3 (categoricals only): what the range of possible values or categories represents in practice\n"
+        "2. DO NOT quote, repeat, or rephrase the column name or business term — describe the meaning, not the label\n"
+        "3. Use plain, professional language for a non-technical business audience — no SQL or technical jargon\n"
+        "4. Output the definition only — no labels, no headers, no bullet points, no preamble"
+        f"{conditional_block}\n"
     )
 
 
