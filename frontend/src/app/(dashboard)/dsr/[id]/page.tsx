@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, Lock, Pencil, Save, X } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -422,7 +423,7 @@ function SignaturePad({
 // ── SignOff component ─────────────────────────────────────────────────────────
 
 function SignOffBlock({
-  value, onChange, disabled, showErrors, acknowledgedReadOnly, activeApprovalStep,
+  value, onChange, disabled, showErrors, acknowledgedReadOnly, activeApprovalStep, isSuperAdmin,
 }: {
   value: Record<string, string>;
   onChange: (field: string, val: string) => void;
@@ -430,6 +431,7 @@ function SignOffBlock({
   showErrors?: boolean;
   acknowledgedReadOnly?: boolean;
   activeApprovalStep?: number;
+  isSuperAdmin?: boolean;
 }) {
   function err(field: string) {
     return showErrors && !value[field]?.trim() ? "border-red-500 ring-1 ring-red-400" : "";
@@ -493,9 +495,9 @@ function SignOffBlock({
                 value={value.prepared_signature || null}
                 onSign={(sig) => handleSign("prepared", sig)}
                 onClear={() => handleClear("prepared")}
-                disabled={disabled || activeApprovalStep !== 4}
+                disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 4)}
               />
-              {!disabled && activeApprovalStep !== 4 && (
+              {!disabled && !isSuperAdmin && activeApprovalStep !== 4 && (
                 <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
                   <Lock className="h-3 w-3" /> Available at Client Sign Off step
                 </p>
@@ -529,9 +531,9 @@ function SignOffBlock({
                 value={value.acknowledged_signature || null}
                 onSign={(sig) => handleSign("acknowledged", sig)}
                 onClear={() => handleClear("acknowledged")}
-                disabled={disabled || activeApprovalStep !== 3}
+                disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 3)}
               />
-              {!disabled && activeApprovalStep !== 3 && (
+              {!disabled && !isSuperAdmin && activeApprovalStep !== 3 && (
                 <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
                   <Lock className="h-3 w-3" /> Available at SME Sign Off step
                 </p>
@@ -561,6 +563,7 @@ export default function DSRDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
+  const currentUser = useAuthStore(s => s.user);
 
   const [editing, setEditing] = React.useState(false);
   const [form, setForm] = React.useState<Record<string, string | boolean>>({});
@@ -1051,6 +1054,7 @@ export default function DSRDetailPage() {
                 showErrors={showErrors}
                 acknowledgedReadOnly={editing}
                 activeApprovalStep={dsr.approvals.find(a => a.status === "requested")?.step_order}
+                isSuperAdmin={currentUser?.is_super_admin ?? false}
               />
 
               {/* Validation error summary */}

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -31,6 +32,7 @@ export default function ROPADetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
+  const currentUser = useAuthStore(s => s.user);
   const [transitionTarget, setTransitionTarget] = useState("");
   const [transitionComment, setTransitionComment] = useState("");
   const [editing, setEditing] = useState(false);
@@ -67,7 +69,7 @@ export default function ROPADetailPage() {
     rejected: ["draft"],
   };
   const nextStates = NEXT_STATES[ropa.status] ?? [];
-  const canEdit = ropa.status !== "approved";
+  const canEdit = ropa.status !== "approved" || (currentUser?.is_super_admin ?? false);
 
   function startEdit() {
     if (!ropa) return;

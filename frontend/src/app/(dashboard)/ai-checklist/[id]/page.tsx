@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, Lock, Pencil, Save, X, Send } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
@@ -430,12 +431,13 @@ function SignaturePad({ value, onSign, onClear, disabled }: {
 
 // ── SignOff ───────────────────────────────────────────────────────────────────
 
-function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalStep }: {
+function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalStep, isSuperAdmin }: {
   value: Record<string, string>;
   onChange: (field: string, val: string) => void;
   disabled?: boolean;
   showErrors?: boolean;
   activeApprovalStep?: number;
+  isSuperAdmin?: boolean;
 }) {
   function handleSign(prefix: "prepared" | "acknowledged", sig: string) {
     onChange(`${prefix}_signature`, sig);
@@ -485,9 +487,9 @@ function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalS
               value={value.prepared_signature || null}
               onSign={(sig) => handleSign("prepared", sig)}
               onClear={() => handleClear("prepared")}
-              disabled={disabled || activeApprovalStep !== 2}
+              disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 2)}
             />
-            {!disabled && activeApprovalStep !== 2 && (
+            {!disabled && !isSuperAdmin && activeApprovalStep !== 2 && (
               <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
                 <Lock className="h-3 w-3" /> Available at DM Sign-off step
               </p>
@@ -514,9 +516,9 @@ function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalS
               value={value.acknowledged_signature || null}
               onSign={(sig) => handleSign("acknowledged", sig)}
               onClear={() => handleClear("acknowledged")}
-              disabled={disabled || activeApprovalStep !== 3}
+              disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 3)}
             />
-            {!disabled && activeApprovalStep !== 3 && (
+            {!disabled && !isSuperAdmin && activeApprovalStep !== 3 && (
               <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
                 <Lock className="h-3 w-3" /> Available at SME Sign-off step
               </p>
@@ -537,6 +539,7 @@ export default function AIChecklistDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
+  const currentUser = useAuthStore(s => s.user);
 
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<AIDraft | null>(null);
@@ -1055,6 +1058,7 @@ export default function AIChecklistDetailPage() {
               disabled={!editing}
               showErrors={showErrors}
               activeApprovalStep={aickApprovals.find(a => a.status === "requested")?.step_order}
+              isSuperAdmin={currentUser?.is_super_admin ?? false}
             />
           </CardContent>
         </Card>

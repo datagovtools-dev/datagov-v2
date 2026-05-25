@@ -781,7 +781,7 @@ export default function DPIADetailPage() {
             {[...(dpia.approvals ?? [])].sort((a, b) => a.step_order - b.step_order).map((step) => {
               const STEP_LABELS: Record<number, string> = { 1: "PIC Data Compliance Approval", 2: "DM Approval" };
               const isActive = step.status === "requested";
-              const canAction = isActive && currentUser?.id === step.approver_id;
+              const canAction = isActive && (currentUser?.id === step.approver_id || currentUser?.is_super_admin);
               return (
                 <li key={step.id} className="ml-4">
                   <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${

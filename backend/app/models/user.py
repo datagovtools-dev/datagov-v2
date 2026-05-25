@@ -22,6 +22,13 @@ class User(Base):
     project_roles: Mapped[list["UserProjectRole"]] = relationship(back_populates="user", cascade="all, delete-orphan", foreign_keys="UserProjectRole.user_id")
     audit_logs: Mapped[list["AuditLog"]] = relationship(back_populates="user")
 
+    @property
+    def is_super_admin(self) -> bool:
+        return any(
+            getattr(getattr(r, "role", None), "name", None) == "super_admin" and r.revoked_at is None
+            for r in getattr(self, "project_roles", [])
+        )
+
 
 class Role(Base):
     __tablename__ = "roles"
