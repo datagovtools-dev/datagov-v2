@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, Search, Download, Info } from "lucide-react";
+import { ChevronLeft, ChevronDown, Search, Download, Info } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -28,6 +28,7 @@ interface MetadataRecord {
   business_definition: string | null;
   definition_status: string;
   standard_format: string | null;
+  distinct_values: string | null;
   is_primary_key: boolean | null;
   is_nullable: boolean | null;
   sample_data: string | null;
@@ -60,6 +61,136 @@ const SENSITIVITY_COLORS: Record<string, string> = {
   "Confidential": "bg-yellow-100 text-yellow-700 border-yellow-200",
   "Highly Confidential": "bg-red-100 text-red-700 border-red-200",
 };
+
+const SF_GROUPS = [
+  {
+    group: "Boolean",
+    options: [
+      "Boolean (Yes / No)",
+      "Boolean (True / False)",
+      "Boolean (1 / 0)",
+      "Boolean (Y / N)",
+      "Boolean (T / F)",
+    ],
+  },
+  {
+    group: "Categorical",
+    options: [
+      "Category: ",
+    ],
+  },
+  {
+    group: "Date & Time",
+    options: [
+      "Date (YYYY-MM-DD)",
+      "Date (DD/MM/YYYY)",
+      "Date (DD-MM-YYYY)",
+      "Date (YYYY/MM/DD)",
+      "Datetime (YYYY-MM-DD HH:MM:SS)",
+    ],
+  },
+  {
+    group: "Contact",
+    options: [
+      "Email (name@domain.com)",
+      "Phone number",
+    ],
+  },
+  {
+    group: "Numeric",
+    options: [
+      "Integer (whole number)",
+      "Decimal number",
+      "Decimal (1 decimal place)",
+      "Decimal (2 decimal places)",
+      "Decimal (3 decimal places)",
+    ],
+  },
+  {
+    group: "Identifier",
+    options: ["ID / Code"],
+  },
+  {
+    group: "Text",
+    options: [
+      "Free text",
+      "Free text (long description)",
+    ],
+  },
+];
+
+function StandardFormatCombobox({
+  value,
+  onChange,
+  distinctValues,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  distinctValues?: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, []);
+
+  function pick(opt: string) {
+    if (opt === "Category: " && distinctValues) {
+      onChange(`Category: ${distinctValues}`);
+    } else {
+      onChange(opt);
+    }
+    setOpen(false);
+  }
+
+  return (
+    <div ref={ref} className="relative min-w-[160px]">
+      <div className="flex items-stretch border border-surface-300 rounded overflow-hidden focus-within:ring-1 focus-within:ring-primary-400">
+        <textarea
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={2}
+          className="flex-1 text-xs px-2 py-1 resize-none focus:outline-none bg-white"
+        />
+        <button
+          type="button"
+          onMouseDown={(e) => { e.preventDefault(); setOpen((o) => !o); }}
+          className="px-1.5 bg-surface-50 hover:bg-surface-100 border-l border-surface-300 text-surface-400 hover:text-surface-600 shrink-0"
+          tabIndex={-1}
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {open && (
+        <div className="absolute z-50 left-0 top-full mt-0.5 w-56 bg-white border border-surface-200 rounded-lg shadow-lg max-h-72 overflow-y-auto">
+          {SF_GROUPS.map(({ group, options }) => (
+            <div key={group}>
+              <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-surface-400">
+                {group}
+              </div>
+              {options.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onMouseDown={(e) => { e.preventDefault(); pick(opt); }}
+                  className="w-full text-left px-3 py-1.5 text-xs text-surface-700 hover:bg-primary-50 hover:text-primary-700"
+                >
+                  {opt === "Category: " ? "Category: [type values…]" : opt}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function SensitivityPill({ value }: { value: string }) {
   return (
@@ -245,6 +376,17 @@ function MetadataGridContent() {
 
   function setDraft(id: string, field: string, value: unknown) {
     setDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? {}), [field]: value } }));
+  }
+
+  // Table-level fields: propagate to every row that shares the same data_domain_table
+  function setTableDraft(record: MetadataRecord, field: string, value: unknown) {
+    setDrafts((d) => {
+      const next = { ...d };
+      for (const sibling of records.filter((r: MetadataRecord) => r.data_domain_table === record.data_domain_table)) {
+        next[sibling.id] = { ...(next[sibling.id] ?? {}), [field]: value };
+      }
+      return next;
+    });
   }
 
   function getDraft<K extends keyof MetadataRecord>(record: MetadataRecord, field: K): MetadataRecord[K] {
@@ -585,6 +727,7 @@ function MetadataGridContent() {
           = AI-generated definition{aiStatus?.configured ? ` (${aiStatus.model_name})` : ""}
         </span>
         <span>Amber left border = unsaved changes</span>
+        <span className="text-surface-400">· Table Type, Data Year, Grouping, Level changes apply to all columns in the same table</span>
       </div>
 
       {/* Unsaved indicator */}
@@ -603,10 +746,10 @@ function MetadataGridContent() {
                 {[
                   { label: "#",                   w: "w-10",  tip: "Running number" },
                   { label: "Table",               w: "w-40",  tip: "Name of the source or target table. e.g. customer_master, sales_fact, dim_product" },
-                  { label: "Table Type",          w: "w-28",  tip: "Purpose of the table in this project. e.g. Source, Target, Lookup, Reference, Staging" },
-                  { label: "Data Year",           w: "w-24",  tip: "The year the data was imported or processed for metadata. e.g. 2024, 2025, 2026" },
-                  { label: "Grouping",            w: "w-32",  tip: "Business grouping this attribute belongs to. e.g. Customer Data, Financial Data, Product Master, Transaction" },
-                  { label: "Level",               w: "w-24",  tip: "Processing level of the data. e.g. Raw (unprocessed), Staging (transformed), Aggregate (summarised)" },
+                  { label: "Table Type",          w: "w-28",  tip: "Table-level — editing one row updates all columns in the same table. Purpose of the table. e.g. Source, Target, Lookup, Reference, Staging" },
+                  { label: "Data Year",           w: "w-24",  tip: "Table-level — editing one row updates all columns in the same table. Year the data was imported or processed. e.g. 2024, 2025, 2026" },
+                  { label: "Grouping",            w: "w-32",  tip: "Table-level — editing one row updates all columns in the same table. Business grouping. e.g. Customer Data, Financial Data, Product Master, Transaction" },
+                  { label: "Level",               w: "w-24",  tip: "Table-level — editing one row updates all columns in the same table. Processing level. e.g. Raw (unprocessed), Staging (transformed), Aggregate (summarised)" },
                   { label: "Attribute",           w: "w-40",  tip: "The technical column or field name. e.g. customer_id, order_date, total_amount" },
                   { label: "Type",                w: "w-24",  tip: "Technical data type of the field. e.g. STRING, INTEGER, FLOAT, DATE, DATETIME, BOOLEAN" },
                   { label: "Sensitivity",         w: "w-36",  tip: "Data access sensitivity level. Public = no restriction · Internal = staff only · Confidential = limited access · Highly Confidential = PII/sensitive personal data" },
@@ -652,40 +795,40 @@ function MetadataGridContent() {
                     {/* Table */}
                     <td className="px-3 py-2 font-mono text-xs text-surface-600 max-w-[160px] truncate" title={r.data_domain_table}>{r.data_domain_table}</td>
 
-                    {/* Table Type — editable dropdown */}
+                    {/* Table Type — table-level: propagates to all columns in same table */}
                     <td className="px-3 py-2">
                       {isEditing ? (
                         <select value={getDraft(r, "table_type") as string}
-                          onChange={(e) => setDraft(r.id, "table_type", e.target.value)}
+                          onChange={(e) => setTableDraft(r, "table_type", e.target.value)}
                           className="text-xs border border-surface-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400">
                           {["Source","Target","Lookup","Reference","Staging"].map((v) => <option key={v} value={v}>{v}</option>)}
                         </select>
                       ) : <span className="text-xs text-surface-600">{r.table_type}</span>}
                     </td>
 
-                    {/* Data Year — editable, falls back to import year (created_at) */}
+                    {/* Data Year — table-level: propagates to all columns in same table */}
                     <td className="px-3 py-2">
                       {isEditing ? (
                         <input type="number" value={getDraft(r, "data_year") as number ?? ""}
-                          onChange={(e) => setDraft(r.id, "data_year", e.target.value ? parseInt(e.target.value) : null)}
+                          onChange={(e) => setTableDraft(r, "data_year", e.target.value ? parseInt(e.target.value) : null)}
                           className="text-xs border border-surface-300 rounded px-1.5 py-1 w-20 focus:outline-none focus:ring-1 focus:ring-primary-400" />
                       ) : <span className="text-xs text-surface-600 text-center block">{r.data_year ?? new Date(r.created_at).getFullYear()}</span>}
                     </td>
 
-                    {/* Grouping — editable */}
+                    {/* Grouping — table-level: propagates to all columns in same table */}
                     <td className="px-3 py-2">
                       {isEditing ? (
                         <Input value={getDraft(r, "data_grouping") as string ?? ""}
-                          onChange={(e) => setDraft(r.id, "data_grouping", e.target.value)}
+                          onChange={(e) => setTableDraft(r, "data_grouping", e.target.value)}
                           className="text-xs h-7 py-1" />
                       ) : <span className="text-surface-600 text-xs">{r.data_grouping ?? "—"}</span>}
                     </td>
 
-                    {/* Level — editable */}
+                    {/* Level — table-level: propagates to all columns in same table */}
                     <td className="px-3 py-2">
                       {isEditing ? (
                         <select value={getDraft(r, "data_level") as string}
-                          onChange={(e) => setDraft(r.id, "data_level", e.target.value)}
+                          onChange={(e) => setTableDraft(r, "data_level", e.target.value)}
                           className="text-xs border border-surface-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400">
                           {DATA_LEVEL_OPTIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                         </select>
@@ -736,12 +879,14 @@ function MetadataGridContent() {
                       )}
                     </td>
 
-                    {/* Standard Format — editable */}
+                    {/* Standard Format — combobox with predefined options + free text */}
                     <td className="px-3 py-2">
                       {isEditing ? (
-                        <textarea value={getDraft(r, "standard_format") as string ?? ""}
-                          onChange={(e) => setDraft(r.id, "standard_format", e.target.value)}
-                          rows={2} className="w-full text-xs border border-surface-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400 resize-none min-w-[140px]" />
+                        <StandardFormatCombobox
+                          value={(getDraft(r, "standard_format") as string) ?? ""}
+                          onChange={(v) => setDraft(r.id, "standard_format", v)}
+                          distinctValues={r.distinct_values}
+                        />
                       ) : <span className="text-xs text-surface-600 line-clamp-2">{r.standard_format ?? "—"}</span>}
                     </td>
 

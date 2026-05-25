@@ -45,4 +45,8 @@ celery.conf.beat_schedule = {
         "task": "app.worker.tasks.scheduled.gcp_sa_key_purge",
         "schedule": crontab(minute="*/30"),
     },
+    "source-file-expiry-check": {
+        "task": "app.worker.tasks.scheduled.source_file_expiry_check",
+        "schedule": crontab(hour=7, minute=0),
+    },
 }

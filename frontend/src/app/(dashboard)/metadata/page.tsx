@@ -377,6 +377,11 @@ export default function MetadataHomePage() {
               <Button variant="outline" size="sm" onClick={toggleAll} disabled={!displayTables.length}>
                 {selectedTables.size === displayTables.length && displayTables.length > 0 ? "Deselect All" : "Select All"}
               </Button>
+              {documented > 0 && (
+                <Button variant="outline" size="sm" onClick={() => router.push(`/metadata/${projectId}`)}>
+                  Open All Tables →
+                </Button>
+              )}
               <Button size="sm"
                 disabled={selectedTables.size === 0 || proceedMutation.isPending}
                 onClick={() => proceedMutation.mutate()}>

@@ -65,9 +65,9 @@ def _infer(data_type: str, sample: str | None) -> str | None:
     if not s:
         return "Free text"
 
-    # Boolean value
+    # Boolean value — single sample can't determine the pair, use generic label
     if s.lower() in _BOOL_SET:
-        return "Boolean (Yes/No or True/False)"
+        return f"Boolean ({s})"
 
     # Datetime (must check before date)
     if re.match(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}", s):
@@ -87,8 +87,8 @@ def _infer(data_type: str, sample: str | None) -> str | None:
     if re.match(r"^[\w.+\-]+@[\w\-]+\.[a-zA-Z]{2,}$", s):
         return "Email (name@domain.com)"
 
-    # Phone
-    if re.match(r"^[+\d][\d\s\-().]{6,18}$", s) and any(c.isdigit() for c in s):
+    # Phone — must contain a separator so pure integers don't match
+    if re.match(r"^[+\d][\d\s\-().x]{6,20}$", s) and re.search(r"[+\s\-().x]", s):
         return "Phone number"
 
     # Pure integer (could be from STRING column storing numbers)
@@ -110,6 +110,21 @@ def _infer(data_type: str, sample: str | None) -> str | None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _infer_from_distinct(distinct_values: str) -> str | None:
+    """Re-run categorical/boolean detection from stored distinct_values string."""
+    vals = [v.strip() for v in distinct_values.split(",") if v.strip()]
+    if not vals:
+        return None
+    bool_set = {"true", "false", "yes", "no", "y", "n", "0", "1", "t", "f"}
+    bool_positive = {"true", "yes", "y", "1", "t"}
+    if len(vals) <= 4 and all(v.lower() in bool_set for v in vals):
+        ordered = sorted(vals, key=lambda v: (0 if v.lower() in bool_positive else 1))
+        return f"Boolean ({' / '.join(ordered)})"
+    cats = sorted(vals[:10])
+    suffix = ", ..." if len(vals) > 10 else ""
+    return f"Category: {', '.join(cats)}{suffix}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run",   action="store_true", help="Print inferences, do not write")
@@ -121,7 +136,7 @@ def main() -> None:
 
     where = "TRUE" if args.overwrite else "(standard_format IS NULL OR standard_format = '')"
     cur.execute(f"""
-        SELECT id, data_type, sample_data, data_attribute, data_domain_table, standard_format
+        SELECT id, data_type, sample_data, distinct_values, data_attribute, data_domain_table, standard_format
         FROM metadata_records
         WHERE {where}
         ORDER BY data_domain_table, data_attribute
@@ -134,7 +149,11 @@ def main() -> None:
     update_cur = conn.cursor()
 
     for r in rows:
-        inferred = _infer(r["data_type"], r["sample_data"])
+        # Prefer distinct_values for categorical re-inference when available
+        if r["distinct_values"]:
+            inferred = _infer_from_distinct(r["distinct_values"]) or _infer(r["data_type"], r["sample_data"])
+        else:
+            inferred = _infer(r["data_type"], r["sample_data"])
         if not inferred:
             skipped += 1
             continue

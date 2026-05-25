@@ -1,5 +1,7 @@
 """Metadata Management router — FR-META-001 to FR-META-022 (Phase 5)."""
+import shutil
 import uuid
+from datetime import datetime, timezone
 from datetime import date
 from typing import Annotated
 
@@ -12,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import get_db
 from app.core.rbac import require_permission
-from app.models.metadata import DataOwnerSteward, MetadataRecord
+from app.models.metadata import DataOwnerSteward, MetadataRecord, ProjectSourceFile
 from app.models.project import Project
 from app.models.user import AuditLog, User
 from app.services.ai_generation import (
@@ -298,6 +300,31 @@ async def proceed_metadata(
             owner_info=owner_map,
             initiated_by=f"{current_user.full_name} <{current_user.email}>",
         )
+
+        # Persist uploaded Excel/CSV files for future re-runs
+        if body.source_type == "excel":
+            keys = body.temp_file_keys or ([body.temp_file_key] if body.temp_file_key else [])
+            names = body.file_names or []
+            uploads_dir = os.path.join("/app/uploads", str(body.project_id))
+            os.makedirs(uploads_dir, exist_ok=True)
+            for idx, key in enumerate(keys):
+                src = os.path.join(tempfile.gettempdir(), key)
+                if not os.path.exists(src):
+                    continue
+                original_name = names[idx] if idx < len(names) else key
+                stored_name = f"{uuid.uuid4().hex}_{original_name}"
+                dst = os.path.join(uploads_dir, stored_name)
+                shutil.copy2(src, dst)
+                db.add(ProjectSourceFile(
+                    project_id=body.project_id,
+                    source_type="excel",
+                    original_filename=original_name,
+                    stored_path=dst,
+                    file_size=os.path.getsize(dst),
+                    uploaded_at=datetime.now(timezone.utc),
+                    uploaded_by=f"{current_user.full_name} <{current_user.email}>",
+                ))
+
         await db.commit()
     except (ValueError, FileNotFoundError) as exc:
         await db.rollback()
@@ -396,6 +423,28 @@ async def batch_save_metadata(
             for k, v in rec_data.items():
                 if k != "id" and k in allowed and v is not None:
                     setattr(record, k, v)
+
+            # Auto-derive distinct_values from standard_format whenever it changes.
+            # For Category/Boolean we extract the values from the format string.
+            # For other types we leave whatever was stored from the source data so
+            # the combobox can still offer those values if the user later reclassifies.
+            if "standard_format" in rec_data:
+                sf = rec_data["standard_format"] or ""
+                if sf.startswith("Category:"):
+                    raw = sf[len("Category:"):].strip()
+                    suffix = ", ..." if raw.endswith(", ...") else ""
+                    vals = [v.strip() for v in raw.removesuffix(", ...").split(",") if v.strip()]
+                    record.distinct_values = ", ".join(vals) + suffix if vals else None
+                elif sf.startswith("Boolean"):
+                    import re as _re
+                    m = _re.search(r"\((.+)\)", sf)
+                    if m:
+                        parts = [p.strip() for p in m.group(1).split("/") if p.strip()]
+                        record.distinct_values = ", ".join(sorted(parts)) if parts else None
+                    else:
+                        record.distinct_values = None
+                # else: keep existing distinct_values — still useful as category hint
+
             record.updated_date = today
             record.updated_by = updated_by
             saved += 1

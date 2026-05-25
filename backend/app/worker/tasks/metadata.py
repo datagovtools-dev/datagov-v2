@@ -96,11 +96,34 @@ def _detect_data_type(values: list[Any]) -> str:
 
 
 def _get_sample_data(values: list[Any]) -> str:
-    """Return first non-null value or '(All Blank)'."""
+    """Return up to 5 distinct non-null values pipe-separated, or '(All Blank)'."""
+    seen: list[str] = []
     for v in values:
-        if v is not None and str(v).strip():
-            return str(v)[:200]
-    return "(All Blank)"
+        if v is not None:
+            s = str(v).strip()
+            if s and s not in seen:
+                seen.append(s)
+                if len(seen) == 5:
+                    break
+    return " | ".join(s[:100] for s in seen) if seen else "(All Blank)"
+
+
+def _get_distinct_values(values: list[Any], standard_format: str | None) -> str | None:
+    """Return comma-separated distinct values.
+
+    Always stored for Category/Boolean. Also stored for any other format with
+    ≤ 25 unique non-null values so the UI can offer them if the user later
+    reclassifies the column to Category.
+    """
+    non_null = sorted({str(v).strip() for v in values if v is not None and str(v).strip()})
+    if not non_null:
+        return None
+    is_cat_bool = standard_format and (
+        standard_format.startswith("Category:") or standard_format.startswith("Boolean")
+    )
+    if not is_cat_bool and len(non_null) > 25:
+        return None
+    return ", ".join(non_null[:20]) if non_null else None
 
 
 def _is_primary_key_candidate(values: list[Any]) -> bool:
@@ -114,7 +137,18 @@ def _is_nullable(values: list[Any]) -> bool:
     return any(v is None or str(v).strip() == "" for v in values)
 
 
-def _assess_standard_format(values: list[Any]) -> str | None:
+_CAT_NAME_HINTS = {
+    "type", "status", "level", "category", "cat", "grade", "tier", "segment",
+    "class", "flag", "brand", "color", "colour", "region", "zone", "dept",
+    "channel", "method", "mode", "rank", "priority", "state", "group", "grp",
+}
+_TEXT_NAME_HINTS = {
+    "name", "description", "desc", "notes", "note", "remark", "comment",
+    "address", "addr", "text", "message", "msg", "content", "detail", "info",
+}
+
+
+def _assess_standard_format(values: list[Any], column_name: str | None = None) -> str | None:
     """Infer an expected value format/constraint from column values."""
     non_null = [
         str(v).strip() for v in values
@@ -127,16 +161,41 @@ def _assess_standard_format(values: list[Any]) -> str | None:
     unique_vals = list(dict.fromkeys(non_null))  # deduplicated, order-preserved
     n_unique = len(unique_vals)
 
-    # Boolean
+    # Boolean — return specific label matching the actual values in the data
     bool_set = {"true", "false", "yes", "no", "y", "n", "0", "1", "t", "f"}
-    if n_unique <= 4 and all(v.lower() in bool_set for v in unique_vals):
-        return "Boolean (Yes/No or True/False)"
+    bool_positive = {"true", "yes", "y", "1", "t"}
+    bool_unique_lower = {v.lower() for v in unique_vals}
+    if n_unique <= 4 and bool_unique_lower <= bool_set:
+        seen_lower: set = set()
+        deduped: list = []
+        for v in unique_vals:
+            if v.lower() not in seen_lower:
+                seen_lower.add(v.lower())
+                deduped.append(v)
+        ordered = sorted(deduped, key=lambda v: (0 if v.lower() in bool_positive else 1))
+        return f"Boolean ({' / '.join(ordered)})"
 
-    # Categorical / Enum — low cardinality
-    if n_unique <= 15 or (total >= 20 and n_unique / total < 0.1):
-        cats = sorted(unique_vals[:10])
-        suffix = ", ..." if n_unique > 10 else ""
-        return f"Category: {', '.join(cats)}{suffix}"
+    # Categorical — skip pure numeric columns (let them fall through to Integer/Decimal)
+    all_numeric = all(re.match(r"^-?\d+(\.\d+)?$", v) for v in unique_vals)
+    if not all_numeric:
+        col_parts = set(re.split(r"[_\s\-]", (column_name or "").lower()))
+        cat_hint  = bool(col_parts & _CAT_NAME_HINTS)
+        text_hint = bool(col_parts & _TEXT_NAME_HINTS)
+
+        avg_val_len = sum(len(v) for v in non_null) / total
+        long_values = avg_val_len > 35
+
+        n_thresh = 20 if cat_hint else 15
+        r_thresh = 0.12 if cat_hint else 0.10
+
+        avg_freq = total / n_unique
+        if (not long_values and not text_hint and
+            (n_unique <= n_thresh
+             or (total >= 20 and n_unique / total < r_thresh)
+             or (total >= 50 and avg_freq >= 3.0 and n_unique <= 30 and avg_val_len <= 30))):
+            cats = sorted(unique_vals[:10])
+            suffix = ", ..." if n_unique > 10 else ""
+            return f"Category: {', '.join(cats)}{suffix}"
 
     # Date patterns
     date_patterns = [
@@ -157,8 +216,12 @@ def _assess_standard_format(values: list[Any]) -> str | None:
     if sum(1 for v in non_null if re.match(r"^[\w.+\-]+@[\w\-]+\.[a-zA-Z]{2,}$", v)) / total >= 0.8:
         return "Email (name@domain.com)"
 
-    # Phone number
-    if sum(1 for v in non_null if re.match(r"^[+\d][\d\s\-().]{6,18}$", v)) / total >= 0.8:
+    # Phone number — must have a separator (+, -, ., space, parens, x) so pure integers don't match
+    if sum(
+        1 for v in non_null
+        if re.match(r"^[+\d][\d\s\-().x]{6,20}$", v)
+        and re.search(r"[+\s\-().x]", v)
+    ) / total >= 0.8:
         return "Phone number"
 
     # Integer
@@ -173,10 +236,12 @@ def _assess_standard_format(values: list[Any]) -> str | None:
             return f"Decimal ({dp_counts[0]} decimal places)"
         return "Decimal number"
 
-    # ID / Code pattern  e.g. CUST-001, TXN_00123, 12-digit number
+    # ID / Code pattern  e.g. CUST-001, TXN_00123, DEM00001 (no separator), 12-digit number
     id_matches = sum(
         1 for v in non_null
-        if re.match(r"^[A-Z]{2,}[-_]\d+$", v) or re.match(r"^\d{6,20}$", v)
+        if re.match(r"^[A-Z]{2,}[-_]\d+$", v)
+        or re.match(r"^[A-Z]{2,}\d{2,}$", v)
+        or re.match(r"^\d{6,20}$", v)
     )
     if id_matches / total >= 0.8:
         return f"ID / Code (e.g. {non_null[0]})"
@@ -353,11 +418,18 @@ def retrieve_metadata(
             seq = global_seq
             sensitivity = _classify_sensitivity(col)
             business_term = _expand_business_term(col)
-            sample = _get_sample_data(values)
             data_type = _detect_data_type(values)
             pk = _is_primary_key_candidate(values)
             nullable = _is_nullable(values)
-            standard_format = _assess_standard_format(values)
+            standard_format = _assess_standard_format(values, col)
+            # Column-name hint: pure-digit phone columns stored without separators
+            _PHONE_KEYWORDS = {"phone", "mobile", "tel", "hp", "handphone", "telepon", "nohp", "no_hp"}
+            if standard_format in ("Integer (whole number)", "Free text", None):
+                col_lower = col.lower()
+                if any(kw in col_lower for kw in _PHONE_KEYWORDS):
+                    standard_format = "Phone number"
+            distinct_vals = _get_distinct_values(values, standard_format)
+            sample = _get_sample_data(values)
             owner_str = owner_info.get("data_owner", "") if owner_info else ""
             steward_str = owner_info.get("data_steward", "") if owner_info else ""
             current_year = datetime.now(timezone.utc).year
@@ -375,9 +447,10 @@ def retrieve_metadata(
                     """UPDATE metadata_records SET
                        data_sensitivity=%s, business_term=%s, sample_data=%s,
                        data_type=%s, is_primary_key=%s, is_nullable=%s, source_row_count=%s,
-                       standard_format=%s
+                       standard_format=%s, distinct_values=%s
                        WHERE id=%s""",
-                    (sensitivity, business_term, sample, data_type, pk, nullable, row_count, standard_format, existing[0]),
+                    (sensitivity, business_term, sample, data_type, pk, nullable, row_count,
+                     standard_format, distinct_vals, existing[0]),
                 )
                 updated += 1
             else:
@@ -387,16 +460,16 @@ def retrieve_metadata(
                         line_of_business, table_type, project_name, project_year, data_steward, data_owner,
                         data_attribute, data_year, data_sensitivity, business_term, definition_status,
                         sample_data, data_type, is_primary_key, is_nullable,
-                        data_level, standard_format, remarks, source_type, source_row_count,
+                        data_level, standard_format, distinct_values, remarks, source_type, source_row_count,
                         updated_date, updated_by)
                        VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, 'Source', %s, %s,
                                %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s,
-                               'Raw', %s, '-', %s, %s, %s, %s)""",
+                               'Raw', %s, %s, '-', %s, %s, %s, %s)""",
                     (proj_uuid, seq, customer_name, domain_table, line_of_business,
                      project_name, project_year, steward_str, owner_str, col,
                      current_year, sensitivity, business_term,
-                     sample, data_type, pk, nullable, standard_format, source_type, row_count,
-                     today, initiated_by),
+                     sample, data_type, pk, nullable, standard_format, distinct_vals,
+                     source_type, row_count, today, initiated_by),
                 )
                 created += 1
 

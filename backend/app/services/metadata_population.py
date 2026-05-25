@@ -83,10 +83,16 @@ def _detect_data_type(values: list[Any]) -> str:
 
 
 def _get_sample_data(values: list[Any]) -> str:
-    for value in values:
-        if value is not None and str(value).strip():
-            return str(value)[:200]
-    return "(All Blank)"
+    """Return up to 5 distinct non-null values pipe-separated, or '(All Blank)'."""
+    seen: list[str] = []
+    for v in values:
+        if v is not None:
+            s = str(v).strip()
+            if s and s not in seen:
+                seen.append(s)
+                if len(seen) == 5:
+                    break
+    return " | ".join(s[:100] for s in seen) if seen else "(All Blank)"
 
 
 def _is_primary_key_candidate(values: list[Any]) -> bool:
@@ -101,16 +107,35 @@ def _is_nullable(values: list[Any]) -> bool:
 
 
 def _get_distinct_values(values: list[Any], standard_format: str | None) -> str | None:
-    """Return comma-separated distinct values for categorical/boolean columns only."""
-    if not standard_format:
-        return None
-    if not (standard_format.startswith("Category:") or standard_format.startswith("Boolean")):
-        return None
+    """Return comma-separated distinct values.
+
+    Always stored for Category/Boolean. Also stored for any other format with
+    ≤ 25 unique non-null values so the UI can offer them if the user later
+    reclassifies the column to Category.
+    """
     non_null = sorted({str(v).strip() for v in values if v is not None and str(v).strip()})
+    if not non_null:
+        return None
+    is_cat_bool = standard_format and (
+        standard_format.startswith("Category:") or standard_format.startswith("Boolean")
+    )
+    if not is_cat_bool and len(non_null) > 25:
+        return None
     return ", ".join(non_null[:20]) if non_null else None
 
 
-def _assess_standard_format(values: list[Any]) -> str | None:
+_CAT_NAME_HINTS = {
+    "type", "status", "level", "category", "cat", "grade", "tier", "segment",
+    "class", "flag", "brand", "color", "colour", "region", "zone", "dept",
+    "channel", "method", "mode", "rank", "priority", "state", "group", "grp",
+}
+_TEXT_NAME_HINTS = {
+    "name", "description", "desc", "notes", "note", "remark", "comment",
+    "address", "addr", "text", "message", "msg", "content", "detail", "info",
+}
+
+
+def _assess_standard_format(values: list[Any], column_name: str | None = None) -> str | None:
     non_null = [
         str(value).strip() for value in values
         if value is not None and str(value).strip() and str(value).strip().lower() not in ("nan", "none", "")
@@ -123,13 +148,41 @@ def _assess_standard_format(values: list[Any]) -> str | None:
     unique_count = len(unique_values)
 
     bool_set = {"true", "false", "yes", "no", "y", "n", "0", "1", "t", "f"}
-    if unique_count <= 4 and all(value.lower() in bool_set for value in unique_values):
-        return "Boolean (Yes/No or True/False)"
+    bool_positive = {"true", "yes", "y", "1", "t"}
+    bool_unique_lower = {value.lower() for value in unique_values}
+    if unique_count <= 4 and bool_unique_lower <= bool_set:
+        seen_lower: set = set()
+        deduped: list = []
+        for value in unique_values:
+            if value.lower() not in seen_lower:
+                seen_lower.add(value.lower())
+                deduped.append(value)
+        ordered = sorted(deduped, key=lambda v: (0 if v.lower() in bool_positive else 1))
+        return f"Boolean ({' / '.join(ordered)})"
 
-    if unique_count <= 15 or (total >= 20 and unique_count / total < 0.1):
-        categories = sorted(unique_values[:10])
-        suffix = ", ..." if unique_count > 10 else ""
-        return f"Category: {', '.join(categories)}{suffix}"
+    all_numeric = all(re.match(r"^-?\d+(\.\d+)?$", value) for value in unique_values)
+    if not all_numeric:
+        # Column-name signals
+        col_parts = set(re.split(r"[_\s\-]", (column_name or "").lower()))
+        cat_hint  = bool(col_parts & _CAT_NAME_HINTS)
+        text_hint = bool(col_parts & _TEXT_NAME_HINTS)
+
+        # Value-shape signals
+        avg_val_len = sum(len(v) for v in non_null) / total
+        long_values = avg_val_len > 35
+
+        # Thresholds — boosted slightly when column name suggests a category
+        n_thresh = 20 if cat_hint else 15
+        r_thresh = 0.12 if cat_hint else 0.10
+
+        avg_freq = total / unique_count
+        if (not long_values and not text_hint and
+            (unique_count <= n_thresh
+             or (total >= 20 and unique_count / total < r_thresh)
+             or (total >= 50 and avg_freq >= 3.0 and unique_count <= 30 and avg_val_len <= 30))):
+            categories = sorted(unique_values[:10])
+            suffix = ", ..." if unique_count > 10 else ""
+            return f"Category: {', '.join(categories)}{suffix}"
 
     date_patterns = [
         (r"^\d{4}-\d{2}-\d{2}$", "Date (YYYY-MM-DD)"),
@@ -147,7 +200,11 @@ def _assess_standard_format(values: list[Any]) -> str | None:
     if sum(1 for value in non_null if re.match(r"^[\w.+\-]+@[\w\-]+\.[a-zA-Z]{2,}$", value)) / total >= 0.8:
         return "Email (name@domain.com)"
 
-    if sum(1 for value in non_null if re.match(r"^[+\d][\d\s\-().]{6,18}$", value)) / total >= 0.8:
+    if sum(
+        1 for value in non_null
+        if re.match(r"^[+\d][\d\s\-().x]{6,20}$", value)
+        and re.search(r"[+\s\-().x]", value)
+    ) / total >= 0.8:
         return "Phone number"
 
     if sum(1 for value in non_null if re.match(r"^-?\d+$", value)) / total >= 0.9:
@@ -162,7 +219,9 @@ def _assess_standard_format(values: list[Any]) -> str | None:
 
     id_matches = sum(
         1 for value in non_null
-        if re.match(r"^[A-Z]{2,}[-_]\d+$", value) or re.match(r"^\d{6,20}$", value)
+        if re.match(r"^[A-Z]{2,}[-_]\d+$", value)
+        or re.match(r"^[A-Z]{2,}\d{2,}$", value)
+        or re.match(r"^\d{6,20}$", value)
     )
     if id_matches / total >= 0.8:
         return f"ID / Code (e.g. {non_null[0]})"
@@ -514,7 +573,13 @@ async def populate_metadata_records(
             data_type = _detect_data_type(values)
             primary_key = _is_primary_key_candidate(values)
             nullable = _is_nullable(values)
-            standard_format = _assess_standard_format(values)
+            standard_format = _assess_standard_format(values, column)
+            # Column-name hint: pure-digit phone columns stored without separators
+            _PHONE_KEYWORDS = {"phone", "mobile", "tel", "hp", "handphone", "telepon", "nohp", "no_hp"}
+            if standard_format in ("Integer (whole number)", "Free text", None):
+                col_lower = column.lower()
+                if any(kw in col_lower for kw in _PHONE_KEYWORDS):
+                    standard_format = "Phone number"
             distinct_vals = _get_distinct_values(values, standard_format)
 
             if existing:

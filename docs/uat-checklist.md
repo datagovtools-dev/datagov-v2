@@ -3,7 +3,7 @@
 
 **Environment:** Staging  
 **Tester:** Data Governance Team  
-**Target:** All 68 MVP functional requirements pass
+**Target:** All 76 MVP functional requirements pass
 
 ---
 
@@ -16,7 +16,7 @@
 | FR-ACC-003 | Data Steward has domain-scoped view/edit only | ☐ | ☐ | |
 | FR-ACC-004 | Regular User receives access-denied for restricted areas | ☐ | ☐ | |
 | FR-ACC-005 | Auditor has read-only audit trail access | ☐ | ☐ | |
-| FR-PRJ-001 | Super Admin can create project with all 13 mandatory fields | ☐ | ☐ | |
+| FR-PRJ-001 | Super Admin can create project; form has 13 fields (4 required: Name, Customer, Year, Category) | ☐ | ☐ | |
 | FR-PRJ-002 | Cascading Year→Customer→Project filter works | ☐ | ☐ | |
 | FR-PRJ-003 | All workspace sections inactive until project selected | ☐ | ☐ | |
 
@@ -88,14 +88,20 @@
 | FR-META-012 | Bulk grouping applies to all columns in table | ☐ | ☐ | |
 | FR-META-013 | Business term auto-expansion from abbreviation map | ☐ | ☐ | |
 | FR-META-014 | Ollama AI generates business definitions per row | ☐ | ☐ | |
-| FR-META-015 | is_primary_key derived from DQ uniqueness data | ☐ | ☐ | |
-| FR-META-016 | is_nullable derived from DQ completeness data | ☐ | ☐ | |
+| FR-META-015 | is_primary_key derived from sample data (all non-null values are unique → PK candidate) | ☐ | ☐ | |
+| FR-META-016 | is_nullable derived from sample data (any null or blank value present → nullable) | ☐ | ☐ | |
 | FR-META-017 | sample_data shows first non-null value or "(All Blank)" | ☐ | ☐ | |
 | FR-META-018 | data_type correctly inferred from schema or sample values | ☐ | ☐ | |
 | FR-META-019 | updated_date and updated_by stamped per row on save | ☐ | ☐ | |
 | FR-META-020 | data_level defaults to Raw, overridable | ☐ | ☐ | |
 | FR-META-021 | Batch save persists all pending edits atomically | ☐ | ☐ | |
 | FR-META-022 | Data Owner & Steward management (5 role types) | ☐ | ☐ | |
+| FR-META-023 | Standard Format combobox shows grouped options (Boolean / Categorical / Date & Time / Contact / Numeric / Identifier / Text) with free-text fallback | ☐ | ☐ | |
+| FR-META-024 | Selecting Category from combobox auto-fills with stored distinct values for that attribute | ☐ | ☐ | |
+| FR-META-025 | Editing Table Type, Data Year, Grouping, or Level on one row propagates the same value to all other attributes in the same table | ☐ | ☐ | |
+| FR-META-026 | distinct_values stored for all Category/Boolean columns and for any column with ≤ 25 unique non-null values | ☐ | ☐ | |
+| FR-META-027 | Saving standard_format as Category auto-derives distinct_values from the format string; Boolean derives sorted values; other formats preserve existing distinct_values | ☐ | ☐ | |
+| FR-META-028 | Boolean standard_format label is specific to data (Yes / No, True / False, 1 / 0, Y / N, T / F) not generic | ☐ | ☐ | |
 
 ## Cross-Cutting Requirements
 

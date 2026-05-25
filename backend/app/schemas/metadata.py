@@ -84,6 +84,7 @@ class MetadataRecordOut(BaseModel):
     business_definition: Optional[str] = None
     definition_status: str
     standard_format: Optional[str] = None
+    distinct_values: Optional[str] = None
     is_primary_key: Optional[bool] = None
     is_nullable: Optional[bool] = None
     sample_data: Optional[str] = None

@@ -23,7 +23,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 | **Record of Processing Activities (ROPA)** | Document and track all data processing activities; filter by legal basis |
 | **Data Extermination / BAPD** | Manage data disposal/extermination requests with evidence upload and approval; manage retention policies (8 built-in policy types); auto-discover datasets eligible for disposal based on retention expiry |
 | **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated data quality checks; DQ run results go through a review/approval workflow (pending → running → completed → under_review → approved/rejected) |
-| **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; Source Tables section shows all documented tables for a project across all source types; enrich with AI-generated business definitions via configurable Ollama (local or cloud); batch-process definitions in chunks to avoid connection pool exhaustion; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; bulk grouping assignment per table; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges) |
+| **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; Source Tables section shows all documented tables for a project across all source types with **"Open All Tables →"** shortcut to the full attribute grid; enrich with AI-generated business definitions via configurable Ollama (local or cloud); batch-process definitions in chunks to avoid connection pool exhaustion; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; bulk grouping assignment per table; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges); uploaded Excel/CSV files persisted to `uploads_data` volume and tracked in `project_source_files`; 30-day post-project retention with 7-day advance warning and auto-deletion |
 | **Settings** | Manage users, roles, notification preferences, and AI/LLM configuration (provider, mode, base URL, model name, API key, batch size, timeout); test connection from the settings page |
 | **Audit Log** | Full audit trail of all actions across modules; filter by module, action, entity, actor, and date range |
 
@@ -133,6 +133,7 @@ Default admin login:
 
 | Role | Access Level |
 |------|-------------|
+| `super_admin` | Unrestricted access — bypasses all user-identity and approval-step UI gates (DPIA approver check, DSR/AICK signature step locks, ROPA edit lock); all business rules still apply for other roles |
 | `admin` | Full access including user management |
 | `compliance_officer` | Full operational access (all modules: create, edit, approve) |
 | `dpo` | Same as compliance_officer |
@@ -146,9 +147,10 @@ Default admin login:
 - **Automatic linked-record creation** — submitting a DSR auto-creates a paired AICK and DPIA for the same project
 - **Sign-off with e-signature** — draw, drag-and-drop, or upload signature images; "Signed off" status requires both prepared and acknowledged physical signatures to be present; decision locked once signed
 - **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using a configurable Ollama provider (local or cloud mode); validated llama3.2:3b Variant A prompt (verb-first, 7-rule, CRITICAL semicolon ban, categorical/PII/PK/nullable conditionals) with Variant A hyperparameters applied identically across the API endpoint and Celery worker; post-processing normalises output (newline collapse, semicolon-to-sentence conversion, trailing period); model and base URL are DB-driven (configured in Settings > AI Setup); "Generate All AI Definitions" button auto-disables when all records are already generated; batch-chunked endpoint avoids connection pool exhaustion; single-record regeneration also available
-- **Standard Format auto-assessment** — on every metadata import the worker classifies each column's value format (date, categorical, phone, email, integer, decimal, ID/code, free text) and stores it automatically
-- **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved; Source Tables section shows all documented tables across all source types
-- **Metadata attributes grid** — 19-column inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); bulk Save All stamp; bulk grouping assignment per table
+- **Standard Format auto-assessment** — on every metadata import the worker classifies each column's value format using multi-signal detection: boolean (specific label per data — Yes/No, True/False, 1/0 etc.), categorical (column-name hints + value-length + cardinality thresholds), phone (separator required to avoid false positives on numeric amounts; column-name override for digit-only phone columns), date, email, integer, decimal, ID/code, free text; all three pipelines (sync API, async Celery worker, `reapply_standard_format.py`) share identical logic; distinct values stored for all Category/Boolean columns and any column with ≤ 25 unique values as a reclassification hint
+- **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved; Source Tables section shows all documented tables across all source types with per-table "Open Grid →" and a header-level "Open All Tables →" button; uploaded Excel/CSV files are persisted to a dedicated Docker volume (`uploads_data`) and tracked in `project_source_files` for future re-runs
+- **Source file retention policy** — uploaded source files (Excel/CSV) kept for 30 days after project `end_date`, then auto-deleted; 7-day advance warning notification sent to the full project team and super admins; GCP/PostgreSQL imports have no physical files — all derived metadata attributes remain permanent regardless of retention
+- **Metadata attributes grid** — inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); per-table or all-tables view via dropdown; bulk Save All stamp; bulk grouping assignment per table
 - **Retention policies & eligibility detection** — BAPD manages 8 built-in retention policy types; eligible datasets (past expiry) are auto-discovered and surfaced as a warning panel
 - **Data Quality review workflow** — DQ runs progress through pending → running → completed → under_review → approved/rejected states
 - **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names; Excel export inserts 7 project-level columns; all document PDFs (Project, DSR, AICK, DPIA) share a standardised header with colour-coded status and flag badges
@@ -161,7 +163,67 @@ Default admin login:
 
 ---
 
-## Recent Updates (2026-05-25)
+## Recent Updates (2026-05-25) — Metadata Standard Format & UX
+
+### Standard Format — Multi-Signal Categorical Detection
+- **`_assess_standard_format(values, column_name)`** now accepts a column name and uses multiple signals to decide whether a column is categorical:
+  - **Column-name hints**: columns containing words like `type`, `status`, `level`, `brand`, `channel`, `mode`, `priority` etc. get a relaxed threshold (n_unique ≤ 20, ratio < 12 %); columns containing `name`, `notes`, `description`, `address` etc. suppress categorical detection entirely
+  - **Value-length guard**: columns where average value length > 35 chars are never classified as Category
+  - **Tightened thresholds**: n_unique ≤ 15 (base) / 20 (hint), ratio < 10 % (base) / 12 % (hint), frequency ≥ 3.0 (up from 2.0) — prevents continuous numeric ranges (lead_score, Age, Quality_Score) from being misclassified
+  - **Numeric guard**: columns where all unique values are numeric skip the categorical check entirely and fall through to Integer / Decimal
+- Identical logic applied in all three pipelines: sync `metadata_population.py`, async `worker/tasks/metadata.py`, and `scripts/reapply_standard_format.py`
+- `reapply_standard_format.py` re-parses ALL rows from persisted source files (no 100-row cap) and re-applies the latest logic; run it after any classification change to update all projects
+
+### Standard Format — Boolean Specific Labels
+- Boolean columns now return a format label matching their actual data: `Boolean (Yes / No)`, `Boolean (True / False)`, `Boolean (1 / 0)`, `Boolean (Y / N)`, `Boolean (T / F)` etc. instead of the generic `Boolean (Yes/No or True/False)`
+- Positive values sorted first (Yes before No, True before False, 1 before 0)
+
+### Standard Format — Phone Number Fix
+- Phone regex now requires at least one separator character (` + - . () x`) so pure-integer price/amount columns (Sale Price, Discount Amount, Down Payment stored as large Rupiah integers) are no longer misclassified as Phone number
+- Column-name override added: if `_assess_standard_format()` returns Integer / Free text / None AND the column name contains `phone`, `mobile`, `tel`, `hp`, `handphone`, `telepon`, `nohp`, or `no_hp`, the format is overridden to `Phone number` — handles phone columns that store digits without separators (Indonesian mobile: `081234567890`)
+
+### Standard Format — Combobox UI
+- **`StandardFormatCombobox`** replaces the plain textarea in the Metadata Attributes grid; groups options into: Boolean / Categorical / Date & Time / Contact / Numeric / Identifier / Text
+- Clicking **Category: [type values…]** auto-fills the field with the actual `distinct_values` stored for that attribute — no manual typing needed
+- Free-text entry still available for custom formats
+
+### Table-Level Field Propagation
+- Editing **Table Type**, **Data Year**, **Grouping**, or **Level** on any row in edit mode now propagates the same value to all other attributes in the same table (`data_domain_table`) simultaneously — reflects the fact that these fields describe the table, not individual columns
+- Column headers show a tooltip: "Table-level — editing one row updates all columns in the same table"
+
+### `distinct_values` — Expanded Coverage
+- `_get_distinct_values()` now stores distinct values for **any column with ≤ 25 unique non-null values**, not only Category/Boolean columns — so if a user later reclassifies an Integer or Free text column to Category, the combobox can still auto-populate the values
+- `distinct_values` is now included in `MetadataRecordOut` (was missing from the response schema — field was in DB but never returned to the frontend)
+- **Save endpoint**: when `standard_format` is saved as `Category:…` the distinct_values is derived from the format string; when saved as `Boolean (…)` the values inside the parentheses are extracted and sorted; for all other formats the existing `distinct_values` is preserved (not cleared)
+
+### PRJ-2026-004 Added
+- Fifth project **Customer 360 Analytics and Personalization Platform** (PRJ-2026-004) added with 40 attributes across 4 tables (AI Scoring, Customer Master, Digital Behavior, Transactions)
+- All 226 metadata attributes across all 5 projects have been re-processed with the latest classification logic
+
+---
+
+## Recent Updates (2026-05-25) — Core Platform
+
+### Metadata — Open All Tables Shortcut
+- **"Open All Tables →"** button added to the Source Tables section header; visible whenever at least one table is documented; navigates directly to the Metadata Attributes grid with all tables loaded (no table filter applied)
+- Per-table **"Open Grid →"** links remain for navigating to a specific table directly
+
+### Infrastructure — Nginx DNS Stability
+- Added `resolver 127.0.0.11 valid=30s ipv6=off` to `nginx.conf`; Docker's internal DNS is now re-queried every 30 seconds so nginx automatically recovers when `api` or `worker` containers are recreated with new IPs — previously required a manual `restart nginx`
+
+### Source File Persistence & Retention Policy
+- **`project_source_files` table** (Alembic migration `d8e9f0a1b2c3`) tracks every Excel/CSV file imported per project: original filename, stored path, file size, `uploaded_at`, `uploaded_by`
+- **`uploads_data` Docker named volume** mounted at `/app/uploads` on both `api` and `worker`; scoped to `/app/uploads/{project_id}/`; survives container restarts and redeployments
+- **`proceed_metadata` endpoint** copies each temp file to the persistent volume after successful import and creates a `project_source_files` record; files are available for future re-runs without re-uploading
+- **30-day post-project retention** — source files are automatically deleted 30 days after the project `end_date`; all system-created records (metadata attributes, definitions, DSR, DPIA, AICK, ROPA, BAPD) are **never auto-deleted**
+- **7-day advance warning** — `source_file_expiry_check` Celery Beat task runs daily at 07:00 WIB; sends in-app notification and email to the full project team (DGO, DM, PM, SME, Metadata Officer, DQ Officer, PIC Data Compliance, project creator) and all super admins
+- **Automatic deletion** — on expiry day: physical files removed from `uploads_data` volume, `project_source_files` records deleted, deletion-confirmed notification sent to the same recipients
+- GCP BigQuery and PostgreSQL/Supabase imports have no physical files to clean up — their derived `metadata_records` stay permanently
+
+### Metadata Import — Richer Data Capture
+- **`_get_sample_data()`** now stores up to **5 distinct non-null values** pipe-separated (was 1); richer context for AI definition generation
+- **`distinct_values`** now populated by the Celery `retrieve_metadata` task (was only set by the sync `metadata_population` path); categorical/boolean columns get their full unique value set stored
+- **`backfill_standard_format.py`** updated to use stored `distinct_values` for categorical/boolean re-inference when available, falling back to type + single-sample regex
 
 ### AI Generation Pipeline — End-to-End Alignment
 - **Celery worker `generate_ai_definition`** now reads model name and base URL from `ai_provider_configs` DB table (was hard-coded `OLLAMA_MODEL` env var defaulting to `llama3:8b`)
@@ -254,21 +316,33 @@ datagov-tools/
 │   │   ├── models/        # SQLAlchemy ORM models
 │   │   ├── routers/       # FastAPI route handlers
 │   │   ├── schemas/       # Pydantic request/response schemas
-│   │   └── worker/        # Celery tasks (metadata, DQ, notifications)
+│   │   ├── services/      # Business logic (metadata population, AI generation)
+│   │   └── worker/        # Celery tasks (metadata, DQ, notifications, scheduled)
 │   ├── alembic/           # Database migrations
-│   ├── scripts/           # Seed and utility scripts
+│   ├── scripts/           # Seed and utility scripts (backfill, regenerate)
 │   └── tests/             # Unit and integration tests
 ├── frontend/
 │   └── src/
 │       ├── app/           # Next.js App Router pages
 │       ├── components/    # Shared UI components
-│       ├── lib/           # API client, utilities
+│       ├── lib/           # API client, utilities, PDF export
 │       └── store/         # Auth state (Zustand)
 ├── nginx/                 # Nginx reverse proxy config
 ├── docs/                  # UAT checklist and open items
-├── docker-compose.yml
+├── docker-compose.yml     # Defines: api, worker, beat, frontend, db, redis, nginx, ollama
 └── .env.example
 ```
+
+### Docker volumes
+
+| Volume | Mount path | Purpose |
+|--------|-----------|---------|
+| `postgres_data` | `/var/lib/postgresql/data` | Primary database — permanent |
+| `redis_data` | `/data` | Redis persistence |
+| `ollama_data` | `/root/.ollama` | Downloaded LLM model weights |
+| `tmp_data` | `/tmp` | Shared temp dir for API ↔ worker file handoff |
+| `uploads_data` | `/app/uploads` | Persistent Excel/CSV source files per project |
+| `static_files` | `/var/www/static` | Static assets served by nginx |
 
 ---
 
@@ -279,13 +353,34 @@ datagov-tools/
 ```bash
 # Backend / task code changes — always clear pycache first
 Get-ChildItem -Path backend -Recurse -Filter "__pycache__" -Directory | Remove-Item -Recurse -Force
-docker compose restart worker api nginx
+docker compose restart worker api
+
+# Beat schedule changes (celery_app.py)
+docker compose restart beat
 
 # Frontend changes
 docker compose build frontend
 docker compose up -d frontend
+
+# After any container recreation (up -d) nginx must be restarted
+# to pick up new container IPs (handled automatically after 30s via DNS resolver,
+# but an explicit restart is instant)
 docker compose restart nginx
 ```
+
+> **Note:** Use `docker compose restart` for code-only changes (preserves container IPs).
+> Use `docker compose up -d` only when adding new volume mounts or env vars — this recreates
+> the container and briefly changes its IP. Nginx recovers automatically within 30 s.
+
+### Celery Beat scheduled tasks
+
+| Task | Schedule (WIB) | Purpose |
+|------|---------------|---------|
+| `retention_eligibility_scan` | Daily 02:00 | Flag BAPD records past their expiry date |
+| `cleanup_temp_files` | Daily 03:00 | Delete temp export files older than 24 h from `/tmp` |
+| `source_file_expiry_check` | Daily 07:00 | Warn project teams 7 days before source file deletion; auto-delete on expiry day |
+| `dsr_expiry_check` | Daily 08:00 | Warn on DSRs expiring in 7 days; auto-archive past-due DSRs |
+| `gcp_sa_key_purge` | Every 30 min | Purge in-memory GCP service account keys older than 30 min |
 
 ### Running tests
 

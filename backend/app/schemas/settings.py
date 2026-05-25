@@ -4,8 +4,8 @@ from datetime import datetime
 from pydantic import BaseModel, Field, field_validator
 
 
-DEFAULT_AI_BASE_URL = "https://ollama.com"
-DEFAULT_AI_MODEL = "gpt-oss:120b"
+DEFAULT_AI_BASE_URL = "http://ollama:11434"
+DEFAULT_AI_MODEL = "llama3.2:3b"
 
 
 class AISettingsOut(BaseModel):

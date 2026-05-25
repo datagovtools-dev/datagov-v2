@@ -175,6 +175,27 @@ EVENT_TEMPLATES: dict[str, dict[str, str]] = {
         "action_label": "View Run",
         "action_path": "/dq/{entity_id}",
     },
+    "source_files_expiry_warning": {
+        "subject": "Uploaded Source Files Expiring in 7 Days — {project_name}",
+        "body": (
+            "The uploaded source files for project <strong>{project_name}</strong> "
+            "will be permanently deleted on <strong>{expiry_date}</strong> "
+            "(30 days after the project end date).<br><br>"
+            "If you need to retain these files, please download or re-upload them before the deletion date."
+        ),
+        "action_label": "View Project",
+        "action_path": "/projects/{entity_id}",
+    },
+    "source_files_deleted": {
+        "subject": "Uploaded Source Files Deleted — {project_name}",
+        "body": (
+            "The uploaded source files for project <strong>{project_name}</strong> "
+            "have been automatically deleted as the 30-day retention period after the project end date has elapsed.<br><br>"
+            "The metadata attributes and definitions remain intact in the system."
+        ),
+        "action_label": "View Project",
+        "action_path": "/projects/{entity_id}",
+    },
 }
 
 

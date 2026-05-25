@@ -1,4 +1,4 @@
-# Environment secrets — never commit
+﻿# Environment secrets â€” never commit
 .env
 .env.local
 .env.*.local
@@ -17,7 +17,7 @@ build/
 .mypy_cache/
 .ruff_cache/
 
-# Alembic — keep migrations, ignore local temp
+# Alembic â€” keep migrations, ignore local temp
 backend/alembic/__pycache__/
 
 # Node / Next.js
@@ -44,6 +44,9 @@ clear_prepared_sig.sql
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Claude Code session memory
+.claude/
 
 # IDE
 .vscode/
