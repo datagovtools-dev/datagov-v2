@@ -603,12 +603,17 @@ async def update_checklist(
         raise HTTPException(status_code=404, detail="No AI checklist for this DSR")
     if body.checklist_json is not None:
         checklist.checklist_json = body.checklist_json
-    # Auto-sign-off only when the AI assessment sign-off is approved
+    # Sign-off is complete only when both physical signatures are present
     cj = checklist.checklist_json or {}
-    ai_sign_off = cj.get("ai_assessment", {}).get("sign_off", {})
-    if ai_sign_off.get("approved") == "Yes":
-        checklist.validated_by = current_user.id
-        checklist.validated_at = datetime.now(timezone.utc)
+    main_so = cj.get("sign_off", {})
+    both_signed = bool(main_so.get("prepared_signature")) and bool(main_so.get("acknowledged_signature"))
+    if both_signed:
+        if not checklist.validated_at:
+            checklist.validated_by = str(current_user.id)
+            checklist.validated_at = datetime.now(timezone.utc)
+    else:
+        checklist.validated_by = None
+        checklist.validated_at = None
     db.add(AuditLog(user_id=current_user.id, module="dsr", action="update_checklist",
                     entity_type="ai_checklist", entity_id=str(dsr_id)))
     await db.commit()
