@@ -987,10 +987,10 @@ export default function DSRDetailPage() {
                 return (
                 <li key={step.id} className="ml-4">
                   <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${
-                    step.status === "approved" ? "bg-green-500" :
+                    step.status === "approved"  ? "bg-green-500" :
                     step.status === "rejected"  ? "bg-red-500" :
-                    step.status === "pending"   ? "bg-surface-200" :
-                    "bg-surface-300"
+                    step.status === "requested" ? "bg-primary-500" :
+                    "bg-surface-200"
                   }`} />
                   <p className={`text-sm font-medium ${step.status === "pending" ? "text-surface-400" : "text-surface-800"}`}>
                     {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}

@@ -1164,15 +1164,20 @@ export default function AIChecklistDetailPage() {
                   {[...dsr.approvals].sort((a, b) => a.step_order - b.step_order).map((step) => (
                     <li key={step.id} className="ml-4">
                       <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${
-                        step.status === "approved" ? "bg-green-500" : step.status === "rejected" ? "bg-red-500" : "bg-surface-300"
+                        step.status === "approved"  ? "bg-green-500" :
+                        step.status === "rejected"  ? "bg-red-500" :
+                        step.status === "requested" ? "bg-primary-500" :
+                        "bg-surface-200"
                       }`} />
-                      <p className="text-sm font-medium text-surface-800">{DSR_STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}</p>
-                      <p className="text-xs text-surface-500">{step.approver_name || <span className="italic text-surface-400">Not yet actioned</span>}</p>
+                      <p className={`text-sm font-medium ${step.status === "pending" ? "text-surface-400" : "text-surface-800"}`}>{DSR_STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}</p>
+                      <p className={`text-xs ${step.status === "pending" ? "text-surface-400" : "text-surface-500"}`}>{step.approver_name || "—"}</p>
                       <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                        step.status === "approved" ? "bg-green-100 text-green-700" :
-                        step.status === "rejected" ? "bg-red-100 text-red-700" : "bg-surface-100 text-surface-500"
+                        step.status === "approved"  ? "bg-green-100 text-green-700" :
+                        step.status === "rejected"  ? "bg-red-100 text-red-700" :
+                        step.status === "requested" ? "bg-primary-100 text-primary-700" :
+                        "bg-surface-100 text-surface-400"
                       }`}>
-                        {step.status === "approved" ? "Approved" : step.status === "rejected" ? "Rejected" : "Requested"}
+                        {step.status === "approved" ? "Approved" : step.status === "rejected" ? "Rejected" : step.status === "pending" ? "Not Yet" : "Requested"}
                       </span>
                       {step.actioned_at && (
                         <p className="text-xs text-surface-400 mt-0.5">{new Date(step.actioned_at).toLocaleString()}</p>
