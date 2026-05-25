@@ -3,7 +3,7 @@
 
 **Environment:** Staging  
 **Tester:** Data Governance Team  
-**Target:** All 76 MVP functional requirements pass
+**Target:** All 81 MVP functional requirements pass
 
 ---
 
@@ -72,11 +72,16 @@
 | FR-DQ-001 | GCP BigQuery source connection validates successfully | ☐ | ☐ | |
 | FR-DQ-002 | GCP connection error displays meaningful message | ☐ | ☐ | |
 | FR-DQ-003 | Excel upload shows 10-row preview with type badges | ☐ | ☐ | |
-| FR-DQ-004 | Async DQ generation computes completeness/uniqueness/consistency | ☐ | ☐ | |
+| FR-DQ-004 | Async DQ generation computes all 4 dimensions per column: Completeness, Consistency (AI regex via Ollama), Uniqueness, Latency | ☐ | ☐ | |
 | FR-DQ-005 | Governance review with approve/reject/revision | ☐ | ☐ | |
 | FR-DQ-006 | Approved run archived to BigQuery + GCS | ☐ | ☐ | |
 | FR-DQ-007 | Email notifications sent on run complete/review/result | ☐ | ☐ | |
 | FR-DQ-008 | Re-run creates new version with delta comparison | ☐ | ☐ | |
+| FR-DQ-009 | Consistency dimension calls Ollama to generate a regex pattern and business rules per column; falls back to rule-based pattern detection if Ollama unavailable or times out | ☐ | ☐ | |
+| FR-DQ-010 | Uniqueness dimension only created for fully-unique columns (Total Rows == Total Unique non-null values); index = 100 for qualifying columns | ☐ | ☐ | |
+| FR-DQ-011 | Latency dimension only created for datetime columns; score: 100 (≤0 days), 70 (1–7 days), 50 (8–14 days), 30 (15–30 days), 0 (>30 days old) | ☐ | ☐ | |
+| FR-DQ-012 | Each dq_results row stores: business_rules, regex_pattern, ai_model, regex_version, column_category — enabling the DQ Template output format | ☐ | ☐ | |
+| FR-DQ-013 | DQ detail page Score tab shows dynamic dimension bars per column (1–4 bars); Rules tab shows dimension filter chips + Business Rules, Regex Pattern, AI Model columns with expandable text | ☐ | ☐ | |
 
 ## Module 7: Metadata Management + AI
 

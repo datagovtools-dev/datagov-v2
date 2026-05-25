@@ -43,6 +43,11 @@ class DQResult(Base):
     row_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     failed_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    business_rules: Mapped[str | None] = mapped_column(Text, nullable=True)
+    regex_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ai_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    regex_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    column_category: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     run: Mapped["DQRun"] = relationship(back_populates="results")

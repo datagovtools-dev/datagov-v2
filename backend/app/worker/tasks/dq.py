@@ -1,170 +1,436 @@
 """
 Celery task: run_dq_generation
-Computes Completeness, Uniqueness, Consistency, and Findings for a dataset.
-Supports GCP BigQuery and Excel (openpyxl) sources.
+Computes Completeness, Consistency (AI-powered via Ollama), Uniqueness,
+and Latency for a dataset. Supports GCP BigQuery, Excel, and PostgreSQL.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
+import random
 import re
 import tempfile
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+import requests
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
 
-# ── DQ computation helpers ─────────────────────────────────────────────────────
+# ── Prompt template ────────────────────────────────────────────────────────────
+
+CONSISTENCY_PROMPT = """Offer broad validation rules and a RegEx pattern based on the dataset's characteristics (Column Name, Type, and Value). Aim to capture the essence of what makes data reliable and uniform in the larger dataset. Consider the data snapshot thoroughly and assume the provided information is accurate but may not fully encompass all data. Prioritize creating the output from the data snapshot based on Sample Values, followed by Column Name, and then Column Type.
+
+Requirements:
+1. Validation Rules:
+- Propose validation rules that encompass all the sample data provided.
+- Clearly differentiate between mandatory and optional segments in the sample values.
+- Identify edge cases that might arise.
+
+2. Generalized Regex Pattern:
+- Create a generalized RegEx pattern (only in UTF-8) based on the rules.
+- For column type float64, ensure the regex pattern handles floating-point numbers including optional decimal places.
+- Do not overcomplicate the pattern; use a general pattern if the value is too complex and varied.
+- The regex pattern should be compatible with the "import re" library in Python.
+- Use ^ at the beginning and $ at the end of the pattern.
+
+3. Test the regex against each sample value and iterate until all values match (or stop after 2 minutes).
+
+4. Sample data:
+Column Name: <COLUMN-NAME>
+Column Type: <COLUMN-TYPE>
+Sample Values: <COLUMN-DATA>
+
+5. Generate this as final output:
+- Column Name: <INSERT_SOMETHING>
+- Column Type: <INSERT_SOMETHING>
+- Business Rules: a. <INSERT_SOMETHING>; b. <INSERT_SOMETHING>; c. <INSERT_SOMETHING>
+- RegEx Pattern: r'^<INSERT-YOUR-REGEX-HERE>$'
+- Complexity: <High, Medium, Low>
+- Reasoning: <The reasoning>
+
+Indicate your final output by typing: "HERE IS THE FINAL RESULT". Only output what is in template number 5 after that line.
+"""
+
+# ── AI helpers ─────────────────────────────────────────────────────────────────
+
+def _get_ai_config(db_url: str) -> tuple[str, str, int]:
+    """Return (model_name, base_url, timeout_seconds) from ai_provider_configs."""
+    import psycopg2
+    defaults = ("llama3.2:3b", "http://ollama:11434", 120)
+    try:
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT model_name, base_url, timeout_seconds FROM ai_provider_configs "
+            "WHERE enabled = true ORDER BY created_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row:
+            return row[0], row[1], row[2]
+    except Exception as exc:
+        logger.warning("Could not load AI config from DB: %s", exc)
+    return defaults
+
+
+def _check_sample_size(n: int) -> int:
+    if n < 200:
+        return n
+    if n < 500:
+        return math.ceil(0.5 * n)
+    if n <= 5000:
+        return math.ceil(0.3 * n)
+    return math.ceil(0.1 * n)
+
+
+def _call_ollama(prompt: str, model: str, base_url: str, timeout: int = 120) -> str:
+    resp = requests.post(
+        f"{base_url.rstrip('/')}/api/generate",
+        json={"model": model, "prompt": prompt, "stream": False},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json().get("response", "")
+
+
+def _extract_from_output(raw_text: str) -> dict:
+    result = {"business_rules": "", "regex_pattern": ""}
+
+    m = re.search(r"HERE IS THE FINAL RESULT\.?\s*", raw_text, re.DOTALL | re.IGNORECASE)
+    if m:
+        raw_text = raw_text[m.end():]
+
+    raw_text = re.sub(r"\*\*", "", raw_text, flags=re.DOTALL)
+
+    clean = re.sub(r"\*|\s{2,}", "", raw_text, flags=re.DOTALL)
+    br_m = re.search(r"Business Rules:\s*(.*?)\s*RegEx Pattern:", clean, re.DOTALL)
+    result["business_rules"] = br_m.group(1).strip() if br_m else ""
+
+    rx_m = re.search(r"r'\^.*?\$'", raw_text, re.DOTALL)
+    result["regex_pattern"] = rx_m.group(0).strip() if rx_m else ""
+
+    return result
+
+
+def _clean_regex(raw_pattern: str) -> str:
+    """Strip r'...' wrapper, return just the regex string."""
+    pat = raw_pattern.strip()
+    pat = re.sub(r"^r'", "", pat)
+    pat = re.sub(r"'$", "", pat)
+    return pat
+
+
+def _apply_regex_score(values: list[Any], regex_str: str) -> tuple[int, int, float]:
+    """Return (matched, total_non_null, score_pct)."""
+    non_null = [v for v in values if v is not None]
+    total = len(non_null)
+    matched = 0
+    if regex_str and total:
+        try:
+            pat = re.compile(regex_str, re.DOTALL)
+            matched = sum(1 for v in non_null if pat.fullmatch(str(v)))
+        except re.error:
+            pass
+    score = round((matched / total) * 100, 2) if total else 0.0
+    return matched, total, score
+
+
+# ── Format-detection fallback ──────────────────────────────────────────────────
+
+def _detect_format_regex(values: list[Any]) -> str | None:
+    samples = [str(v) for v in values if v is not None][:50]
+    if not samples:
+        return None
+    patterns = [
+        (r"^[\w._%+\-]+@[\w.\-]+\.[a-zA-Z]{2,}$", "email"),
+        (r"^\d{4}-\d{2}-\d{2}$", "date_iso"),
+        (r"^\+?\d[\d\s\-]{7,14}$", "phone"),
+        (r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "uuid"),
+        (r"^\d+$", "integer"),
+        (r"^-?\d+(\.\d+)?$", "decimal"),
+    ]
+    for pat, _ in patterns:
+        hits = sum(1 for s in samples if re.match(pat, s, re.IGNORECASE))
+        if hits / len(samples) >= 0.7:
+            return pat
+    return None
+
+
+# ── Compute functions ──────────────────────────────────────────────────────────
 
 def _score_pct(passed: int, total: int) -> float:
     return round((passed / total) * 100, 2) if total else 0.0
 
 
-def _compute_completeness(values: list[Any]) -> dict:
+def _infer_dtype(values: list[Any]) -> str:
+    non_null = [v for v in values if v is not None]
+    if not non_null:
+        return "object"
+    sample = non_null[:20]
+    if all(isinstance(v, bool) for v in sample):
+        return "bool"
+    if all(isinstance(v, int) and not isinstance(v, bool) for v in sample):
+        return "int64"
+    if all(isinstance(v, float) for v in sample):
+        return "float64"
+    return "object"
+
+
+def _compute_completeness(col: str, values: list[Any]) -> dict:
     total = len(values)
     non_null = sum(1 for v in values if v is not None and str(v).strip() != "")
-    score = _score_pct(non_null, total)
     null_count = total - non_null
+    score = _score_pct(non_null, total)
     return {
+        "check_name": f"{col}__completeness",
         "check_type": "completeness",
+        "column_name": col,
+        "score": score,
         "row_count": total,
         "failed_count": null_count,
-        "score": score,
         "status": "pass" if score >= 95 else "warning" if score >= 80 else "fail",
+        "business_rules": f"There should be no empty field for {col} in this table",
+        "regex_pattern": None,
+        "ai_model": None,
+        "regex_version": None,
         "details": {"null_count": null_count, "non_null_count": non_null},
     }
 
 
-def _compute_uniqueness(values: list[Any]) -> dict:
+def _compute_ai_consistency(
+    col: str,
+    col_type: str,
+    values: list[Any],
+    ai_model: str,
+    ai_base_url: str,
+    timeout: int,
+) -> dict:
     total = len(values)
-    unique = len(set(str(v) for v in values if v is not None))
-    duplicate_count = total - unique
-    score = _score_pct(unique, total)
+    non_null = [v for v in values if v is not None]
+    unique_vals = list(set(str(v) for v in non_null))
+    size = min(_check_sample_size(len(unique_vals)), len(unique_vals), 25)
+    random.seed(42)
+    sample = sorted(random.sample(unique_vals, size) if size <= len(unique_vals) else unique_vals)
+
+    raw_text = ""
+    extracted: dict = {"business_rules": "", "regex_pattern": ""}
+    regex_str = ""
+    used_model = "rule-based"
+
+    try:
+        prompt = (
+            CONSISTENCY_PROMPT
+            .replace("<COLUMN-NAME>", col)
+            .replace("<COLUMN-TYPE>", col_type)
+            .replace("<COLUMN-DATA>", str(sample))
+        )
+        raw_text = _call_ollama(prompt, ai_model, ai_base_url, timeout)
+        extracted = _extract_from_output(raw_text)
+        regex_str = _clean_regex(extracted.get("regex_pattern", ""))
+        used_model = ai_model
+    except Exception as exc:
+        logger.warning("AI consistency failed for '%s': %s — falling back to rule-based", col, exc)
+        regex_str = _detect_format_regex(values) or ""
+
+    matched, non_null_total, score = _apply_regex_score(values, regex_str)
+    failed = non_null_total - matched
+
     return {
-        "check_type": "uniqueness",
-        "row_count": total,
-        "failed_count": duplicate_count,
+        "check_name": f"{col}__consistency",
+        "check_type": "consistency",
+        "column_name": col,
         "score": score,
-        "status": "pass" if score >= 95 else "warning" if score >= 80 else "fail",
-        "details": {"unique_count": unique, "duplicate_count": duplicate_count},
+        "row_count": total,
+        "failed_count": failed,
+        "status": "pass" if score >= 95 else "warning" if score >= 70 else "fail",
+        "business_rules": extracted.get("business_rules") or "",
+        "regex_pattern": regex_str,
+        "ai_model": used_model,
+        "regex_version": "New Version",
+        "details": {
+            "matched": matched,
+            "raw_text": raw_text[:3000] if raw_text else "",
+        },
     }
 
 
-def _detect_format(values: list[Any]) -> str | None:
-    """Detect dominant format regex from sample values."""
-    samples = [str(v) for v in values if v is not None][:50]
-    patterns = {
-        "email": r"^[\w._%+\-]+@[\w.\-]+\.[a-zA-Z]{2,}$",
-        "date_iso": r"^\d{4}-\d{2}-\d{2}$",
-        "phone": r"^\+?\d[\d\s\-]{7,14}$",
-        "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        "integer": r"^\d+$",
-        "decimal": r"^\d+\.\d+$",
-    }
-    for fmt, pat in patterns.items():
-        hits = sum(1 for s in samples if re.match(pat, s, re.IGNORECASE))
-        if hits / max(len(samples), 1) >= 0.7:
-            return fmt
+def _compute_uniqueness(col: str, values: list[Any]) -> dict | None:
+    """Only create a Uniqueness row for fully-unique columns (ID-like)."""
+    non_null = [v for v in values if v is not None]
+    total = len(non_null)
+    unique = len(set(str(v) for v in non_null))
+    if total > 0 and total == unique:
+        return {
+            "check_name": f"{col}__uniqueness",
+            "check_type": "uniqueness",
+            "column_name": col,
+            "score": 100.0,
+            "row_count": total,
+            "failed_count": 0,
+            "status": "pass",
+            "business_rules": f"There should be no duplicated field for {col} in this table",
+            "regex_pattern": None,
+            "ai_model": None,
+            "regex_version": None,
+            "details": {"unique_count": unique, "total_non_null": total},
+        }
     return None
 
 
-def _compute_consistency(values: list[Any]) -> dict:
-    fmt = _detect_format(values)
-    if not fmt:
-        return {
-            "check_type": "consistency",
-            "row_count": len(values),
-            "failed_count": 0,
-            "score": 100.0,
-            "status": "pass",
-            "details": {"standard_format": None, "note": "no dominant format detected"},
-        }
-    samples = [str(v) for v in values if v is not None]
-    patterns = {
-        "email": r"^[\w._%+\-]+@[\w.\-]+\.[a-zA-Z]{2,}$",
-        "date_iso": r"^\d{4}-\d{2}-\d{2}$",
-        "phone": r"^\+?\d[\d\s\-]{7,14}$",
-        "uuid": r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-        "integer": r"^\d+$",
-        "decimal": r"^\d+\.\d+$",
-    }
-    pat = patterns[fmt]
-    matched = sum(1 for s in samples if re.match(pat, s, re.IGNORECASE))
-    failed = len(samples) - matched
-    score = _score_pct(matched, len(samples))
+def _detect_datetime_cols(columns_data: dict[str, list[Any]]) -> list[str]:
+    result = []
+    for col, values in columns_data.items():
+        non_null = [v for v in values if v is not None][:20]
+        if not non_null:
+            continue
+        if any(isinstance(v, datetime) for v in non_null[:5]):
+            result.append(col)
+            continue
+        date_like = sum(1 for v in non_null if re.match(r"^\d{4}-\d{2}-\d{2}", str(v)))
+        if len(non_null) > 0 and date_like / len(non_null) >= 0.8:
+            result.append(col)
+    return result
+
+
+def _parse_date_safe(v: Any) -> datetime | None:
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v
+    if hasattr(v, "year") and hasattr(v, "month"):
+        return datetime(v.year, v.month, v.day, tzinfo=timezone.utc)
+    s = str(v)
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s[: len(fmt)], fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _compute_latency(col: str, values: list[Any]) -> dict:
+    today = datetime.now(timezone.utc).date()
+    latest = None
+    for v in values:
+        parsed = _parse_date_safe(v)
+        if parsed:
+            d = parsed.date()
+            if latest is None or d > latest:
+                latest = d
+
+    if latest is None:
+        score = 0.0
+    else:
+        days_ago = (today - latest).days  # 0 = today, positive = in the past
+        if days_ago <= 0:
+            score = 100.0
+        elif days_ago <= 7:
+            score = 70.0
+        elif days_ago <= 14:
+            score = 50.0
+        elif days_ago <= 30:
+            score = 30.0
+        else:
+            score = 0.0
+
     return {
-        "check_type": "consistency",
-        "row_count": len(values),
-        "failed_count": failed,
+        "check_name": f"{col}__latency",
+        "check_type": "latency",
+        "column_name": col,
         "score": score,
-        "status": "pass" if score >= 95 else "warning" if score >= 80 else "fail",
-        "details": {"standard_format": fmt, "matched": matched, "format_violations": failed},
+        "row_count": len(values),
+        "failed_count": 0 if score >= 70 else 1,
+        "status": "pass" if score >= 70 else "warning" if score >= 30 else "fail",
+        "business_rules": f"Latest date in {col} should not be more than 14 days ago",
+        "regex_pattern": None,
+        "ai_model": None,
+        "regex_version": None,
+        "details": {
+            "latest_date": str(latest) if latest else None,
+            "days_since_latest": (today - latest).days if latest else None,
+        },
     }
 
 
-def _collect_findings(column: str, completeness: dict, uniqueness: dict, consistency: dict) -> list[dict]:
+def _collect_findings(check: dict) -> list[dict]:
     findings = []
-    if completeness["failed_count"]:
+    col = check["column_name"]
+    score = check["score"]
+    ct = check["check_type"]
+    failed = check["failed_count"]
+
+    if ct == "completeness" and failed:
         findings.append({
-            "severity": "critical" if completeness["score"] < 80 else "warning",
-            "description": f"Column '{column}' has {completeness['failed_count']} null/empty values ({100 - completeness['score']:.1f}% null rate).",
-            "recommendation": f"Investigate data pipeline for missing values in '{column}'.",
-            "category": "null_values",
+            "severity": "critical" if score < 80 else "warning",
+            "description": f"Column '{col}' has {failed} null/empty values ({100 - score:.1f}% null rate).",
+            "recommendation": f"Investigate data pipeline for missing values in '{col}'.",
         })
-    if uniqueness["failed_count"] and column.lower() in ("id", "uuid", "key", "code"):
-        findings.append({
-            "severity": "critical",
-            "description": f"Column '{column}' expected to be unique but has {uniqueness['failed_count']} duplicates.",
-            "recommendation": "Add a unique constraint or cleanse duplicate rows.",
-            "category": "duplicates",
-        })
-    elif uniqueness["failed_count"] and uniqueness["score"] < 50:
+    elif ct == "consistency" and failed and check.get("regex_pattern"):
         findings.append({
             "severity": "warning",
-            "description": f"Column '{column}' has a high duplication rate ({100 - uniqueness['score']:.1f}%).",
-            "recommendation": "Review whether duplicates are expected for this column.",
-            "category": "duplicates",
-        })
-    if consistency["failed_count"]:
-        findings.append({
-            "severity": "warning",
-            "description": f"Column '{column}' has {consistency['failed_count']} values that don't match expected format '{consistency['details'].get('standard_format')}'.",
+            "description": f"Column '{col}' has {failed} values not matching expected pattern ({score:.1f}% match).",
             "recommendation": "Standardise input validation for this field.",
-            "category": "format_violation",
+        })
+    elif ct == "latency" and score < 70:
+        findings.append({
+            "severity": "critical" if score < 30 else "warning",
+            "description": f"Column '{col}' has stale datetime data (latency score: {score:.0f}%).",
+            "recommendation": f"Ensure '{col}' is updated with recent data regularly.",
         })
     return findings
 
 
-def _analyse_dataframe(columns_data: dict[str, list[Any]]) -> tuple[list[dict], float]:
-    """Return (check_results, overall_score)."""
+def _analyse_dataframe(
+    columns_data: dict[str, list[Any]],
+    ai_model: str,
+    ai_base_url: str,
+    ai_timeout: int,
+) -> tuple[list[dict], float]:
+    """Return (check_results_list, overall_score)."""
     results: list[dict] = []
     scores: list[float] = []
 
-    for col, values in columns_data.items():
-        comp = _compute_completeness(values)
-        uniq = _compute_uniqueness(values)
-        cons = _compute_consistency(values)
-        findings = _collect_findings(col, comp, uniq, cons)
+    datetime_cols = _detect_datetime_cols(columns_data)
 
-        for check_dict, check_name in [(comp, f"{col}__completeness"),
-                                        (uniq, f"{col}__uniqueness"),
-                                        (cons, f"{col}__consistency")]:
-            scores.append(check_dict["score"])
-            results.append({
-                "check_name": check_name,
-                "check_type": check_dict["check_type"],
-                "column_name": col,
-                "status": check_dict["status"],
-                "actual_value": str(check_dict["score"]),
-                "row_count": check_dict["row_count"],
-                "failed_count": check_dict["failed_count"],
-                "details": check_dict["details"],
-                "findings": findings if check_dict["check_type"] == "completeness" else [],
-            })
+    for col, values in columns_data.items():
+        col_type = _infer_dtype(values)
+        total_unique = len(set(str(v) for v in values if v is not None))
+
+        # Completeness
+        comp = _compute_completeness(col, values)
+        comp["details"]["total_unique"] = total_unique
+        comp["findings"] = _collect_findings(comp)
+        results.append(comp)
+        scores.append(comp["score"])
+
+        # Consistency (AI-powered with rule-based fallback)
+        cons = _compute_ai_consistency(col, col_type, values, ai_model, ai_base_url, ai_timeout)
+        cons["details"]["total_unique"] = total_unique
+        cons["findings"] = _collect_findings(cons)
+        results.append(cons)
+        scores.append(cons["score"])
+
+        # Uniqueness (only for fully-unique columns)
+        uniq = _compute_uniqueness(col, values)
+        if uniq:
+            uniq["details"]["total_unique"] = total_unique
+            uniq["findings"] = []
+            results.append(uniq)
+            scores.append(uniq["score"])
+
+        # Latency (only for datetime columns)
+        if col in datetime_cols:
+            lat = _compute_latency(col, values)
+            lat["details"]["total_unique"] = total_unique
+            lat["findings"] = _collect_findings(lat)
+            results.append(lat)
+            scores.append(lat["score"])
 
     overall = round(sum(scores) / len(scores), 2) if scores else 0.0
     return results, overall
@@ -188,7 +454,6 @@ def _read_excel(file_path: str, sheet_name: str | None = None) -> dict[str, list
 
 
 def _read_postgres(connection_string: str, table_name: str, max_rows: int = 10_000) -> dict[str, list[Any]]:
-    """Read a PostgreSQL/Supabase table using psycopg2."""
     import psycopg2
     conn = psycopg2.connect(connection_string, connect_timeout=15)
     cur = conn.cursor()
@@ -204,8 +469,9 @@ def _read_postgres(connection_string: str, table_name: str, max_rows: int = 10_0
     return data
 
 
-def _read_bigquery(gcp_project: str, bq_dataset: str, bq_table: str, sa_key: dict | None) -> dict[str, list[Any]]:
-    """Read a BigQuery table using google-cloud-bigquery."""
+def _read_bigquery(
+    gcp_project: str, bq_dataset: str, bq_table: str, sa_key: dict | None
+) -> dict[str, list[Any]]:
     try:
         from google.cloud import bigquery
         from google.oauth2 import service_account
@@ -231,7 +497,7 @@ def _read_bigquery(gcp_project: str, bq_dataset: str, bq_table: str, sa_key: dic
         raise
 
 
-# ── Celery task ────────────────────────────────────────────────────────────────
+# ── Celery tasks ───────────────────────────────────────────────────────────────
 
 @shared_task(
     bind=True,
@@ -252,9 +518,8 @@ def run_dq_generation(
     postgres_connection_string: str | None = None,
     postgres_table: str | None = None,
 ) -> dict:
-    """Compute DQ checks and persist results via synchronous psycopg2."""
+    """Compute 4-dimension DQ checks and persist results via synchronous psycopg2."""
     import psycopg2
-    import json
 
     db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
     if not db_url:
@@ -264,7 +529,6 @@ def run_dq_generation(
     started_at = datetime.now(timezone.utc)
 
     try:
-        # Mark running
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
         cur.execute(
@@ -273,22 +537,27 @@ def run_dq_generation(
         )
         conn.commit()
 
+        # Load AI config from DB
+        ai_model, ai_base_url, ai_timeout = _get_ai_config(db_url)
+        logger.info("DQ run %s using AI model=%s base_url=%s", run_id, ai_model, ai_base_url)
+
         # Load data
         if source_type == "excel" and temp_file_key:
             file_path = os.path.join(tempfile.gettempdir(), temp_file_key)
             columns_data = _read_excel(file_path, sheet_name)
         elif source_type == "gcp" and gcp_project:
-            sa_key = None  # In production, retrieved from _GCP_SA_KEYS store
-            columns_data = _read_bigquery(gcp_project, bq_dataset_name or "", bq_table or "", sa_key)
+            columns_data = _read_bigquery(gcp_project, bq_dataset_name or "", bq_table or "", None)
         elif source_type == "postgres" and postgres_connection_string and postgres_table:
             columns_data = _read_postgres(postgres_connection_string, postgres_table)
         else:
-            raise ValueError(f"Unsupported source_type={source_type}")
+            raise ValueError(f"Unsupported source_type={source_type!r}")
 
-        check_results, overall_score = _analyse_dataframe(columns_data)
+        check_results, overall_score = _analyse_dataframe(
+            columns_data, ai_model, ai_base_url, ai_timeout
+        )
 
         passed = sum(1 for r in check_results if r["status"] == "pass")
-        failed = sum(1 for r in check_results if r["status"] == "fail")
+        failed_checks = sum(1 for r in check_results if r["status"] == "fail")
         total = len(check_results)
         completed_at = datetime.now(timezone.utc)
 
@@ -297,12 +566,19 @@ def run_dq_generation(
             cur.execute(
                 """INSERT INTO dq_results
                    (id, run_id, check_name, check_type, column_name,
-                    status, actual_value, row_count, failed_count, details)
-                   VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    status, actual_value, row_count, failed_count, details,
+                    business_rules, regex_pattern, ai_model, regex_version, column_category)
+                   VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                           %s, %s, %s, %s, %s)
                    RETURNING id""",
-                (run_uuid, r["check_name"], r["check_type"], r["column_name"],
-                 r["status"], r["actual_value"], r["row_count"], r["failed_count"],
-                 json.dumps(r["details"])),
+                (
+                    run_uuid,
+                    r["check_name"], r["check_type"], r["column_name"],
+                    r["status"], str(r["score"]), r["row_count"], r["failed_count"],
+                    json.dumps(r.get("details", {})),
+                    r.get("business_rules"), r.get("regex_pattern"),
+                    r.get("ai_model"), r.get("regex_version"), r.get("column_category"),
+                ),
             )
             result_id = cur.fetchone()[0]
 
@@ -319,13 +595,12 @@ def run_dq_generation(
                status='completed', completed_at=%s,
                total_checks=%s, passed_checks=%s, failed_checks=%s, overall_score=%s
                WHERE id=%s""",
-            (completed_at, total, passed, failed, overall_score, run_uuid),
+            (completed_at, total, passed, failed_checks, overall_score, run_uuid),
         )
         conn.commit()
         cur.close()
         conn.close()
 
-        # Send notification
         try:
             from app.worker.tasks.notifications import send_workflow_notification
             send_workflow_notification.delay(
@@ -336,18 +611,18 @@ def run_dq_generation(
             pass
 
         logger.info("DQ run %s completed: score=%.1f%%, checks=%d", run_id, overall_score, total)
-        return {"run_id": run_id, "overall_score": overall_score, "total_checks": total,
-                "passed": passed, "failed": failed}
+        return {"run_id": run_id, "overall_score": overall_score,
+                "total_checks": total, "passed": passed, "failed": failed_checks}
 
     except Exception as exc:
         logger.error("DQ run %s failed: %s", run_id, exc)
         try:
-            conn = psycopg2.connect(db_url)
-            cur = conn.cursor()
-            cur.execute("UPDATE dq_runs SET status='failed' WHERE id=%s", (run_uuid,))
-            conn.commit()
-            cur.close()
-            conn.close()
+            conn2 = psycopg2.connect(db_url)
+            cur2 = conn2.cursor()
+            cur2.execute("UPDATE dq_runs SET status='failed' WHERE id=%s", (run_uuid,))
+            conn2.commit()
+            cur2.close()
+            conn2.close()
         except Exception:
             pass
         raise self.retry(exc=exc, countdown=60)
@@ -359,9 +634,8 @@ def run_dq_generation(
     max_retries=2,
 )
 def archive_to_gcp(self, run_id: str) -> dict:
-    """Write run summary to BigQuery and upload Excel/JSON report to GCS."""
+    """Write run summary to BigQuery and upload report to GCS."""
     import psycopg2
-    import json as _json
 
     db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
     if not db_url:
@@ -372,10 +646,9 @@ def archive_to_gcp(self, run_id: str) -> dict:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
 
-        # Fetch run summary
         cur.execute(
-            "SELECT dataset_name, dataset_location, overall_score, total_checks, "
-            "passed_checks, failed_checks, completed_at FROM dq_runs WHERE id=%s",
+            "SELECT dataset_name, overall_score, total_checks, passed_checks, "
+            "failed_checks, completed_at FROM dq_runs WHERE id=%s",
             (run_uuid,),
         )
         row = cur.fetchone()
@@ -383,9 +656,7 @@ def archive_to_gcp(self, run_id: str) -> dict:
             return {"error": "run not found"}
 
         gcs_path = f"gs://dq-governance-outputs/{run_id}/dq_results.xlsx"
-        bq_ref = "dq_governance.run_summaries"
 
-        # Update or create archive record
         cur.execute(
             """INSERT INTO dq_gcp_archives
                (id, run_id, gcs_report_path, bq_dataset, bq_table, archive_status)
@@ -398,9 +669,8 @@ def archive_to_gcp(self, run_id: str) -> dict:
         cur.close()
         conn.close()
 
-        # Real GCS + BQ upload wired at deployment via google-cloud-bigquery / google-cloud-storage
-        logger.info("DQ run %s archived to GCS=%s BQ=%s", run_id, gcs_path, bq_ref)
-        return {"run_id": run_id, "gcs_path": gcs_path, "bq_ref": bq_ref}
+        logger.info("DQ run %s archived to GCS=%s", run_id, gcs_path)
+        return {"run_id": run_id, "gcs_path": gcs_path}
 
     except Exception as exc:
         logger.error("archive_to_gcp failed for run %s: %s", run_id, exc)

@@ -82,6 +82,11 @@ class DQResultOut(BaseModel):
     row_count: Optional[int] = None
     failed_count: Optional[int] = None
     details: Optional[dict[str, Any]] = None
+    business_rules: Optional[str] = None
+    regex_pattern: Optional[str] = None
+    ai_model: Optional[str] = None
+    regex_version: Optional[str] = None
+    column_category: Optional[str] = None
     findings: list[DQFindingOut] = []
     model_config = {"from_attributes": True}
 

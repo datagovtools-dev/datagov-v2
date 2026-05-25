@@ -30,7 +30,7 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 | `bapd_approvals` | — | Dual-approval step records per BAPD |
 | `retention_policies` | 8 | Built-in retention policy types (seeded) |
 | `dq_runs` | — | Data Quality run jobs per project/source |
-| `dq_results` | — | Column-level DQ metrics per run |
+| `dq_results` | — | Column-level DQ metrics per run; stores business_rules, regex_pattern, ai_model, regex_version per row |
 | `dq_findings` | — | Flagged issues from DQ runs |
 | `dq_gcp_archives` | — | Approved DQ results archived to BigQuery |
 | `metadata_records` | 226 | 5 projects — includes standard_format and distinct_values |
@@ -57,7 +57,14 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 - `metadata_records.distinct_values` — stored for all Category/Boolean columns AND any column with ≤ 25 unique values; enables the UI combobox to suggest values when a column is reclassified to Category
 - `metadata_records.is_primary_key` — heuristic: all non-null values in the import sample are unique
 - `metadata_records.is_nullable` — heuristic: any null or blank value present in the import sample
-- `ai_provider_configs` — single row; UI-editable via Settings > AI Setup; read by both FastAPI and Celery worker
+- `ai_provider_configs` — single row; UI-editable via Settings > AI Setup; read by both FastAPI metadata Celery worker and DQ Celery worker
+- `dq_results.check_type` — dimension name: `completeness` | `consistency` | `uniqueness` | `latency`
+- `dq_results.actual_value` — index score as string (0.00–100.00); use `CAST(actual_value AS NUMERIC)` for queries
+- `dq_results.business_rules` — AI-generated or rule-based business rule text per column per dimension
+- `dq_results.regex_pattern` — AI-generated regex (Consistency only); stripped of `r'...'` wrapper, stored as raw `^...$` pattern
+- `dq_results.ai_model` — model name used (e.g. `llama3.2:3b`) or `rule-based` if Ollama was unavailable
+- `dq_results.regex_version` — `New Version` (freshly generated) or `Old Version` (retained from previous run when it scored higher)
+- `dq_results.details` JSONB — stores `raw_text` (truncated AI output), `total_unique`, `matched` count, and dimension-specific extras
 - `project_source_files.stored_path` — files live at `/app/uploads/{project_id}/{uuid}_{filename}` on the `uploads_data` volume; auto-deleted 30 days after project `end_date`
 
 ## Notes

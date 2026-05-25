@@ -22,7 +22,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 | **Data Protection Impact Assessment (DPIA)** | Auto-created from DSR; tracks residual risk, data categories, regulatory references, and governance activities (4 sections A–D); 2-step approval workflow; filter by DPIA status and year; export to PDF |
 | **Record of Processing Activities (ROPA)** | Document and track all data processing activities; filter by legal basis |
 | **Data Extermination / BAPD** | Manage data disposal/extermination requests with evidence upload and approval; manage retention policies (8 built-in policy types); auto-discover datasets eligible for disposal based on retention expiry |
-| **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated data quality checks; DQ run results go through a review/approval workflow (pending → running → completed → under_review → approved/rejected) |
+| **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated 4-dimension data quality checks — **Completeness** (% non-null), **Consistency** (AI-generated regex pattern + business rules via Ollama with rule-based fallback), **Uniqueness** (for fully-unique / ID-like columns), **Latency** (recency scoring for datetime columns); each column-level result stores business rules, regex pattern, AI model used, and regex version; DQ runs go through a review/approval workflow (pending → running → completed → under_review → approved/rejected); AI config loaded from Settings > AI Setup |
 | **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; Source Tables section shows all documented tables for a project across all source types with **"Open All Tables →"** shortcut to the full attribute grid; enrich with AI-generated business definitions via configurable Ollama (local or cloud); batch-process definitions in chunks to avoid connection pool exhaustion; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; bulk grouping assignment per table; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges); uploaded Excel/CSV files persisted to `uploads_data` volume and tracked in `project_source_files`; 30-day post-project retention with 7-day advance warning and auto-deletion |
 | **Settings** | Manage users, roles, notification preferences, and AI/LLM configuration (provider, mode, base URL, model name, API key, batch size, timeout); test connection from the settings page |
 | **Audit Log** | Full audit trail of all actions across modules; filter by module, action, entity, actor, and date range |
@@ -152,7 +152,7 @@ Default admin login:
 - **Source file retention policy** — uploaded source files (Excel/CSV) kept for 30 days after project `end_date`, then auto-deleted; 7-day advance warning notification sent to the full project team and super admins; GCP/PostgreSQL imports have no physical files — all derived metadata attributes remain permanent regardless of retention
 - **Metadata attributes grid** — inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); per-table or all-tables view via dropdown; bulk Save All stamp; bulk grouping assignment per table
 - **Retention policies & eligibility detection** — BAPD manages 8 built-in retention policy types; eligible datasets (past expiry) are auto-discovered and surfaced as a warning panel
-- **Data Quality review workflow** — DQ runs progress through pending → running → completed → under_review → approved/rejected states
+- **4-dimension AI-powered Data Quality** — Completeness (% non-null), Consistency (Ollama-generated regex + business rules per column, with rule-based fallback), Uniqueness (only for fully-unique / ID-like columns, index = 100), Latency (datetime recency scored 100/70/50/30/0 based on days since latest value); each `dq_results` row stores `business_rules`, `regex_pattern`, `ai_model`, `regex_version` — matching the DQ Template output format; AI model and URL loaded from `ai_provider_configs`; DQ runs progress through pending → running → completed → under_review → approved/rejected states
 - **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names; Excel export inserts 7 project-level columns; all document PDFs (Project, DSR, AICK, DPIA) share a standardised header with colour-coded status and flag badges
 - **Data Steward & Data Owner** — assignable per project via free-text name + email; surfaced in the Metadata Attributes info strip and all exports
 - **RBAC** — role-based access control enforced on both frontend and backend; `super_admin` role bypasses all user-identity and approval-step UI gates (DPIA approver check, DSR/AICK signature step locks, ROPA edit lock) while business rules remain in effect for other roles
@@ -160,6 +160,28 @@ Default admin login:
 - **Configurable AI settings** — provider, mode (local/cloud), base URL, model name, API key, batch size, and timeout configurable via the Settings UI with a live test-connection check
 - **Audit trail** — all changes logged with user, timestamp, and action; filterable by module, action, entity, actor, and date range
 - **Notification system** — in-app notifications for approval actions and status changes
+
+---
+
+## Recent Updates (2026-05-25) — Data Quality 4-Dimension Enhancement
+
+### 4 DQ Dimensions
+- Replaced the simple 3-dimension rule-based pipeline with a full **4-dimension AI-powered** pipeline matching the DQ Template output format:
+  - **Completeness** — `(non_null / total) × 100`; business rule: "There should be no empty field for {col} in this table"
+  - **Consistency** — Ollama generates a regex pattern + business rules per column using a structured prompt (same approach as the reference `dq_gen_ai_generator3.py`); regex is then applied to compute a match %; silently falls back to format-detection rules if Ollama is unreachable or times out
+  - **Uniqueness** — only created for fully-unique columns (Total Rows == Total Unique); index = 100; business rule: "There should be no duplicated field for {col} in this table"
+  - **Latency** — only for datetime columns; score: 100 (today or future), 70 (≤7 days ago), 50 (8–14 days), 30 (15–30 days), 0 (>30 days); business rule: "Latest date in {col} should not be more than 14 days ago"
+
+### Schema Enhancement — `dq_results` (migration `e3f4a5b6c7d8`)
+- Added: `business_rules` (TEXT), `regex_pattern` (TEXT), `ai_model` (VARCHAR 100), `regex_version` (VARCHAR 50), `column_category` (VARCHAR 50)
+- `actual_value` stores the index score (0–100); `check_type` stores the dimension name; `details` JSONB stores `raw_text`, `total_unique`, matched count
+
+### AI Config Integration
+- DQ Celery task reads the active AI config from `ai_provider_configs` (enabled=true) to get `model_name`, `base_url`, and `timeout_seconds`; defaults to `llama3.2:3b` at `http://ollama:11434` if none found
+
+### Frontend — Detail Page
+- **Score tab**: dynamic 1–4 dimension bars per column (shows only dimensions present in the run); 2×2 or 4-column responsive grid
+- **Rules tab**: dimension filter chips (All / Completeness / Consistency / Uniqueness / Latency); columns added — Business Rules, Regex Pattern, AI Model; expandable text for long values
 
 ---
 
