@@ -464,7 +464,7 @@ function MetadataGridContent() {
           <Button
             variant="outline"
             onClick={handleRegenAll}
-            disabled={regenAllRunning || records.length === 0 || !aiReady}
+            disabled={regenAllRunning || records.length === 0 || !aiReady || (records.length > 0 && records.every((r) => r.business_definition && r.definition_status === "ai_generated"))}
             title={aiReady ? `Using ${aiStatus?.provider ?? "AI"} ${aiStatus?.model_name ?? ""}` : "Configure Ollama Cloud in Settings > AI Setup"}
           >
             {regenAllRunning
