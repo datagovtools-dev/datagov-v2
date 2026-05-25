@@ -104,7 +104,7 @@ This starts all services: `api`, `worker`, `frontend`, `db`, `redis`, `nginx`, `
 ### 4. Pull the AI model
 
 ```bash
-docker exec ag_ollama ollama pull phi3:mini
+docker exec ag_ollama ollama pull llama3.2:3b
 ```
 
 ### 5. Run database migrations
@@ -145,7 +145,7 @@ Default admin login:
 - **Serial approval workflows** — DSR (4 steps), AICK (3 steps), DPIA (2 steps), BAPD — each step activates only after the previous is approved
 - **Automatic linked-record creation** — submitting a DSR auto-creates a paired AICK and DPIA for the same project
 - **Sign-off with e-signature** — draw, drag-and-drop, or upload signature images; decision locked once signed
-- **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using a configurable Ollama provider (local or cloud mode); batch-chunked endpoint avoids connection pool exhaustion; single-record regeneration also available
+- **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using a configurable Ollama provider (local or cloud mode); validated llama3.2:3b Variant A prompt (verb-first, 7-rule, CRITICAL semicolon ban, categorical/PII/PK/nullable conditionals) with Variant A hyperparameters applied identically across the API endpoint and Celery worker; post-processing normalises output (newline collapse, semicolon-to-sentence conversion, trailing period); model and base URL are DB-driven (configured in Settings > AI Setup); "Generate All AI Definitions" button auto-disables when all records are already generated; batch-chunked endpoint avoids connection pool exhaustion; single-record regeneration also available
 - **Standard Format auto-assessment** — on every metadata import the worker classifies each column's value format (date, categorical, phone, email, integer, decimal, ID/code, free text) and stores it automatically
 - **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved; Source Tables section shows all documented tables across all source types
 - **Metadata attributes grid** — 19-column inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); bulk Save All stamp; bulk grouping assignment per table
@@ -158,6 +158,19 @@ Default admin login:
 - **Configurable AI settings** — provider, mode (local/cloud), base URL, model name, API key, batch size, and timeout configurable via the Settings UI with a live test-connection check
 - **Audit trail** — all changes logged with user, timestamp, and action; filterable by module, action, entity, actor, and date range
 - **Notification system** — in-app notifications for approval actions and status changes
+
+---
+
+## Recent Updates (2026-05-25)
+
+### AI Generation Pipeline — End-to-End Alignment
+- **Celery worker `generate_ai_definition`** now reads model name and base URL from `ai_provider_configs` DB table (was hard-coded `OLLAMA_MODEL` env var defaulting to `llama3:8b`)
+- **Identical pipeline** across API endpoint and Celery worker: same validated llama3.2:3b Variant A prompt, same Variant A hyperparameters (`temperature=0.20`, `top_p=0.85`, `top_k=30`, `repeat_penalty=1.15`, `num_predict=160`), same `_clean_output()` post-processing
+- Worker now fetches all 12 context fields per record (was 5) to fully populate the prompt (domain, line of business, distinct values, standard format, sensitivity, PK, nullable)
+- All 226 business definitions across 5 projects regenerated with the validated prompt
+
+### Metadata Attributes — Generate All Button
+- **"Generate All AI Definitions" button** auto-disables when every record in the project already has an `ai_generated` definition; re-enables automatically if any record is added without a definition or reverts to `pending`
 
 ---
 

@@ -4,7 +4,7 @@
 
 | # | Item | Owner | Required By | Notes |
 |---|------|-------|-------------|-------|
-| 1 | Ollama model selection (llama3:8b vs mistral:7b) | DevOps / Tech Lead | Before P5 go-live | Configure via `OLLAMA_MODEL` env var. Default: `llama3:8b`. |
+| 1 | ~~Ollama model selection (llama3:8b vs mistral:7b)~~ | ~~DevOps / Tech Lead~~ | ~~Before P5 go-live~~ | **RESOLVED 2026-05-25** — Model is now `llama3.2:3b`, DB-driven via Settings > AI Setup. No env var required. Both API and Celery worker read from `ai_provider_configs`. |
 | 2 | Email service credentials (SendGrid API key or SMTP) | IT Infrastructure | Before P2 go-live | Set `SENDGRID_API_KEY` or `SMTP_HOST/USER/PASSWORD` in `.env.production`. |
 | 3 | GCP IAM setup (service account for BigQuery + GCS) | DevOps / GCP Admin | Before P4 go-live | SA needs `bigquery.dataViewer`, `bigquery.jobUser`, `storage.objectAdmin`. |
 | 4 | Server hardware specs for production | IT Infrastructure | Before P6-013 | Minimum: 8 CPU, 32 GB RAM, 500 GB SSD, NVIDIA GPU for Ollama (optional). |
@@ -15,7 +15,7 @@
 
 ## Resolution Checklist
 
-- [ ] Item 1 resolved — `OLLAMA_MODEL` set in production `.env`
+- [x] Item 1 resolved — Model is `llama3.2:3b`, DB-driven via Settings UI (2026-05-25)
 - [ ] Item 2 resolved — Email credentials configured and tested
 - [ ] Item 3 resolved — GCP SA JSON uploaded to production server
 - [ ] Item 4 resolved — Hardware provisioned and verified
