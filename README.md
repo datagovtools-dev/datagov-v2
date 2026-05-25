@@ -144,7 +144,7 @@ Default admin login:
 
 - **Serial approval workflows** — DSR (4 steps), AICK (3 steps), DPIA (2 steps), BAPD — each step activates only after the previous is approved
 - **Automatic linked-record creation** — submitting a DSR auto-creates a paired AICK and DPIA for the same project
-- **Sign-off with e-signature** — draw, drag-and-drop, or upload signature images; decision locked once signed
+- **Sign-off with e-signature** — draw, drag-and-drop, or upload signature images; "Signed off" status requires both prepared and acknowledged physical signatures to be present; decision locked once signed
 - **AI-generated metadata definitions** — bulk-generate business definitions for all data attributes using a configurable Ollama provider (local or cloud mode); validated llama3.2:3b Variant A prompt (verb-first, 7-rule, CRITICAL semicolon ban, categorical/PII/PK/nullable conditionals) with Variant A hyperparameters applied identically across the API endpoint and Celery worker; post-processing normalises output (newline collapse, semicolon-to-sentence conversion, trailing period); model and base URL are DB-driven (configured in Settings > AI Setup); "Generate All AI Definitions" button auto-disables when all records are already generated; batch-chunked endpoint avoids connection pool exhaustion; single-record regeneration also available
 - **Standard Format auto-assessment** — on every metadata import the worker classifies each column's value format (date, categorical, phone, email, integer, decimal, ID/code, free text) and stores it automatically
 - **Multi-source metadata ingestion** — GCP BigQuery, PostgreSQL/Supabase, Excel/CSV (multi-file, multi-sheet); original filenames preserved; Source Tables section shows all documented tables across all source types
@@ -153,7 +153,7 @@ Default admin login:
 - **Data Quality review workflow** — DQ runs progress through pending → running → completed → under_review → approved/rejected states
 - **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names; Excel export inserts 7 project-level columns; all document PDFs (Project, DSR, AICK, DPIA) share a standardised header with colour-coded status and flag badges
 - **Data Steward & Data Owner** — assignable per project via free-text name + email; surfaced in the Metadata Attributes info strip and all exports
-- **RBAC** — role-based access control enforced on both frontend and backend
+- **RBAC** — role-based access control enforced on both frontend and backend; `super_admin` role bypasses all user-identity and approval-step UI gates (DPIA approver check, DSR/AICK signature step locks, ROPA edit lock) while business rules remain in effect for other roles
 - **Advanced overview filters** — each module's overview has module-specific status filters and dynamic year filters; Projects additionally filters by Client, Category, and Monetized flag; ROPA filters by Legal Basis
 - **Configurable AI settings** — provider, mode (local/cloud), base URL, model name, API key, batch size, and timeout configurable via the Settings UI with a live test-connection check
 - **Audit trail** — all changes logged with user, timestamp, and action; filterable by module, action, entity, actor, and date range
@@ -171,6 +171,26 @@ Default admin login:
 
 ### Metadata Attributes — Generate All Button
 - **"Generate All AI Definitions" button** auto-disables when every record in the project already has an `ai_generated` definition; re-enables automatically if any record is added without a definition or reverts to `pending`
+
+### Super Admin — Full UI Access
+- **Super admin role bypasses all user-identity and approval-step gates** across all document pages:
+  - **DPIA**: `canAction` now allows super admin to approve/reject any step regardless of which user is the assigned approver
+  - **DSR**: both signature pads (Client Sign Off step 4, SME Sign Off step 3) are unlocked at any approval step for super admin
+  - **AI Checklist**: same signature pad unlock (DM Sign-off step 2, SME Sign-off step 3)
+  - **ROPA**: `canEdit` bypasses the `approved`-status lock for super admin
+- **Backend**: `is_super_admin` computed property added to `User` model; exposed via `UserOut` Pydantic schema and carried in the auth store so frontend gates can read it without additional API calls
+- Super admin retains these capabilities while all step-sequencing and business rules continue to apply for other roles
+
+### Approval Timeline — Visual Consistency
+- **Active (requested) step** now renders with a **primary-blue dot** and blue badge across all timeline views; previously it was indistinguishable from not-yet-reached steps
+- Fixed in four locations: DSR main timeline, DPIA → DSR sub-timeline, DPIA → AICK sub-timeline, AI Checklist → DSR modal timeline
+- Not-yet-reached steps consistently show a lighter grey dot with "Not Yet" label; completed steps remain green (approved) or red (rejected)
+
+### DSR Checklist Sign-Off — Correct Trigger
+- **`validated_at`** (the "Signed off" badge on the Data & Insights Sharing Evaluation Checklist) is now set **only when both physical signatures are present** — `sign_off.prepared_signature` AND `sign_off.acknowledged_signature`
+- Previously it was triggered by `ai_assessment.sign_off.approved === "Yes"`, which is an auto-set default field, causing the "Signed off" badge to appear before anyone had actually signed
+- `validated_at` is also **cleared** if either signature is later removed, keeping the state accurate
+- Existing records with prematurely-set `validated_at` (e.g. DSR-2026-0003) corrected directly in the database
 
 ---
 
