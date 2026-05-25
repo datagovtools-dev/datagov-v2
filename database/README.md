@@ -64,7 +64,9 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 - `dq_results.regex_pattern` — AI-generated regex (Consistency only); stripped of `r'...'` wrapper, stored as raw `^...$` pattern
 - `dq_results.ai_model` — model name used (e.g. `llama3.2:3b`) or `rule-based` if Ollama was unavailable
 - `dq_results.regex_version` — `New Version` (freshly generated) or `Old Version` (retained from previous run when it scored higher)
+- `dq_results.column_category` — reserved field (currently NULL); will be populated by the future automated category classification pipeline (Transaction / Profile / Categorical / Documentation / Foreign / Uncategorized)
 - `dq_results.details` JSONB — stores `raw_text` (truncated AI output), `total_unique`, `matched` count, and dimension-specific extras
+- `metadata_records.distinct_values` — backfill migration `f4a5b6c7d8e9` ensures this column is created on fresh installs; column was added outside migrations in a prior session and now properly tracked
 - `project_source_files.stored_path` — files live at `/app/uploads/{project_id}/{uuid}_{filename}` on the `uploads_data` volume; auto-deleted 30 days after project `end_date`
 
 ## Notes

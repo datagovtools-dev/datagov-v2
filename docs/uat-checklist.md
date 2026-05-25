@@ -3,7 +3,7 @@
 
 **Environment:** Staging  
 **Tester:** Data Governance Team  
-**Target:** All 81 MVP functional requirements pass
+**Target:** All 81 checks pass (74 Functional Requirements + 7 Non-Functional Requirements)
 
 ---
 
@@ -80,7 +80,7 @@
 | FR-DQ-009 | Consistency dimension calls Ollama to generate a regex pattern and business rules per column; falls back to rule-based pattern detection if Ollama unavailable or times out | ☐ | ☐ | |
 | FR-DQ-010 | Uniqueness dimension only created for fully-unique columns (Total Rows == Total Unique non-null values); index = 100 for qualifying columns | ☐ | ☐ | |
 | FR-DQ-011 | Latency dimension only created for datetime columns; score: 100 (≤0 days), 70 (1–7 days), 50 (8–14 days), 30 (15–30 days), 0 (>30 days old) | ☐ | ☐ | |
-| FR-DQ-012 | Each dq_results row stores: business_rules, regex_pattern, ai_model, regex_version, column_category — enabling the DQ Template output format | ☐ | ☐ | |
+| FR-DQ-012 | Each dq_results row stores: business_rules, regex_pattern, ai_model, regex_version — enabling the DQ Template output format; column_category is reserved (NULL) for future automated category classification | ☐ | ☐ | |
 | FR-DQ-013 | DQ detail page Score tab shows dynamic dimension bars per column (1–4 bars); Rules tab shows dimension filter chips + Business Rules, Regex Pattern, AI Model columns with expandable text | ☐ | ☐ | |
 
 ## Module 7: Metadata Management + AI
