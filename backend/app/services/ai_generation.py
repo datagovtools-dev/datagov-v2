@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -111,6 +112,24 @@ def build_candidate_from_config(config: AIProviderConfig | None, api_key: str | 
     )
 
 
+_METADATA_OPTIONS: dict[str, Any] = {
+    "temperature": 0.20,
+    "top_p": 0.85,
+    "top_k": 30,
+    "repeat_penalty": 1.15,
+    "num_predict": 160,
+}
+
+
+def _clean_output(text: str) -> str:
+    result = re.sub(r'\n+', ' ', text)
+    result = re.sub(r';\s+([a-zA-Z])', lambda m: '. ' + m.group(1).upper(), result)
+    result = re.sub(r'\s{2,}', ' ', result).strip()
+    if result and not result.endswith('.'):
+        result += '.'
+    return result
+
+
 def _clean_table_name(table: str) -> str:
     """Strip file extension and sheet suffix so the model gets clean domain context."""
     for ext in (".xlsx", ".xls", ".csv"):
@@ -131,12 +150,11 @@ def build_metadata_definition_prompt(record: MetadataRecord) -> str:
 
     ctx_lines = [
         f"Source table: {table_context}",
-        f"Column: {record.data_attribute}",
         f"Business term: {record.business_term or record.data_attribute}",
         f"Data type: {record.data_type or 'text'}",
     ]
     if record.data_grouping:
-        ctx_lines.append(f"Data domain / grouping: {record.data_grouping}")
+        ctx_lines.append(f"Domain: {record.data_grouping}")
     if record.line_of_business:
         ctx_lines.append(f"Line of business: {record.line_of_business}")
     if record.distinct_values:
@@ -155,54 +173,56 @@ def build_metadata_definition_prompt(record: MetadataRecord) -> str:
 
     context = "\n".join(ctx_lines)
 
-    conditional_rules: list[str] = []
-    if record.data_sensitivity in ("Highly Confidential", "Restricted"):
-        conditional_rules.append(
-            "• Because sensitivity is Highly Confidential / Restricted: include a brief note "
-            "that this value is personally identifiable and governed by data privacy policy"
-        )
-    if record.is_primary_key:
-        conditional_rules.append(
-            "• Because this is a primary key: note that it uniquely identifies each record"
-        )
-    if record.is_nullable:
-        conditional_rules.append(
-            "• Because nullable is Yes: briefly note when or why this value may be absent"
-        )
-    conditional_block = (
-        "\nAdditional conditional rules:\n" + "\n".join(conditional_rules)
-        if conditional_rules else ""
-    )
-
     is_categorical = bool(record.distinct_values) or (
         record.standard_format is not None and (
             record.standard_format.startswith("Category:") or
             record.standard_format.startswith("Boolean")
         )
     )
-    sentence_count_note = (
-        "3 sentences (the third describing what the range of possible values means in practice)"
-        if is_categorical else
-        "2 sentences"
+    n = "3" if is_categorical else "2"
+    s3 = "\n   3. What each possible value means in practice — one clause per value" if is_categorical else ""
+
+    conditional_rules: list[str] = []
+    if record.data_sensitivity in ("Highly Confidential", "Restricted"):
+        conditional_rules.append(
+            "8. This data is personally identifiable — briefly note it is handled under data privacy policy."
+        )
+    if record.is_primary_key:
+        conditional_rules.append(
+            "9. Mention that this value uniquely identifies each record."
+        )
+    if record.is_nullable:
+        conditional_rules.append(
+            "10. Briefly note when or why this value may be absent."
+        )
+    conditional_block = (
+        "\n" + "\n".join(conditional_rules)
+        if conditional_rules else ""
     )
 
     return (
-        "You are a senior data governance specialist writing entries for a business data dictionary.\n\n"
-        "Write a business definition for the data attribute described below.\n\n"
+        "You are a senior data governance specialist writing a business data dictionary entry.\n\n"
         f"{context}\n\n"
-        "Rules — follow all strictly:\n"
-        f"1. Write {sentence_count_note}:\n"
-        "   • Sentence 1: what real-world fact or event this value records — anchor it to the source table, domain, and example/possible values\n"
-        "   • Sentence 2: how it is used in a business process, decision, or reporting need\n"
-        "   • Sentence 3 (categoricals only): what the range of possible values or categories represents in practice\n"
-        "2. DO NOT quote, repeat, or rephrase the column name or business term — describe the meaning, not the label\n"
-        "3. Use plain, professional language for a non-technical business audience — no SQL or technical jargon\n"
-        "4. Output the definition only — no labels, no headers, no bullet points, no preamble"
+        "CRITICAL: Every sentence must end with a period (.). "
+        "Using a semicolon (;) anywhere in your response is forbidden — if you use one, your answer is wrong.\n\n"
+        f"Write exactly {n} sentences as one continuous paragraph. Rules:\n"
+        "1. Start with a verb — Captures / Records / Identifies / Measures / Tracks / Indicates / Reflects\n"
+        "2. Never name the column or business term\n"
+        f"3. Sentence 1: what real-world fact this records, anchored to the business area and domain\n"
+        f"4. Sentence 2: how it is used in business decisions or reporting{s3}\n"
+        "5. Do not mention the table name — draw context from the business area or domain only.\n"
+        "6. Write in plain, everyday language — no jargon, no acronyms, no technical terms. "
+        "Any reader regardless of background should understand what this data means.\n"
+        "7. No line breaks between sentences. Output the definition only."
         f"{conditional_block}\n"
     )
 
 
-async def generate_text(prompt: str, config: AICandidateConfig) -> str:
+async def generate_text(
+    prompt: str,
+    config: AICandidateConfig,
+    options: dict[str, Any] | None = None,
+) -> str:
     if config.provider != "ollama":
         raise AIGenerationError("Only Ollama is supported.", 400)
     if not config.enabled:
@@ -211,7 +231,9 @@ async def generate_text(prompt: str, config: AICandidateConfig) -> str:
         raise AIGenerationError("Ollama Cloud API key is not configured.", 400)
 
     headers = {"Authorization": f"Bearer {config.api_key}"} if config.api_key else {}
-    payload = {"model": config.model_name, "prompt": prompt, "stream": False}
+    payload: dict[str, Any] = {"model": config.model_name, "prompt": prompt, "stream": False}
+    if options:
+        payload["options"] = options
 
     try:
         async with httpx.AsyncClient(timeout=float(config.timeout_seconds)) as client:
@@ -230,7 +252,9 @@ async def generate_text(prompt: str, config: AICandidateConfig) -> str:
 
 
 async def generate_metadata_definition(record: MetadataRecord, config: AICandidateConfig) -> str:
-    return await generate_text(build_metadata_definition_prompt(record), config)
+    prompt = build_metadata_definition_prompt(record)
+    text = await generate_text(prompt, config, options=_METADATA_OPTIONS)
+    return _clean_output(text)
 
 
 def apply_generated_definition(record: MetadataRecord, definition: str, current_user: User) -> None:

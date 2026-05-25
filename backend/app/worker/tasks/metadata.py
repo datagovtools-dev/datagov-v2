@@ -411,6 +411,99 @@ def retrieve_metadata(
 
 # ── Task: generate_ai_definition ──────────────────────────────────────────────
 
+_AI_OPTIONS: dict[str, Any] = {
+    "temperature": 0.20,
+    "top_p": 0.85,
+    "top_k": 30,
+    "repeat_penalty": 1.15,
+    "num_predict": 160,
+}
+
+
+def _worker_clean_output(text: str) -> str:
+    result = re.sub(r'\n+', ' ', text)
+    result = re.sub(r';\s+([a-zA-Z])', lambda m: '. ' + m.group(1).upper(), result)
+    result = re.sub(r'\s{2,}', ' ', result).strip()
+    if result and not result.endswith('.'):
+        result += '.'
+    return result
+
+
+def _worker_clean_table_name(table: str) -> str:
+    if not table:
+        return ""
+    for ext in (".xlsx", ".xls", ".csv"):
+        idx = table.lower().find(ext)
+        if idx > 0:
+            table = table[:idx]
+            break
+    for sep in (" - ", " – ", "_"):
+        parts = table.rsplit(sep, 1)
+        if len(parts) == 2 and parts[1].lower().startswith("sheet"):
+            table = parts[0]
+    return table.strip(" -_")
+
+
+def _worker_build_prompt(rec: dict) -> str:
+    table_context = _worker_clean_table_name(rec.get("data_domain_table") or "")
+
+    ctx_lines = [
+        f"Source table: {table_context}",
+        f"Business term: {rec.get('business_term') or rec.get('data_attribute') or ''}",
+        f"Data type: {rec.get('data_type') or 'text'}",
+    ]
+    if rec.get("data_grouping"):
+        ctx_lines.append(f"Domain: {rec['data_grouping']}")
+    if rec.get("line_of_business"):
+        ctx_lines.append(f"Line of business: {rec['line_of_business']}")
+    if rec.get("distinct_values"):
+        ctx_lines.append(f"Possible values: {rec['distinct_values']}")
+    else:
+        if rec.get("standard_format"):
+            ctx_lines.append(f"Value format / range: {rec['standard_format']}")
+        if rec.get("sample_data"):
+            ctx_lines.append(f"Example value: {rec['sample_data']}")
+    if rec.get("data_sensitivity"):
+        ctx_lines.append(f"Sensitivity: {rec['data_sensitivity']}")
+    if rec.get("is_primary_key") is not None:
+        ctx_lines.append(f"Primary key: {'Yes' if rec['is_primary_key'] else 'No'}")
+    if rec.get("is_nullable") is not None:
+        ctx_lines.append(f"Nullable: {'Yes' if rec['is_nullable'] else 'No'}")
+
+    context = "\n".join(ctx_lines)
+
+    sf = rec.get("standard_format") or ""
+    is_categorical = bool(rec.get("distinct_values")) or sf.startswith("Category:") or sf.startswith("Boolean")
+    n = "3" if is_categorical else "2"
+    s3 = "\n   3. What each possible value means in practice — one clause per value" if is_categorical else ""
+
+    conditional: list[str] = []
+    if rec.get("data_sensitivity") in ("Highly Confidential", "Restricted"):
+        conditional.append("8. This data is personally identifiable — briefly note it is handled under data privacy policy.")
+    if rec.get("is_primary_key"):
+        conditional.append("9. Mention that this value uniquely identifies each record.")
+    if rec.get("is_nullable"):
+        conditional.append("10. Briefly note when or why this value may be absent.")
+    conditional_block = ("\n" + "\n".join(conditional)) if conditional else ""
+
+    return (
+        "You are a senior data governance specialist writing a business data dictionary entry.\n\n"
+        f"{context}\n\n"
+        "CRITICAL: Every sentence must end with a period (.). "
+        "Using a semicolon (;) anywhere in your response is forbidden — if you use one, your answer is wrong.\n\n"
+        f"Write exactly {n} sentences as one continuous paragraph. Rules:\n"
+        "1. Start with a verb — Captures / Records / Identifies / Measures / Tracks / Indicates / Reflects\n"
+        "2. Never name the column or business term\n"
+        f"3. Sentence 1: what real-world fact this records, anchored to the business area and domain\n"
+        f"4. Sentence 2: how it is used in business decisions or reporting{s3}\n"
+        "5. Do not mention the table name — draw context from the business area or domain only.\n"
+        "6. Write in plain, everyday language — no jargon, no acronyms, no technical terms. "
+        "Any reader regardless of background should understand what this data means.\n"
+        "7. No line breaks between sentences. Output the definition only."
+        f"{conditional_block}\n"
+    )
+
+
 @shared_task(
     bind=True,
     name="app.worker.tasks.metadata.generate_ai_definition",
@@ -420,25 +513,42 @@ def generate_ai_definition(self, record_id: str) -> dict:
     """
     FR-META-014: Call local Ollama API to generate a business definition.
     No data leaves the internal Docker network.
-    Timeout 30 s → set definition_status='pending', business_definition=null.
+    Model and base URL are read from ai_provider_configs table (falls back to env vars).
     """
     import psycopg2
+    import psycopg2.extras
     import httpx
 
     db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
-    ollama_url = os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST", "http://ollama:11434")
-    model = os.getenv("OLLAMA_MODEL", "llama3:8b")
-    api_key = os.getenv("OLLAMA_API_KEY", "")
-
     if not db_url:
         return {"error": "no DATABASE_URL"}
 
-    rec_uuid = str(UUID(record_id))  # psycopg2 needs str, not UUID object
+    rec_uuid = str(UUID(record_id))
     conn = psycopg2.connect(db_url)
-    cur = conn.cursor()
+    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+    # Read model + URL from DB config; fall back to env vars
+    cur.execute(
+        """SELECT base_url, model_name, encrypted_api_key
+           FROM ai_provider_configs
+           WHERE provider = 'ollama' AND enabled = TRUE
+           ORDER BY updated_at DESC LIMIT 1"""
+    )
+    cfg = cur.fetchone()
+    if cfg:
+        ollama_base = (cfg["base_url"] or "http://ollama:11434").rstrip("/")
+        model = cfg["model_name"] or "llama3.2:3b"
+        api_key = cfg["encrypted_api_key"] or ""
+    else:
+        ollama_base = (os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST", "http://ollama:11434")).rstrip("/")
+        model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
+        api_key = os.getenv("OLLAMA_API_KEY", "")
 
     cur.execute(
-        """SELECT data_domain_table, data_attribute, business_term, sample_data, data_type
+        """SELECT data_domain_table, data_attribute, business_term, data_type,
+                  data_grouping, line_of_business, distinct_values,
+                  standard_format, sample_data, data_sensitivity,
+                  is_primary_key, is_nullable
            FROM metadata_records WHERE id=%s""",
         (rec_uuid,),
     )
@@ -448,31 +558,21 @@ def generate_ai_definition(self, record_id: str) -> dict:
         conn.close()
         return {"error": "record not found"}
 
-    table, attribute, business_term, sample, data_type = row
-    prompt = (
-        f"You are a data governance expert. Write a clear, concise business definition "
-        f"for a database column.\n"
-        f"Table: {table}\n"
-        f"Column: {attribute}\n"
-        f"Business Term: {business_term or attribute}\n"
-        f"Data Type: {data_type or 'unknown'}\n"
-        f"Sample Value: {sample or 'not available'}\n\n"
-        f"Write only the definition in 1-2 sentences. Do not include headers or column names in your answer."
-    )
+    prompt = _worker_build_prompt(dict(row))
 
     definition = None
     status = "pending"
 
     try:
         response = httpx.post(
-            f"{ollama_url}/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
+            f"{ollama_base}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False, "options": _AI_OPTIONS},
             headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
             timeout=120.0,
         )
         if response.status_code == 200:
-            data = response.json()
-            definition = data.get("response", "").strip()
+            raw = response.json().get("response", "").strip()
+            definition = _worker_clean_output(raw) if raw else None
             status = "ai_generated" if definition else "pending"
         else:
             logger.warning("Ollama returned %d for record %s", response.status_code, record_id)
@@ -484,8 +584,10 @@ def generate_ai_definition(self, record_id: str) -> dict:
         status = "pending"
 
     cur.execute(
-        "UPDATE metadata_records SET business_definition=%s, definition_status=%s WHERE id=%s",
-        (definition, status, rec_uuid),
+        """UPDATE metadata_records
+           SET business_definition=%s, definition_status=%s, updated_date=%s
+           WHERE id=%s""",
+        (definition, status, date.today(), rec_uuid),
     )
     conn.commit()
     cur.close()
