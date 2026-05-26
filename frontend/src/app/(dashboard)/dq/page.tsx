@@ -3,44 +3,26 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { Plus, Search, ChevronLeft, ChevronRight } from "lucide-react";
+import { Plus, BarChart2, Table2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/Table";
 import { formatDate } from "@/lib/utils";
 
-interface DQRunListItem {
-  id: string;
-  run_name: string;
-  dataset_name: string;
-  status: string;
-  total_checks: number;
-  passed_checks: number;
-  failed_checks: number;
-  overall_score: string | null;
-  created_at: string;
-  completed_at: string | null;
-}
+interface ProjectOption { id: string; project_code: string | null; project_name: string; }
 
-interface PaginatedDQRun {
-  items: DQRunListItem[];
-  total: number;
-  page: number;
-  page_size: number;
-  pages: number;
-}
-
-const STATUS_OPTIONS = ["pending", "running", "completed", "under_review", "approved", "rejected", "failed"];
-
-type BadgeVariant = "default" | "success" | "warning" | "danger" | "approved" | "rejected" | "draft" | "done" | "in-review";
-function statusVariant(status: string): BadgeVariant {
-  const map: Record<string, BadgeVariant> = {
-    pending: "default", running: "warning", completed: "in-review",
-    under_review: "in-review", approved: "approved", rejected: "rejected", failed: "danger",
-  };
-  return map[status] ?? "default";
+interface DQTableSummary {
+  table_name: string;
+  source_type: string;
+  attribute_count: number;
+  source_file_id: string | null;
+  total_runs: number;
+  latest_run_id: string | null;
+  latest_run_name: string | null;
+  latest_run_status: string | null;
+  latest_run_score: string | null;
+  latest_run_date: string | null;
 }
 
 function ScorePill({ score }: { score: string | null }) {
@@ -50,114 +32,216 @@ function ScorePill({ score }: { score: string | null }) {
   return <span className={`inline-flex items-center px-2 py-0.5 rounded text-sm font-semibold ${color}`}>{n.toFixed(1)}%</span>;
 }
 
-export default function DQListPage() {
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [page, setPage] = useState(1);
+type BadgeVariant = "default" | "success" | "warning" | "danger" | "approved" | "rejected" | "draft" | "done" | "in-review";
+function statusVariant(status: string | null): BadgeVariant {
+  if (!status) return "default";
+  const map: Record<string, BadgeVariant> = {
+    pending: "default", running: "warning", completed: "in-review",
+    under_review: "in-review", approved: "approved", rejected: "rejected", failed: "danger",
+  };
+  return map[status] ?? "default";
+}
 
-  const { data, isLoading } = useQuery<PaginatedDQRun>({
-    queryKey: ["dq-runs", statusFilter, page],
-    queryFn: () => {
-      const params = new URLSearchParams({ page: String(page), page_size: "20" });
-      if (statusFilter) params.set("status", statusFilter);
-      return api.get<PaginatedDQRun>(`/dq?${params}`);
-    },
+function SourceBadge({ type }: { type: string }) {
+  const cfg: Record<string, { icon: string; label: string; cls: string }> = {
+    excel:      { icon: "📊", label: "Excel",      cls: "bg-green-50 text-green-700" },
+    gcp:        { icon: "☁",  label: "GCP",        cls: "bg-blue-50 text-blue-700" },
+    postgresql: { icon: "🐘", label: "PostgreSQL", cls: "bg-teal-50 text-teal-700" },
+  };
+  const c = cfg[type] ?? { icon: "📄", label: type, cls: "bg-surface-100 text-surface-600" };
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${c.cls}`}>
+      {c.icon} {c.label}
+    </span>
+  );
+}
+
+export default function DQListPage() {
+  const [projectId, setProjectId] = useState("");
+  const [runFilter, setRunFilter] = useState<"all" | "has_runs" | "no_runs">("all");
+
+  const { data: projects } = useQuery<ProjectOption[]>({
+    queryKey: ["projects-select"],
+    queryFn: () => api.get<{ items: ProjectOption[] }>("/projects?page_size=100").then((r) => r.items),
   });
 
-  const filtered = data?.items.filter((r) =>
-    !search ||
-    r.run_name.toLowerCase().includes(search.toLowerCase()) ||
-    r.dataset_name.toLowerCase().includes(search.toLowerCase())
-  );
+  const { data: tables, isLoading } = useQuery<DQTableSummary[]>({
+    queryKey: ["dq-tables-summary", projectId],
+    queryFn: () => api.get<DQTableSummary[]>(`/dq/project/${projectId}/tables-summary`),
+    enabled: !!projectId,
+  });
 
-  function handleStatus(v: string) { setStatusFilter(v === "all" ? "" : v); setPage(1); }
+  const allTables = tables ?? [];
+  const displayed =
+    runFilter === "has_runs" ? allTables.filter((t) => t.total_runs > 0) :
+    runFilter === "no_runs"  ? allTables.filter((t) => t.total_runs === 0) :
+    allTables;
+
+  const totalRuns  = allTables.reduce((s, t) => s + t.total_runs, 0);
+  const scored     = allTables.filter((t) => t.latest_run_score);
+  const avgScore   = scored.length > 0
+    ? scored.reduce((s, t) => s + parseFloat(t.latest_run_score!), 0) / scored.length
+    : null;
+  const withRuns   = allTables.filter((t) => t.total_runs > 0).length;
+  const noRuns     = allTables.filter((t) => t.total_runs === 0).length;
 
   return (
     <div>
       <div className="page-header">
         <div>
-          <h1>Data Quality Runs</h1>
+          <h1>Data Quality</h1>
           <p className="text-sm text-surface-500 mt-0.5">
-            Run automated completeness, uniqueness, and consistency checks against your datasets
-            {data ? ` · ${data.total} run${data.total !== 1 ? "s" : ""}` : ""}
+            Monitor completeness, consistency, uniqueness, and latency per table across your projects
           </p>
+          {projectId && tables && (
+            <div className="flex items-center gap-4 mt-1.5">
+              <span className="text-sm text-surface-600">
+                <span className="font-semibold text-surface-800">{allTables.length}</span>{" "}
+                table{allTables.length !== 1 ? "s" : ""}
+              </span>
+              <span className="text-surface-300">·</span>
+              <span className="text-sm text-surface-600">
+                <span className="font-semibold text-surface-800">{totalRuns}</span>{" "}
+                DQ run{totalRuns !== 1 ? "s" : ""}
+              </span>
+              {avgScore !== null && (
+                <>
+                  <span className="text-surface-300">·</span>
+                  <span className="text-sm text-surface-600">
+                    Avg score:{" "}
+                    <span className="font-semibold text-surface-800">{avgScore.toFixed(1)}%</span>
+                  </span>
+                </>
+              )}
+            </div>
+          )}
         </div>
-        <Link href="/dq/new" className="shrink-0">
+        <Link href={`/dq/new${projectId ? `?project=${projectId}` : ""}`} className="shrink-0">
           <Button className="whitespace-nowrap"><Plus className="h-4 w-4 mr-1" /> New DQ Run</Button>
         </Link>
       </div>
 
-      <div className="flex flex-wrap gap-3 mb-5">
-        <div className="relative flex-1 min-w-[200px] max-w-xs">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400 pointer-events-none" />
-          <input className="input-base pl-9" placeholder="Search run name or dataset…"
-            value={search} onChange={(e) => setSearch(e.target.value)} />
-        </div>
-        <Select value={statusFilter || "all"} onValueChange={handleStatus}>
-          <SelectTrigger className="w-44"><SelectValue placeholder="All Statuses" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Statuses</SelectItem>
-            {STATUS_OPTIONS.map((s) => (
-              <SelectItem key={s} value={s}>{s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}</SelectItem>
+      {/* Project selector */}
+      <div className="bg-white rounded-xl border border-surface-200 p-5 mb-5">
+        <div className="max-w-sm">
+          <label className="block text-sm font-medium text-surface-700 mb-1">Project</label>
+          <select
+            value={projectId}
+            onChange={(e) => { setProjectId(e.target.value); setRunFilter("all"); }}
+            className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400 text-surface-700"
+          >
+            <option value="">Select project…</option>
+            {projects?.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.project_code ? `${p.project_code} — ${p.project_name}` : p.project_name}
+              </option>
             ))}
-          </SelectContent>
-        </Select>
+          </select>
+        </div>
       </div>
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Run Name</TableHead>
-            <TableHead>Dataset</TableHead>
-            <TableHead>Score</TableHead>
-            <TableHead>Checks</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Completed</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {isLoading ? (
-            <TableRow><TableCell colSpan={6} className="text-center py-10 text-surface-400">Loading…</TableCell></TableRow>
-          ) : !filtered?.length ? (
-            <TableRow><TableCell colSpan={6} className="text-center py-10 text-surface-400">No DQ runs found</TableCell></TableRow>
-          ) : filtered.map((r) => (
-            <TableRow key={r.id}>
-              <TableCell>
-                <Link href={`/dq/${r.id}`} className="font-medium text-primary-700 hover:underline text-sm">
-                  {r.run_name}
-                </Link>
-              </TableCell>
-              <TableCell className="max-w-[180px] truncate text-surface-600">{r.dataset_name}</TableCell>
-              <TableCell><ScorePill score={r.overall_score} /></TableCell>
-              <TableCell className="text-sm text-surface-600">
-                <span className="text-green-600 font-medium">{r.passed_checks}✓</span>
-                {" / "}
-                <span className="text-red-500">{r.failed_checks}✗</span>
-                {" / "}
-                <span className="text-surface-400">{r.total_checks}</span>
-              </TableCell>
-              <TableCell>
-                <Badge variant={statusVariant(r.status)}>
-                  {r.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                </Badge>
-              </TableCell>
-              <TableCell className="text-surface-500">{r.completed_at ? formatDate(r.completed_at) : "—"}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-
-      {data && data.pages > 1 && (
-        <div className="flex items-center justify-between mt-4">
-          <p className="text-sm text-surface-500">Page {data.page} of {data.pages} · {data.total} total</p>
-          <div className="flex gap-1">
-            <Button size="icon" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button size="icon" variant="outline" disabled={page >= data.pages} onClick={() => setPage((p) => p + 1)}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
+      {/* Table list */}
+      {projectId ? (
+        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
+            <div className="flex items-center gap-3">
+              <h2 className="font-semibold text-surface-800">Source Tables</h2>
+              {isLoading && <span className="text-xs text-surface-400">Loading…</span>}
+              <div className="flex gap-1">
+                {([
+                  { key: "all",      label: `All (${allTables.length})` },
+                  { key: "has_runs", label: `Has DQ Runs (${withRuns})` },
+                  { key: "no_runs",  label: `No Runs Yet (${noRuns})` },
+                ] as const).map(({ key, label }) => (
+                  <button key={key} onClick={() => setRunFilter(key)}
+                    className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors ${
+                      runFilter === key
+                        ? key === "no_runs" ? "bg-amber-100 text-amber-700" : "bg-primary-100 text-primary-700"
+                        : "text-surface-500 hover:bg-surface-100"
+                    }`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Table Name</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Attributes</TableHead>
+                <TableHead>DQ Runs</TableHead>
+                <TableHead>Latest Score</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Last Run</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {!displayed.length && !isLoading ? (
+                <TableRow>
+                  <TableCell colSpan={8} className="text-center py-10 text-surface-400">
+                    {!allTables.length
+                      ? "No tables documented for this project — import data via the Metadata module first"
+                      : "No tables match the selected filter"}
+                  </TableCell>
+                </TableRow>
+              ) : displayed.map((t) => (
+                <TableRow key={t.table_name}>
+                  <TableCell className="font-medium text-surface-800">
+                    <div className="flex items-center gap-2">
+                      <Table2 className="h-4 w-4 text-surface-400 shrink-0" />
+                      <span className="text-sm">{t.table_name}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell><SourceBadge type={t.source_type} /></TableCell>
+                  <TableCell className="text-surface-600 text-sm">{t.attribute_count}</TableCell>
+                  <TableCell className="text-surface-600 text-sm">{t.total_runs}</TableCell>
+                  <TableCell><ScorePill score={t.latest_run_score} /></TableCell>
+                  <TableCell>
+                    {t.latest_run_status ? (
+                      <Badge variant={statusVariant(t.latest_run_status)}>
+                        {t.latest_run_status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                      </Badge>
+                    ) : (
+                      <span className="text-surface-400 text-sm">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-surface-500 text-sm">
+                    {t.latest_run_date ? formatDate(t.latest_run_date) : "—"}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {t.latest_run_id ? (
+                      <Link href={`/dq/${t.latest_run_id}`} className="text-xs text-primary-600 hover:underline">
+                        View DQ →
+                      </Link>
+                    ) : t.source_file_id ? (
+                      <Link
+                        href={`/dq/new?project=${projectId}&file=${t.source_file_id}`}
+                        className="text-xs text-primary-600 hover:underline"
+                      >
+                        Run DQ →
+                      </Link>
+                    ) : (
+                      <Link href={`/dq/new?project=${projectId}`} className="text-xs text-primary-600 hover:underline">
+                        Run DQ →
+                      </Link>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl border border-surface-200 p-14 text-center">
+          <BarChart2 className="h-10 w-10 text-surface-300 mx-auto mb-3" />
+          <p className="text-surface-500 font-medium">Select a project to view its data quality status</p>
+          <p className="text-sm text-surface-400 mt-1">
+            Tables are shared with the Metadata module — each row represents one documented table
+          </p>
         </div>
       )}
     </div>

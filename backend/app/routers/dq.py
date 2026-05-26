@@ -9,23 +9,37 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.deps import get_db
 from app.core.rbac import require_permission
 from app.models.dq import DQGCPArchive, DQRun, DQResult, DQFinding
-from app.models.metadata import ProjectSourceFile
+from app.models.metadata import MetadataRecord, ProjectSourceFile
 from app.models.user import AuditLog, User
 from app.schemas.dq import (
     DQDeltaItem, DQGCPArchiveOut, DQReviewAction, DQRunCreate,
-    DQRunListItem, DQRunOut, DQStatusResponse, ExcelPreviewResult,
+    DQRunListItem, DQRunOut, DQStatusResponse, DQTableSummary, ExcelPreviewResult,
     GCPConnectionRequest, GCPConnectionResult, PaginatedDQRun,
     PostgresConnectionRequest, PostgresConnectionResult,
-    ProjectSourceFileOut, ProjectFilePreviewResult,
+    ProjectFileDQSummary, ProjectSourceFileOut, ProjectFilePreviewResult,
 )
 from app.worker.tasks.notifications import send_workflow_notification
 
 router = APIRouter(prefix="/dq", tags=["dq"])
 DB = Annotated[AsyncSession, Depends(get_db)]
+
+
+async def _load_run(db: AsyncSession, run_id: uuid.UUID) -> DQRun | None:
+    """Fetch a DQRun with all nested relationships eager-loaded (required for async SA)."""
+    return (await db.execute(
+        select(DQRun)
+        .where(DQRun.id == run_id)
+        .options(
+            selectinload(DQRun.results).selectinload(DQResult.findings),
+            selectinload(DQRun.gcp_archive),
+        )
+    )).scalar_one_or_none()
+
 
 # Temp file registry (in-memory; keyed by temp_file_key)
 _TEMP_FILES: dict[str, str] = {}
@@ -162,6 +176,127 @@ async def list_project_sources(
         .order_by(ProjectSourceFile.uploaded_at.desc())
     )).scalars().all()
     return list(rows)
+
+
+@router.get("/project/{project_id}/summary", response_model=list[ProjectFileDQSummary])
+async def get_project_dq_summary(
+    project_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dq:read"))],
+) -> list:
+    """Return source files for a project with their latest DQ run stats."""
+    files = (await db.execute(
+        select(ProjectSourceFile)
+        .where(ProjectSourceFile.project_id == project_id)
+        .order_by(ProjectSourceFile.uploaded_at.desc())
+    )).scalars().all()
+
+    if not files:
+        return []
+
+    file_ids = [f.id for f in files]
+    runs = (await db.execute(
+        select(DQRun)
+        .where(DQRun.source_file_id.in_(file_ids))
+        .order_by(DQRun.created_at.desc())
+    )).scalars().all()
+
+    runs_by_file: dict = {f.id: [] for f in files}
+    for r in runs:
+        if r.source_file_id in runs_by_file:
+            runs_by_file[r.source_file_id].append(r)
+
+    result = []
+    for f in files:
+        file_runs = runs_by_file.get(f.id, [])
+        latest = file_runs[0] if file_runs else None
+        result.append(ProjectFileDQSummary(
+            id=f.id,
+            project_id=f.project_id,
+            source_type=f.source_type,
+            original_filename=f.original_filename,
+            file_size=f.file_size,
+            uploaded_at=f.uploaded_at,
+            total_runs=len(file_runs),
+            latest_run_id=latest.id if latest else None,
+            latest_run_name=latest.run_name if latest else None,
+            latest_run_status=latest.status if latest else None,
+            latest_run_score=str(latest.overall_score) if latest and latest.overall_score is not None else None,
+            latest_run_date=latest.completed_at or latest.created_at if latest else None,
+        ))
+    return result
+
+
+@router.get("/project/{project_id}/tables-summary", response_model=list[DQTableSummary])
+async def get_project_dq_tables_summary(
+    project_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dq:read"))],
+) -> list:
+    """Return metadata tables for a project with their latest DQ run status.
+
+    Each row represents one table (= one sheet for Excel), aligned with the
+    Metadata module's table-level view.  The link is:
+      metadata_records.data_domain_table ("file.xlsx - SheetName")
+      → extract filename → project_source_files → dq_runs
+    """
+    # 1. Distinct tables from metadata
+    table_rows = (await db.execute(
+        select(
+            MetadataRecord.data_domain_table,
+            MetadataRecord.source_type,
+            func.count(MetadataRecord.id).label("cnt"),
+        )
+        .where(MetadataRecord.project_id == project_id)
+        .group_by(MetadataRecord.data_domain_table, MetadataRecord.source_type)
+        .order_by(MetadataRecord.data_domain_table)
+    )).all()
+
+    # 2. All source files for the project, keyed by filename
+    files = (await db.execute(
+        select(ProjectSourceFile).where(ProjectSourceFile.project_id == project_id)
+    )).scalars().all()
+    files_by_name: dict[str, ProjectSourceFile] = {f.original_filename: f for f in files}
+
+    # 3. All DQ runs linked to those files, grouped by source_file_id
+    runs_by_file: dict = {f.id: [] for f in files}
+    if files:
+        runs = (await db.execute(
+            select(DQRun)
+            .where(DQRun.source_file_id.in_([f.id for f in files]))
+            .order_by(DQRun.created_at.desc())
+        )).scalars().all()
+        for r in runs:
+            if r.source_file_id in runs_by_file:
+                runs_by_file[r.source_file_id].append(r)
+
+    # 4. Build result — one row per metadata table
+    result = []
+    for table_name, source_type, attr_count in table_rows:
+        # Extract filename from "filename - SheetName" pattern
+        filename: str | None = table_name.split(" - ")[0] if " - " in table_name else None
+        # Single-file uploads store only the sheet name; fall back to the one file if unambiguous
+        if filename is None and len(files) == 1:
+            filename = files[0].original_filename
+
+        source_file = files_by_name.get(filename) if filename else None
+        file_runs = runs_by_file.get(source_file.id, []) if source_file else []
+        latest = file_runs[0] if file_runs else None
+
+        result.append(DQTableSummary(
+            table_name=table_name,
+            source_type=source_type,
+            attribute_count=attr_count,
+            source_file_id=source_file.id if source_file else None,
+            total_runs=len(file_runs),
+            latest_run_id=latest.id if latest else None,
+            latest_run_name=latest.run_name if latest else None,
+            latest_run_status=latest.status if latest else None,
+            latest_run_score=(
+                str(latest.overall_score)
+                if latest and latest.overall_score is not None else None
+            ),
+            latest_run_date=latest.completed_at or latest.created_at if latest else None,
+        ))
+    return result
 
 
 @router.get("/project-sources/{file_id}/preview", response_model=ProjectFilePreviewResult)
@@ -305,7 +440,8 @@ async def create_dq_run(
         import logging
         logging.getLogger(__name__).warning("Could not dispatch DQ task: %s", exc)
 
-    return run
+    loaded = await _load_run(db, run.id)
+    return loaded or run
 
 
 @router.get("/{run_id}", response_model=DQRunOut)
@@ -313,8 +449,7 @@ async def get_dq_run(
     run_id: uuid.UUID, db: DB,
     _: Annotated[User, Depends(require_permission("dq:read"))],
 ) -> DQRun:
-    result = await db.execute(select(DQRun).where(DQRun.id == run_id))
-    run = result.scalar_one_or_none()
+    run = await _load_run(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="DQ run not found")
     return run
@@ -357,8 +492,7 @@ async def review_dq_run(
     run_id: uuid.UUID, body: DQReviewAction, db: DB,
     current_user: Annotated[User, Depends(require_permission("dq:approve"))],
 ) -> DQRun:
-    result = await db.execute(select(DQRun).where(DQRun.id == run_id))
-    run = result.scalar_one_or_none()
+    run = await _load_run(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="DQ run not found")
     if run.status not in ("completed", "under_review"):
@@ -376,7 +510,6 @@ async def review_dq_run(
         details={"action": body.action, "comments": body.comments},
     ))
     await db.commit()
-    await db.refresh(run)
 
     event_map = {"approve": "dq_approved", "reject": "dq_rejected", "request_revision": "dq_review_requested"}
     event = event_map.get(body.action)
@@ -394,7 +527,8 @@ async def review_dq_run(
         except Exception:
             pass
 
-    return run
+    loaded = await _load_run(db, run_id)
+    return loaded or run
 
 
 # ── GCP Archive ────────────────────────────────────────────────────────────────

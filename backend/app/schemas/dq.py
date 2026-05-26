@@ -31,6 +31,34 @@ class ProjectFilePreviewResult(BaseModel):
     uploaded_at: datetime
 
 
+class ProjectFileDQSummary(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    source_type: str
+    original_filename: str
+    file_size: Optional[int] = None
+    uploaded_at: datetime
+    total_runs: int = 0
+    latest_run_id: Optional[uuid.UUID] = None
+    latest_run_name: Optional[str] = None
+    latest_run_status: Optional[str] = None
+    latest_run_score: Optional[str] = None
+    latest_run_date: Optional[datetime] = None
+
+
+class DQTableSummary(BaseModel):
+    table_name: str
+    source_type: str
+    attribute_count: int = 0
+    source_file_id: Optional[uuid.UUID] = None
+    total_runs: int = 0
+    latest_run_id: Optional[uuid.UUID] = None
+    latest_run_name: Optional[str] = None
+    latest_run_status: Optional[str] = None
+    latest_run_score: Optional[str] = None
+    latest_run_date: Optional[datetime] = None
+
+
 # ── Source validation ──────────────────────────────────────────────────────────
 
 class GCPConnectionRequest(BaseModel):

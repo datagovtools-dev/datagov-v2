@@ -526,7 +526,7 @@ def run_dq_generation(
     if not db_url:
         return {"error": "no DATABASE_URL"}
 
-    run_uuid = UUID(run_id)
+    run_uuid = run_id
     started_at = datetime.now(timezone.utc)
 
     try:
@@ -644,7 +644,7 @@ def archive_to_gcp(self, run_id: str) -> dict:
     if not db_url:
         return {"error": "no DATABASE_URL"}
 
-    run_uuid = UUID(run_id)
+    run_uuid = run_id
     try:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()

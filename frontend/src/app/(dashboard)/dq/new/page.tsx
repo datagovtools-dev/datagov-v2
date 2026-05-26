@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
@@ -72,13 +72,20 @@ function formatBytes(bytes: number | null): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function DQWizardPage() {
+function DQWizardPage() {
   const router = useRouter();
   const qc = useQueryClient();
+  const searchParams = useSearchParams();
 
-  const [step, setStep] = useState(1);
-  const [sourceType, setSourceType] = useState<"gcp" | "excel" | "postgres" | "project_file">("gcp");
-  const [project_id, setProjectId] = useState("");
+  const initialProject = searchParams.get("project") ?? "";
+  const initialFile    = searchParams.get("file") ?? "";
+
+  const [step, setStep] = useState(initialProject && initialFile ? 2 : 1);
+  const [sourceType, setSourceType] = useState<"gcp" | "excel" | "postgres" | "project_file">(
+    initialFile ? "project_file" : "gcp"
+  );
+  const [project_id, setProjectId] = useState(initialProject);
+  const initialFileRef = useRef(initialFile);
   const [runName, setRunName] = useState("");
 
   // GCP params
@@ -99,8 +106,15 @@ export default function DQWizardPage() {
   const [pgValid, setPgValid] = useState<{ valid: boolean; message: string; columns?: string[]; row_count?: number } | null>(null);
   const [pgValidating, setPgValidating] = useState(false);
 
-  // Project file params
-  const [selectedProjectFile, setSelectedProjectFile] = useState<ProjectFileItem | null>(null);
+  // Project file params (multi-select)
+  const [selectedProjectFiles, setSelectedProjectFiles] = useState<Set<string>>(new Set());
+  const [selectedProjectFileItems, setSelectedProjectFileItems] = useState<ProjectFileItem[]>([]);
+  // Batch state — runInitiated flips to true the moment the button is clicked (guaranteed sync)
+  const [runInitiated, setRunInitiated] = useState(false);
+  const [batchLaunching, setBatchLaunching] = useState(false);
+  const [batchRunIds, setBatchRunIds] = useState<string[]>([]);
+  const [batchRunFiles, setBatchRunFiles] = useState<Array<{ id: string; filename: string }>>([]);
+  const [batchRunStatuses, setBatchRunStatuses] = useState<Record<string, string>>({});
 
   // Step 4 — run polling
   const [runId, setRunId] = useState<string | null>(null);
@@ -108,11 +122,13 @@ export default function DQWizardPage() {
 
   // Reset source-specific selection when source type changes
   useEffect(() => {
-    setSelectedProjectFile(null);
+    setSelectedProjectFiles(new Set());
+    setSelectedProjectFileItems([]);
     setUploadResult(null);
     setGcpValid(null);
     setPgValid(null);
   }, [sourceType]);
+
 
   const { data: projects } = useQuery<ProjectOption[]>({
     queryKey: ["projects-select"],
@@ -125,10 +141,22 @@ export default function DQWizardPage() {
     enabled: sourceType === "project_file" && !!project_id,
   });
 
+  // Pre-select file when arriving from the DQ list page via ?project=&file= params
+  useEffect(() => {
+    if (!initialFileRef.current || !projectFiles) return;
+    const file = projectFiles.find((f: ProjectFileItem) => f.id === initialFileRef.current);
+    if (!file) return;
+    setSelectedProjectFiles(new Set([file.id]));
+    setSelectedProjectFileItems([file]);
+    initialFileRef.current = "";
+  }, [projectFiles]);
+
+  const firstSelectedFile = selectedProjectFileItems[0] ?? null;
+
   const { data: projectFilePreview, isLoading: previewLoading } = useQuery<ProjectFilePreview>({
-    queryKey: ["dq-file-preview", selectedProjectFile?.id],
-    queryFn: () => api.get<ProjectFilePreview>(`/dq/project-sources/${selectedProjectFile!.id}/preview`),
-    enabled: !!selectedProjectFile,
+    queryKey: ["dq-file-preview", firstSelectedFile?.id],
+    queryFn: () => api.get<ProjectFilePreview>(`/dq/project-sources/${firstSelectedFile!.id}/preview`),
+    enabled: !!firstSelectedFile,
   });
 
   const { data: runDetail } = useQuery({
@@ -158,6 +186,31 @@ export default function DQWizardPage() {
     poll();
     return () => { cancelled = true; };
   }, [runId, step]);
+
+  // Poll all batch run statuses while on step 4
+  useEffect(() => {
+    if (!batchRunIds.length || step !== 4 || batchLaunching) return;
+    let cancelled = false;
+    const poll = async () => {
+      while (!cancelled) {
+        const statuses: Record<string, string> = {};
+        await Promise.all(
+          batchRunIds.map(async (id: string) => {
+            try {
+              const s = await api.get<{ status: string }>(`/dq/${id}/status`);
+              statuses[id] = s?.status ?? "pending";
+            } catch { statuses[id] = "pending"; }
+          })
+        );
+        setBatchRunStatuses({ ...statuses });
+        const allDone = Object.values(statuses).every((s) => s === "completed" || s === "failed");
+        if (allDone || cancelled) break;
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [batchRunIds, step, batchLaunching]);
 
   const createRunMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.post<{ id: string }>("/dq", payload),
@@ -248,12 +301,43 @@ export default function DQWizardPage() {
         postgres_table: pg.table,
       });
     } else if (sourceType === "project_file") {
-      createRunMutation.mutate({
-        ...base,
-        dataset_name: selectedProjectFile!.original_filename,
-        dataset_location: `project_file://${selectedProjectFile!.id}`,
-        source_file_id: selectedProjectFile!.id,
-      });
+      if (selectedProjectFileItems.length === 1) {
+        const f = selectedProjectFileItems[0];
+        createRunMutation.mutate({
+          ...base,
+          dataset_name: f.original_filename,
+          dataset_location: `project_file://${f.id}`,
+          source_file_id: f.id,
+        });
+      } else if (selectedProjectFileItems.length > 1) {
+        const items = [...selectedProjectFileItems];
+        setBatchLaunching(true);
+        setBatchRunIds([]);
+        setBatchRunFiles([]);
+        setBatchRunStatuses({});
+        setStep(4);
+        (async () => {
+          const ids: string[] = [];
+          const runFiles: Array<{ id: string; filename: string }> = [];
+          for (const f of items) {
+            try {
+              const result = await api.post<{ id: string }>("/dq", {
+                ...base,
+                run_name: runName ? `${runName} (${f.original_filename})` : `DQ Run — ${f.original_filename.replace(/\.[^.]+$/, "")}`,
+                dataset_name: f.original_filename,
+                dataset_location: `project_file://${f.id}`,
+                source_file_id: f.id,
+              });
+              ids.push(result.id);
+              runFiles.push({ id: result.id, filename: f.original_filename });
+            } catch { /* continue with remaining files */ }
+          }
+          setBatchRunFiles(runFiles);
+          setBatchRunIds(ids);
+          setBatchLaunching(false);
+        })();
+      }
+      return;
     } else {
       createRunMutation.mutate({
         ...base,
@@ -270,7 +354,7 @@ export default function DQWizardPage() {
     : sourceType === "postgres"
     ? (pgValid?.valid ?? false)
     : sourceType === "project_file"
-    ? !!selectedProjectFile
+    ? selectedProjectFiles.size > 0
     : !!uploadResult;
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -338,7 +422,7 @@ export default function DQWizardPage() {
             Step 2 — {
               sourceType === "gcp" ? "Connect to BigQuery" :
               sourceType === "postgres" ? "Connect to PostgreSQL / Supabase" :
-              sourceType === "project_file" ? "Select a Project File" :
+              sourceType === "project_file" ? "Select Project Files" :
               "Upload Excel File"
             }
           </h2>
@@ -346,10 +430,27 @@ export default function DQWizardPage() {
           {/* ── From Project Files ── */}
           {sourceType === "project_file" && (
             <div className="space-y-3">
-              <p className="text-sm text-gray-500">
-                These are the files already imported into this project via the Metadata module.
-                Select one to run DQ analysis on it.
-              </p>
+              <div className="flex items-center justify-between">
+                <p className="text-sm text-gray-500">
+                  Files imported via the Metadata module. Select one or more — each generates a separate DQ run.
+                </p>
+                {projectFiles && projectFiles.length > 0 && (
+                  <button
+                    onClick={() => {
+                      if (selectedProjectFiles.size === projectFiles.length) {
+                        setSelectedProjectFiles(new Set());
+                        setSelectedProjectFileItems([]);
+                      } else {
+                        setSelectedProjectFiles(new Set(projectFiles.map((f: ProjectFileItem) => f.id)));
+                        setSelectedProjectFileItems([...projectFiles]);
+                      }
+                    }}
+                    className="text-xs font-medium text-blue-600 hover:text-blue-800 whitespace-nowrap ml-4"
+                  >
+                    {selectedProjectFiles.size === projectFiles.length ? "Deselect All" : "Select All"}
+                  </button>
+                )}
+              </div>
               {projectFilesLoading ? (
                 <div className="text-sm text-blue-600 text-center py-6">Loading project files…</div>
               ) : !projectFiles || projectFiles.length === 0 ? (
@@ -362,38 +463,54 @@ export default function DQWizardPage() {
                 </div>
               ) : (
                 <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                  {projectFiles.map((f) => (
-                    <button
-                      key={f.id}
-                      onClick={() => setSelectedProjectFile(f)}
-                      className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
-                        selectedProjectFile?.id === f.id
-                          ? "border-blue-500 bg-blue-50"
-                          : "border-gray-200 hover:border-gray-300 bg-white"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-xl flex-shrink-0">📄</span>
-                          <div className="min-w-0">
-                            <p className="font-medium text-gray-800 truncate">{f.original_filename}</p>
-                            <p className="text-xs text-gray-400 mt-0.5">
-                              {formatBytes(f.file_size)} · Imported {new Date(f.uploaded_at).toLocaleDateString()}
-                              {f.uploaded_by && ` by ${f.uploaded_by}`}
-                            </p>
+                  {projectFiles.map((f: ProjectFileItem) => {
+                    const isSelected = selectedProjectFiles.has(f.id);
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => {
+                          setSelectedProjectFiles((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(f.id)) next.delete(f.id); else next.add(f.id);
+                            return next;
+                          });
+                          setSelectedProjectFileItems((prev) =>
+                            prev.some((x) => x.id === f.id)
+                              ? prev.filter((x) => x.id !== f.id)
+                              : [...prev, f]
+                          );
+                        }}
+                        className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                          isSelected ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300 bg-white"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${
+                              isSelected ? "bg-blue-500 border-blue-500" : "border-gray-300"
+                            }`}>
+                              {isSelected && <span className="text-white text-xs font-bold">✓</span>}
+                            </div>
+                            <span className="text-xl flex-shrink-0">📄</span>
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-800 truncate">{f.original_filename}</p>
+                              <p className="text-xs text-gray-400 mt-0.5">
+                                {formatBytes(f.file_size)} · Imported {new Date(f.uploaded_at).toLocaleDateString()}
+                                {f.uploaded_by && ` by ${f.uploaded_by}`}
+                              </p>
+                            </div>
                           </div>
                         </div>
-                        {selectedProjectFile?.id === f.id && (
-                          <span className="text-blue-600 font-bold text-lg flex-shrink-0">✓</span>
-                        )}
-                      </div>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
-              {selectedProjectFile && (
+              {selectedProjectFiles.size > 0 && (
                 <div className="bg-green-50 border border-green-200 rounded p-3 text-sm text-green-800">
-                  ✓ Selected: <strong>{selectedProjectFile.original_filename}</strong> ({formatBytes(selectedProjectFile.file_size)})
+                  {selectedProjectFiles.size === 1
+                    ? `✓ Selected: ${firstSelectedFile?.original_filename} (${formatBytes(firstSelectedFile?.file_size ?? null)})`
+                    : `✓ ${selectedProjectFiles.size} files selected — ${selectedProjectFiles.size} DQ runs will be queued`}
                 </div>
               )}
             </div>
@@ -510,53 +627,67 @@ export default function DQWizardPage() {
           <h2 className="font-semibold text-gray-800">Step 3 — Data Preview</h2>
 
           {/* Project file preview */}
-          {sourceType === "project_file" && selectedProjectFile && (
+          {sourceType === "project_file" && selectedProjectFiles.size > 0 && (
             <div className="space-y-3">
-              <div className="flex gap-4 text-sm text-gray-600 flex-wrap">
-                <span><strong>File:</strong> {selectedProjectFile.original_filename}</span>
-                <span><strong>Size:</strong> {formatBytes(selectedProjectFile.file_size)}</span>
-                <span><strong>Imported:</strong> {new Date(selectedProjectFile.uploaded_at).toLocaleDateString()}</span>
-                {projectFilePreview && (
-                  <>
-                    <span><strong>Sheet:</strong> {projectFilePreview.sheet_name}</span>
-                    <span><strong>Rows:</strong> {projectFilePreview.row_count.toLocaleString()}</span>
-                    <span><strong>Columns:</strong> {projectFilePreview.columns.length}</span>
-                  </>
-                )}
-              </div>
-              {previewLoading ? (
-                <div className="text-sm text-blue-600 text-center py-4">Loading preview…</div>
-              ) : projectFilePreview && projectFilePreview.columns.length > 0 ? (
-                <>
-                  <div className="overflow-x-auto rounded border border-gray-200">
-                    <table className="min-w-full text-xs">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          {projectFilePreview.columns.map((c) => (
-                            <th key={c} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap border-r border-gray-200 last:border-r-0">
-                              {c}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {projectFilePreview.preview_rows.map((row, i) => (
-                          <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                            {projectFilePreview.columns.map((c) => (
-                              <td key={c} className="px-3 py-1.5 border-r border-gray-100 last:border-r-0 text-gray-700 max-w-[120px] truncate">
-                                {row[c] ?? <span className="text-gray-300 italic">null</span>}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              {selectedProjectFiles.size > 1 ? (
+                <div className="space-y-2">
+                  <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800">
+                    {selectedProjectFiles.size} files selected — {selectedProjectFiles.size} separate DQ runs will be queued on launch.
                   </div>
-                  <p className="text-xs text-gray-400">Showing first 10 rows from {projectFilePreview.sheet_name}</p>
-                </>
-              ) : (
-                <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
-                  Preview unavailable — the file will be read directly during DQ generation.
+                  {selectedProjectFileItems.map((f: ProjectFileItem) => (
+                    <div key={f.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded border border-gray-200 text-sm">
+                      <span>📄</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-800 truncate">{f.original_filename}</p>
+                        <p className="text-xs text-gray-500">{formatBytes(f.file_size)} · {new Date(f.uploaded_at).toLocaleDateString()}</p>
+                      </div>
+                      <span className="text-green-600 font-bold text-xs">✓ queued</span>
+                    </div>
+                  ))}
+                </div>
+              ) : firstSelectedFile && (
+                <div className="space-y-3">
+                  <div className="flex gap-4 text-sm text-gray-600 flex-wrap">
+                    <span><strong>File:</strong> {firstSelectedFile.original_filename}</span>
+                    <span><strong>Size:</strong> {formatBytes(firstSelectedFile.file_size)}</span>
+                    <span><strong>Imported:</strong> {new Date(firstSelectedFile.uploaded_at).toLocaleDateString()}</span>
+                    {projectFilePreview && (
+                      <span><strong>Sheet:</strong> {projectFilePreview.sheet_name} · {projectFilePreview.row_count.toLocaleString()} rows · {projectFilePreview.columns.length} columns</span>
+                    )}
+                  </div>
+                  {previewLoading ? (
+                    <div className="text-sm text-blue-600 text-center py-4">Loading preview…</div>
+                  ) : projectFilePreview && projectFilePreview.columns.length > 0 ? (
+                    <div className="space-y-1">
+                      <div className="overflow-x-auto rounded border border-gray-200">
+                        <table className="min-w-full text-xs">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              {projectFilePreview.columns.map((c) => (
+                                <th key={c} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap border-r border-gray-200 last:border-r-0">{c}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {projectFilePreview.preview_rows.map((row, i) => (
+                              <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                                {projectFilePreview.columns.map((c) => (
+                                  <td key={c} className="px-3 py-1.5 border-r border-gray-100 last:border-r-0 text-gray-700 max-w-[120px] truncate">
+                                    {row[c] ?? <span className="text-gray-300 italic">null</span>}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <p className="text-xs text-gray-400">Showing first 10 rows from {projectFilePreview.sheet_name}</p>
+                    </div>
+                  ) : (
+                    <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
+                      Preview unavailable — the file will be read directly during DQ generation.
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -642,10 +773,95 @@ export default function DQWizardPage() {
 
       {/* ── Step 4: Generate ── */}
       {step === 4 && (
-        <div className="bg-white rounded-lg shadow p-6 space-y-6 text-center">
-          <h2 className="font-semibold text-gray-800">Step 4 — Generate DQ Checks</h2>
-          {!runId ? (
-            <div className="space-y-4">
+        <div className="bg-white rounded-lg shadow p-6 space-y-6">
+          <h2 className="font-semibold text-gray-800 text-center">Step 4 — Generate DQ Checks</h2>
+
+          {/* Batch mode: runInitiated flips synchronously on button click → guaranteed immediate UI change */}
+          {sourceType === "project_file" && selectedProjectFileItems.length > 1 ? (
+            runInitiated ? (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="font-semibold text-gray-800">
+                      {batchLaunching
+                        ? `Queuing ${selectedProjectFileItems.length} DQ runs…`
+                        : batchRunFiles.length > 0
+                        ? (() => {
+                            const done = batchRunFiles.filter((r) => ["completed","failed"].includes(batchRunStatuses[r.id] ?? "")).length;
+                            const allDone = done === batchRunFiles.length;
+                            return allDone ? `All ${batchRunFiles.length} runs completed` : `Processing — ${done} / ${batchRunFiles.length} done`;
+                          })()
+                        : "Runs queued — processing in background"}
+                    </p>
+                    <p className="text-xs text-gray-400 mt-0.5">Each file is analysed independently. DQ checks run in parallel.</p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => router.push("/dq")}>View DQ Runs</Button>
+                </div>
+
+                {/* Progress bar — shows 0 while queuing, fills as runs complete */}
+                {batchRunFiles.length > 0 && (
+                  <div className="w-full bg-gray-100 rounded-full h-2">
+                    <div className="bg-blue-500 h-2 rounded-full transition-all duration-700"
+                      style={{ width: `${(batchRunFiles.filter((r) => ["completed","failed"].includes(batchRunStatuses[r.id] ?? "")).length / batchRunFiles.length) * 100}%` }} />
+                  </div>
+                )}
+
+                {/* Per-run status rows */}
+                <div className="space-y-2">
+                  {(batchRunFiles.length > 0 ? batchRunFiles.map((r) => ({ id: r.id, filename: r.filename, status: batchRunStatuses[r.id] ?? "pending" }))
+                    : selectedProjectFileItems.map((f) => ({ id: f.id, filename: f.original_filename, status: "queuing" }))
+                  ).map((row) => (
+                    <div key={row.id} className="flex items-center gap-3 px-4 py-3 rounded-lg border border-gray-100 bg-gray-50">
+                      <div className="w-5 flex-shrink-0 flex items-center justify-center">
+                        {row.status === "completed" && <span className="text-green-600 font-bold">✓</span>}
+                        {row.status === "failed"    && <span className="text-red-500 font-bold">✗</span>}
+                        {(row.status === "running" || row.status === "queuing") &&
+                          <div className="w-4 h-4 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin" />}
+                        {row.status === "pending"  && <div className="w-4 h-4 rounded-full border-2 border-gray-300 bg-white" />}
+                      </div>
+                      <span className="text-sm text-gray-700 flex-1 min-w-0 truncate">📄 {row.filename}</span>
+                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full capitalize whitespace-nowrap ${
+                        row.status === "completed" ? "bg-green-100 text-green-700" :
+                        row.status === "failed"    ? "bg-red-100 text-red-700" :
+                        row.status === "running"   ? "bg-blue-100 text-blue-700" :
+                        row.status === "queuing"   ? "bg-yellow-100 text-yellow-700" :
+                        "bg-gray-100 text-gray-500"
+                      }`}>{row.status}</span>
+                    </div>
+                  ))}
+                </div>
+
+                {batchRunFiles.length > 0 && batchRunFiles.every((r) => ["completed","failed"].includes(batchRunStatuses[r.id] ?? "")) && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 text-center">
+                    All runs finished. Open each run from the DQ list to review and approve.
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4 text-center">
+                <p className="text-gray-500 text-sm">
+                  {selectedProjectFileItems.length} files selected. Each file will generate a separate DQ run with completeness, uniqueness, consistency, and latency checks.
+                </p>
+                <div className="space-y-1.5 max-w-sm mx-auto">
+                  {selectedProjectFileItems.map((f) => (
+                    <div key={f.id} className="flex items-center gap-2 text-sm text-gray-600 bg-gray-50 rounded px-3 py-2">
+                      <span>📄</span>
+                      <span className="truncate">{f.original_filename}</span>
+                      <span className="ml-auto text-xs text-gray-400">{formatBytes(f.file_size)}</span>
+                    </div>
+                  ))}
+                </div>
+                <Button
+                  onClick={() => { setRunInitiated(true); handleLaunchRun(); }}
+                  disabled={createRunMutation.isPending}
+                  className="mx-auto"
+                >
+                  Generate DQ Checks
+                </Button>
+              </div>
+            )
+          ) : !runId ? (
+            <div className="space-y-4 text-center">
               <p className="text-gray-600 text-sm">
                 Click Generate to start the async DQ analysis. The system will compute completeness, uniqueness, and consistency for every column.
               </p>
@@ -846,6 +1062,14 @@ function ResultsPanel({ run, onApprove, onReject, onRequestRevision, reviewing }
         </div>
       </div>
     </div>
+  );
+}
+
+export default function DQNewPage() {
+  return (
+    <Suspense fallback={null}>
+      <DQWizardPage />
+    </Suspense>
   );
 }
 
