@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 
-interface ProjectOption { id: string; project_name: string; }
+interface ProjectOption { id: string; project_code: string | null; project_name: string; }
 
 interface ProjectFileItem {
   id: string;
@@ -317,7 +317,7 @@ export default function DQWizardPage() {
               <select value={project_id} onChange={(e) => setProjectId(e.target.value)}
                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
                 <option value="">Select project…</option>
-                {projects?.map((p) => <option key={p.id} value={p.id}>{p.project_name}</option>)}
+                {projects?.map((p) => <option key={p.id} value={p.id}>{p.project_code ? `${p.project_code} — ${p.project_name}` : p.project_name}</option>)}
               </select>
             </div>
             <div>
