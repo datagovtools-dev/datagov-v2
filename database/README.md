@@ -29,7 +29,7 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 | `bapd_records` | — | Data extermination/disposal requests |
 | `bapd_approvals` | — | Dual-approval step records per BAPD |
 | `retention_policies` | 8 | Built-in retention policy types (seeded) |
-| `dq_runs` | — | Data Quality run jobs per project/source |
+| `dq_runs` | — | Data Quality run jobs per project/source; `source_file_id` FK links to `project_source_files` for Metadata-DQ integration |
 | `dq_results` | — | Column-level DQ metrics per run; stores business_rules, regex_pattern, ai_model, regex_version per row |
 | `dq_findings` | — | Flagged issues from DQ runs |
 | `dq_gcp_archives` | — | Approved DQ results archived to BigQuery |
@@ -68,9 +68,10 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 - `dq_results.details` JSONB — stores `raw_text` (truncated AI output), `total_unique`, `matched` count, and dimension-specific extras
 - `metadata_records.distinct_values` — backfill migration `f4a5b6c7d8e9` ensures this column is created on fresh installs; column was added outside migrations in a prior session and now properly tracked
 - `project_source_files.stored_path` — files live at `/app/uploads/{project_id}/{uuid}_{filename}` on the `uploads_data` volume; auto-deleted 30 days after project `end_date`
+- `dq_runs.source_file_id` — nullable FK to `project_source_files.id`; set when a DQ run is created via the "From Project Files" flow; NULL for GCP/Excel-upload/PostgreSQL runs; migration `b6c7d8e9f0a1`
 
 ## Notes
 
 - Run `alembic upgrade head` before restoring if starting from a fresh database
 - This dump uses `--no-owner --no-acl` so it restores cleanly under any PostgreSQL user
-- Generated: 2026-05-25
+- Generated: 2026-05-26

@@ -9,6 +9,29 @@ import { Input } from "@/components/ui/Input";
 
 interface ProjectOption { id: string; name: string; }
 
+interface ProjectFileItem {
+  id: string;
+  project_id: string;
+  source_type: string;
+  original_filename: string;
+  stored_path: string;
+  file_size: number | null;
+  uploaded_at: string;
+  uploaded_by: string | null;
+}
+
+interface ProjectFilePreview {
+  file_id: string;
+  filename: string;
+  source_type: string;
+  sheet_name: string;
+  row_count: number;
+  columns: string[];
+  preview_rows: Record<string, string | null>[];
+  file_size: number | null;
+  uploaded_at: string;
+}
+
 // ── Step labels ────────────────────────────────────────────────────────────────
 const STEPS = [
   { n: 1, label: "Source" },
@@ -42,12 +65,19 @@ function StepBar({ current }: { current: number }) {
   );
 }
 
+function formatBytes(bytes: number | null): string {
+  if (!bytes) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export default function DQWizardPage() {
   const router = useRouter();
   const qc = useQueryClient();
 
   const [step, setStep] = useState(1);
-  const [sourceType, setSourceType] = useState<"gcp" | "excel" | "postgres">("gcp");
+  const [sourceType, setSourceType] = useState<"gcp" | "excel" | "postgres" | "project_file">("gcp");
   const [project_id, setProjectId] = useState("");
   const [runName, setRunName] = useState("");
 
@@ -69,13 +99,36 @@ export default function DQWizardPage() {
   const [pgValid, setPgValid] = useState<{ valid: boolean; message: string; columns?: string[]; row_count?: number } | null>(null);
   const [pgValidating, setPgValidating] = useState(false);
 
+  // Project file params
+  const [selectedProjectFile, setSelectedProjectFile] = useState<ProjectFileItem | null>(null);
+
   // Step 4 — run polling
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<{ status: string; progress_pct: number; overall_score: string | null; message: string } | null>(null);
 
+  // Reset source-specific selection when source type changes
+  useEffect(() => {
+    setSelectedProjectFile(null);
+    setUploadResult(null);
+    setGcpValid(null);
+    setPgValid(null);
+  }, [sourceType]);
+
   const { data: projects } = useQuery<ProjectOption[]>({
     queryKey: ["projects-select"],
     queryFn: () => api.get<{ items: ProjectOption[] }>("/projects?page_size=100").then((r) => r.items),
+  });
+
+  const { data: projectFiles, isLoading: projectFilesLoading } = useQuery<ProjectFileItem[]>({
+    queryKey: ["dq-project-sources", project_id],
+    queryFn: () => api.get<ProjectFileItem[]>(`/dq/project/${project_id}/sources`),
+    enabled: sourceType === "project_file" && !!project_id,
+  });
+
+  const { data: projectFilePreview, isLoading: previewLoading } = useQuery<ProjectFilePreview>({
+    queryKey: ["dq-file-preview", selectedProjectFile?.id],
+    queryFn: () => api.get<ProjectFilePreview>(`/dq/project-sources/${selectedProjectFile!.id}/preview`),
+    enabled: !!selectedProjectFile,
   });
 
   const { data: runDetail } = useQuery({
@@ -194,6 +247,13 @@ export default function DQWizardPage() {
         postgres_connection_string: pg.connection_string,
         postgres_table: pg.table,
       });
+    } else if (sourceType === "project_file") {
+      createRunMutation.mutate({
+        ...base,
+        dataset_name: selectedProjectFile!.original_filename,
+        dataset_location: `project_file://${selectedProjectFile!.id}`,
+        source_file_id: selectedProjectFile!.id,
+      });
     } else {
       createRunMutation.mutate({
         ...base,
@@ -209,6 +269,8 @@ export default function DQWizardPage() {
     ? (gcpValid?.valid ?? false)
     : sourceType === "postgres"
     ? (pgValid?.valid ?? false)
+    : sourceType === "project_file"
+    ? !!selectedProjectFile
     : !!uploadResult;
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -227,17 +289,23 @@ export default function DQWizardPage() {
       {step === 1 && (
         <div className="bg-white rounded-lg shadow p-6 space-y-6">
           <h2 className="font-semibold text-gray-800">Step 1 — Choose Data Source</h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             {([
-              { type: "gcp",      icon: "☁",  label: "GCP BigQuery",        desc: "Connect to a BigQuery table using a service account" },
-              { type: "postgres", icon: "🐘", label: "PostgreSQL / Supabase", desc: "Connect directly via a PostgreSQL connection string" },
-              { type: "excel",    icon: "📊", label: "Excel (.xlsx)",         desc: "Upload a local .xlsx file for analysis" },
+              { type: "project_file", icon: "📁", label: "From Project Files",    desc: "Use data already imported via the Metadata module — no re-upload needed" },
+              { type: "excel",        icon: "📊", label: "Excel (.xlsx)",          desc: "Upload a local .xlsx file for analysis" },
+              { type: "gcp",         icon: "☁",  label: "GCP BigQuery",           desc: "Connect to a BigQuery table using a service account" },
+              { type: "postgres",    icon: "🐘", label: "PostgreSQL / Supabase",   desc: "Connect directly via a PostgreSQL connection string" },
             ] as const).map(({ type, icon, label, desc }) => (
               <button key={type} onClick={() => setSourceType(type)}
-                className={`p-6 rounded-xl border-2 text-left transition-all ${
+                className={`p-5 rounded-xl border-2 text-left transition-all ${
                   sourceType === type ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
                 }`}>
-                <div className="text-2xl mb-2">{icon}</div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-2xl">{icon}</span>
+                  {type === "project_file" && (
+                    <span className="text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Recommended</span>
+                  )}
+                </div>
                 <p className="font-semibold text-gray-800">{label}</p>
                 <p className="text-sm text-gray-500 mt-1">{desc}</p>
               </button>
@@ -263,14 +331,76 @@ export default function DQWizardPage() {
         </div>
       )}
 
-      {/* ── Step 2: Connect / Upload ── */}
+      {/* ── Step 2: Connect / Upload / Select ── */}
       {step === 2 && (
         <div className="bg-white rounded-lg shadow p-6 space-y-5">
           <h2 className="font-semibold text-gray-800">
-            Step 2 — {sourceType === "gcp" ? "Connect to BigQuery" : sourceType === "postgres" ? "Connect to PostgreSQL / Supabase" : "Upload Excel File"}
+            Step 2 — {
+              sourceType === "gcp" ? "Connect to BigQuery" :
+              sourceType === "postgres" ? "Connect to PostgreSQL / Supabase" :
+              sourceType === "project_file" ? "Select a Project File" :
+              "Upload Excel File"
+            }
           </h2>
 
-          {sourceType === "postgres" ? (
+          {/* ── From Project Files ── */}
+          {sourceType === "project_file" && (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-500">
+                These are the files already imported into this project via the Metadata module.
+                Select one to run DQ analysis on it.
+              </p>
+              {projectFilesLoading ? (
+                <div className="text-sm text-blue-600 text-center py-6">Loading project files…</div>
+              ) : !projectFiles || projectFiles.length === 0 ? (
+                <div className="border-2 border-dashed border-gray-200 rounded-xl p-8 text-center">
+                  <div className="text-4xl mb-2">📂</div>
+                  <p className="font-medium text-gray-500">No files imported yet</p>
+                  <p className="text-sm text-gray-400 mt-1">
+                    Import data in the Metadata module first, then return here to run DQ on it.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                  {projectFiles.map((f) => (
+                    <button
+                      key={f.id}
+                      onClick={() => setSelectedProjectFile(f)}
+                      className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
+                        selectedProjectFile?.id === f.id
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-gray-200 hover:border-gray-300 bg-white"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-xl flex-shrink-0">📄</span>
+                          <div className="min-w-0">
+                            <p className="font-medium text-gray-800 truncate">{f.original_filename}</p>
+                            <p className="text-xs text-gray-400 mt-0.5">
+                              {formatBytes(f.file_size)} · Imported {new Date(f.uploaded_at).toLocaleDateString()}
+                              {f.uploaded_by && ` by ${f.uploaded_by}`}
+                            </p>
+                          </div>
+                        </div>
+                        {selectedProjectFile?.id === f.id && (
+                          <span className="text-blue-600 font-bold text-lg flex-shrink-0">✓</span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {selectedProjectFile && (
+                <div className="bg-green-50 border border-green-200 rounded p-3 text-sm text-green-800">
+                  ✓ Selected: <strong>{selectedProjectFile.original_filename}</strong> ({formatBytes(selectedProjectFile.file_size)})
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── PostgreSQL ── */}
+          {sourceType === "postgres" && (
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -313,7 +443,10 @@ export default function DQWizardPage() {
                 </div>
               )}
             </div>
-          ) : sourceType === "gcp" ? (
+          )}
+
+          {/* ── GCP BigQuery ── */}
+          {sourceType === "gcp" && (
             <div className="space-y-4">
               <div className="grid grid-cols-3 gap-4">
                 <div>
@@ -342,7 +475,10 @@ export default function DQWizardPage() {
                 </div>
               )}
             </div>
-          ) : (
+          )}
+
+          {/* ── Excel upload ── */}
+          {sourceType === "excel" && (
             <div className="space-y-4">
               <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-blue-400 transition-colors"
                 onClick={() => fileInputRef.current?.click()}>
@@ -372,7 +508,62 @@ export default function DQWizardPage() {
       {step === 3 && (
         <div className="bg-white rounded-lg shadow p-6 space-y-4">
           <h2 className="font-semibold text-gray-800">Step 3 — Data Preview</h2>
-          {sourceType === "excel" && uploadResult ? (
+
+          {/* Project file preview */}
+          {sourceType === "project_file" && selectedProjectFile && (
+            <div className="space-y-3">
+              <div className="flex gap-4 text-sm text-gray-600 flex-wrap">
+                <span><strong>File:</strong> {selectedProjectFile.original_filename}</span>
+                <span><strong>Size:</strong> {formatBytes(selectedProjectFile.file_size)}</span>
+                <span><strong>Imported:</strong> {new Date(selectedProjectFile.uploaded_at).toLocaleDateString()}</span>
+                {projectFilePreview && (
+                  <>
+                    <span><strong>Sheet:</strong> {projectFilePreview.sheet_name}</span>
+                    <span><strong>Rows:</strong> {projectFilePreview.row_count.toLocaleString()}</span>
+                    <span><strong>Columns:</strong> {projectFilePreview.columns.length}</span>
+                  </>
+                )}
+              </div>
+              {previewLoading ? (
+                <div className="text-sm text-blue-600 text-center py-4">Loading preview…</div>
+              ) : projectFilePreview && projectFilePreview.columns.length > 0 ? (
+                <>
+                  <div className="overflow-x-auto rounded border border-gray-200">
+                    <table className="min-w-full text-xs">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          {projectFilePreview.columns.map((c) => (
+                            <th key={c} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap border-r border-gray-200 last:border-r-0">
+                              {c}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {projectFilePreview.preview_rows.map((row, i) => (
+                          <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
+                            {projectFilePreview.columns.map((c) => (
+                              <td key={c} className="px-3 py-1.5 border-r border-gray-100 last:border-r-0 text-gray-700 max-w-[120px] truncate">
+                                {row[c] ?? <span className="text-gray-300 italic">null</span>}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="text-xs text-gray-400">Showing first 10 rows from {projectFilePreview.sheet_name}</p>
+                </>
+              ) : (
+                <div className="bg-yellow-50 border border-yellow-200 rounded p-3 text-sm text-yellow-800">
+                  Preview unavailable — the file will be read directly during DQ generation.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Excel preview */}
+          {sourceType === "excel" && uploadResult && (
             <div className="space-y-3">
               <div className="flex gap-4 text-sm text-gray-600">
                 <span><strong>File:</strong> {uploadResult.filename}</span>
@@ -406,7 +597,10 @@ export default function DQWizardPage() {
               </div>
               <p className="text-xs text-gray-400">Showing first 10 rows</p>
             </div>
-          ) : sourceType === "postgres" && pgValid?.columns ? (
+          )}
+
+          {/* PostgreSQL preview */}
+          {sourceType === "postgres" && pgValid?.columns && (
             <div className="space-y-3">
               <div className="flex gap-4 text-sm text-gray-600">
                 <span><strong>Table:</strong> {pg.table}</span>
@@ -420,7 +614,10 @@ export default function DQWizardPage() {
               </div>
               <p className="text-xs text-gray-400">Full data preview available after DQ run completes</p>
             </div>
-          ) : sourceType === "gcp" && gcpValid?.columns ? (
+          )}
+
+          {/* GCP preview */}
+          {sourceType === "gcp" && gcpValid?.columns && (
             <div className="space-y-3">
               <div className="flex gap-4 text-sm text-gray-600">
                 <span><strong>Table:</strong> {gcp.project}.{gcp.dataset}.{gcp.table}</span>
@@ -434,7 +631,8 @@ export default function DQWizardPage() {
               </div>
               <p className="text-xs text-gray-400">Full data preview requires BigQuery live connection</p>
             </div>
-          ) : null}
+          )}
+
           <div className="flex justify-between pt-2">
             <Button variant="outline" onClick={() => setStep(2)}>← Back</Button>
             <Button onClick={() => setStep(4)}>Next →</Button>

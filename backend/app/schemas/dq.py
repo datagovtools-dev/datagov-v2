@@ -5,6 +5,32 @@ from typing import Any, Optional
 from pydantic import BaseModel, field_validator
 
 
+# ── Project source files ───────────────────────────────────────────────────────
+
+class ProjectSourceFileOut(BaseModel):
+    id: uuid.UUID
+    project_id: uuid.UUID
+    source_type: str
+    original_filename: str
+    stored_path: str
+    file_size: Optional[int] = None
+    uploaded_at: datetime
+    uploaded_by: Optional[str] = None
+    model_config = {"from_attributes": True}
+
+
+class ProjectFilePreviewResult(BaseModel):
+    file_id: uuid.UUID
+    filename: str
+    source_type: str
+    sheet_name: str
+    row_count: int
+    columns: list[str]
+    preview_rows: list[dict[str, Any]]
+    file_size: Optional[int] = None
+    uploaded_at: datetime
+
+
 # ── Source validation ──────────────────────────────────────────────────────────
 
 class GCPConnectionRequest(BaseModel):
@@ -47,7 +73,7 @@ class PostgresConnectionResult(BaseModel):
 class DQRunCreate(BaseModel):
     project_id: uuid.UUID
     run_name: str
-    source_type: str          # gcp | excel | postgres
+    source_type: str          # gcp | excel | postgres | project_file
     dataset_name: str
     dataset_location: str
     # GCP params (when source_type == 'gcp')
@@ -60,6 +86,8 @@ class DQRunCreate(BaseModel):
     # PostgreSQL/Supabase params (when source_type == 'postgres')
     postgres_connection_string: Optional[str] = None
     postgres_table: Optional[str] = None
+    # Project file params (when source_type == 'project_file')
+    source_file_id: Optional[uuid.UUID] = None
 
 
 class DQFindingOut(BaseModel):
@@ -105,6 +133,7 @@ class DQGCPArchiveOut(BaseModel):
 class DQRunOut(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    source_file_id: Optional[uuid.UUID] = None
     run_name: str
     dataset_name: str
     dataset_location: str

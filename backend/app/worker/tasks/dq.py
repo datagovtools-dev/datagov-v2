@@ -517,6 +517,7 @@ def run_dq_generation(
     sheet_name: str | None = None,
     postgres_connection_string: str | None = None,
     postgres_table: str | None = None,
+    stored_path: str | None = None,
 ) -> dict:
     """Compute 4-dimension DQ checks and persist results via synchronous psycopg2."""
     import psycopg2
@@ -542,7 +543,9 @@ def run_dq_generation(
         logger.info("DQ run %s using AI model=%s base_url=%s", run_id, ai_model, ai_base_url)
 
         # Load data
-        if source_type == "excel" and temp_file_key:
+        if source_type == "project_file" and stored_path:
+            columns_data = _read_excel(stored_path, sheet_name)
+        elif source_type == "excel" and temp_file_key:
             file_path = os.path.join(tempfile.gettempdir(), temp_file_key)
             columns_data = _read_excel(file_path, sheet_name)
         elif source_type == "gcp" and gcp_project:

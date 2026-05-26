@@ -3,7 +3,7 @@
 
 **Environment:** Staging  
 **Tester:** Data Governance Team  
-**Target:** All 81 checks pass (74 Functional Requirements + 7 Non-Functional Requirements)
+**Target:** All 82 checks pass (75 Functional Requirements + 7 Non-Functional Requirements)
 
 ---
 
@@ -82,6 +82,7 @@
 | FR-DQ-011 | Latency dimension only created for datetime columns; score: 100 (≤0 days), 70 (1–7 days), 50 (8–14 days), 30 (15–30 days), 0 (>30 days old) | ☐ | ☐ | |
 | FR-DQ-012 | Each dq_results row stores: business_rules, regex_pattern, ai_model, regex_version — enabling the DQ Template output format; column_category is reserved (NULL) for future automated category classification | ☐ | ☐ | |
 | FR-DQ-013 | DQ detail page Score tab shows dynamic dimension bars per column (1–4 bars); Rules tab shows dimension filter chips + Business Rules, Regex Pattern, AI Model columns with expandable text | ☐ | ☐ | |
+| FR-DQ-014 | DQ new-run wizard offers "From Project Files" source type; step 2 lists files already imported via the Metadata module for the selected project; selected file is read directly from stored_path (no re-upload); `dq_runs.source_file_id` FK records the linkage | ☐ | ☐ | |
 
 ## Module 7: Metadata Management + AI
 

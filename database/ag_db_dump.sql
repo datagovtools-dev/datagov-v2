@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4Z7x2Fr6hgSrvg0oE6VmNYdfNTzLsx0TLQXefFX7kEXo6GJFrhwQJm8C0WOMQX3
+\restrict PiGi5JQoEBmM9Q7yozsEmhLduMWoC8HWTl9OJ6sdiTJ0dibsbLSAzGpN0HR9tNE
 
 -- Dumped from database version 15.17
 -- Dumped by pg_dump version 15.17
@@ -345,7 +345,8 @@ CREATE TABLE public.dq_runs (
     completed_at timestamp with time zone,
     triggered_by uuid NOT NULL,
     celery_task_id character varying(200),
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    source_file_id uuid
 );
 
 
@@ -641,7 +642,7 @@ a7748f4b-2022-49f1-b7c4-fd647d0d726f	ollama	local	t	http://ollama:11434	llama3.2
 --
 
 COPY public.alembic_version (version_num) FROM stdin;
-f4a5b6c7d8e9
+b6c7d8e9f0a1
 \.
 
 
@@ -2192,6 +2193,8 @@ COPY public.audit_logs (id, user_id, module, action, entity_type, entity_id, det
 1762	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 09:18:20.740559+00
 1770	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 09:20:07.672884+00
 1790	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 09:43:50.035165+00
+1817	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.5	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-26 01:45:04.873641+00
+1819	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.5	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-26 01:59:09.661925+00
 1298	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.8	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-21 09:18:15.649831+00
 1301	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.8	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-21 09:21:47.539873+00
 1302	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.8	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-21 09:21:47.556057+00
@@ -2254,6 +2257,7 @@ COPY public.audit_logs (id, user_id, module, action, entity_type, entity_id, det
 1801	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 09:47:17.354461+00
 1807	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 09:52:45.671281+00
 1815	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 10:02:28.944939+00
+1818	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.5	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-26 01:45:04.862003+00
 1300	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.8	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-21 09:18:15.712178+00
 1305	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	metadata	bulk_grouping	metadata	ad670b81-df3b-4fc0-898c-b64b3098a186	{"rows": 10, "table": "PRJ004_Customer_Master.xlsx - Sheet1", "grouping": "Master Customer"}	\N	\N	2026-05-21 09:24:58.897002+00
 1306	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	metadata	bulk_grouping	metadata	ad670b81-df3b-4fc0-898c-b64b3098a186	{"rows": 10, "table": "PRJ004_Digital_Behavior.xlsx - Sheet1", "grouping": "Digital Behaviour"}	\N	\N	2026-05-21 09:25:15.336323+00
@@ -2284,6 +2288,7 @@ COPY public.audit_logs (id, user_id, module, action, entity_type, entity_id, det
 1808	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 09:52:45.673741+00
 1809	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 10:02:15.462106+00
 1816	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.6	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-25 10:02:28.944541+00
+1820	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.5	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-26 01:59:09.666775+00
 1304	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	metadata	bulk_grouping	metadata	ad670b81-df3b-4fc0-898c-b64b3098a186	{"rows": 10, "table": "PRJ004_AI_Scoring.xlsx - Sheet1", "grouping": "Model Scoring"}	\N	\N	2026-05-21 09:24:46.903642+00
 1360	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.8	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-22 02:46:03.211617+00
 1374	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	auth	token_refresh	user	3b33c2dc-c2a4-4528-ac81-f6e9ad8531ef	\N	172.19.0.8	Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36	2026-05-22 03:15:37.778956+00
@@ -2519,7 +2524,7 @@ COPY public.dq_results (id, run_id, check_name, check_type, column_name, status,
 -- Data for Name: dq_runs; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-COPY public.dq_runs (id, project_id, run_name, dataset_name, dataset_location, status, total_checks, passed_checks, failed_checks, overall_score, started_at, completed_at, triggered_by, celery_task_id, created_at) FROM stdin;
+COPY public.dq_runs (id, project_id, run_name, dataset_name, dataset_location, status, total_checks, passed_checks, failed_checks, overall_score, started_at, completed_at, triggered_by, celery_task_id, created_at, source_file_id) FROM stdin;
 \.
 
 
@@ -3016,7 +3021,7 @@ ef85e3ab-8c81-467a-82e4-091420d6223e	Yunita Sari	yunita.sari@company.com	$2b$12$
 -- Name: audit_logs_id_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.audit_logs_id_seq', 1816, true);
+SELECT pg_catalog.setval('public.audit_logs_id_seq', 1820, true);
 
 
 --
@@ -3740,6 +3745,14 @@ ALTER TABLE ONLY public.dq_runs
 
 
 --
+-- Name: dq_runs fk_dq_runs_source_file_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.dq_runs
+    ADD CONSTRAINT fk_dq_runs_source_file_id FOREIGN KEY (source_file_id) REFERENCES public.project_source_files(id) ON DELETE SET NULL;
+
+
+--
 -- Name: dq_runs fk_dq_runs_triggered_by; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -4052,5 +4065,5 @@ ALTER TABLE public.ropa_records ENABLE ROW LEVEL SECURITY;
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4Z7x2Fr6hgSrvg0oE6VmNYdfNTzLsx0TLQXefFX7kEXo6GJFrhwQJm8C0WOMQX3
+\unrestrict PiGi5JQoEBmM9Q7yozsEmhLduMWoC8HWTl9OJ6sdiTJ0dibsbLSAzGpN0HR9tNE
 

@@ -13,12 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.deps import get_db
 from app.core.rbac import require_permission
 from app.models.dq import DQGCPArchive, DQRun, DQResult, DQFinding
+from app.models.metadata import ProjectSourceFile
 from app.models.user import AuditLog, User
 from app.schemas.dq import (
     DQDeltaItem, DQGCPArchiveOut, DQReviewAction, DQRunCreate,
     DQRunListItem, DQRunOut, DQStatusResponse, ExcelPreviewResult,
     GCPConnectionRequest, GCPConnectionResult, PaginatedDQRun,
     PostgresConnectionRequest, PostgresConnectionResult,
+    ProjectSourceFileOut, ProjectFilePreviewResult,
 )
 from app.worker.tasks.notifications import send_workflow_notification
 
@@ -146,6 +148,72 @@ async def upload_excel(
         raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}") from exc
 
 
+# ── Project source file listing + preview ──────────────────────────────────────
+
+@router.get("/project/{project_id}/sources", response_model=list[ProjectSourceFileOut])
+async def list_project_sources(
+    project_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dq:create"))],
+) -> list[ProjectSourceFile]:
+    """Return all Excel/CSV files imported via the Metadata module for a project."""
+    rows = (await db.execute(
+        select(ProjectSourceFile)
+        .where(ProjectSourceFile.project_id == project_id)
+        .order_by(ProjectSourceFile.uploaded_at.desc())
+    )).scalars().all()
+    return list(rows)
+
+
+@router.get("/project-sources/{file_id}/preview", response_model=ProjectFilePreviewResult)
+async def preview_project_source(
+    file_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dq:create"))],
+) -> ProjectFilePreviewResult:
+    """Read a project source file from the uploads volume and return a 10-row preview."""
+    import asyncio
+    import functools
+
+    file = (await db.execute(
+        select(ProjectSourceFile).where(ProjectSourceFile.id == file_id)
+    )).scalar_one_or_none()
+    if not file:
+        raise HTTPException(status_code=404, detail="Source file not found")
+
+    def _read_preview(path: str) -> tuple[str, int, list[str], list[dict]]:
+        try:
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            ws_name = ws.title or "Sheet1"
+            rows = list(ws.iter_rows(values_only=True))
+            if not rows:
+                return ws_name, 0, [], []
+            headers = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(rows[0])]
+            preview = [
+                dict(zip(headers, (str(v) if v is not None else None for v in row)))
+                for row in rows[1:11]
+            ]
+            return ws_name, max(0, ws.max_row - 1), headers, preview
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"Could not read file: {exc}") from exc
+
+    loop = asyncio.get_event_loop()
+    ws_name, row_count, columns, preview_rows = await loop.run_in_executor(
+        None, functools.partial(_read_preview, file.stored_path)
+    )
+    return ProjectFilePreviewResult(
+        file_id=file.id,
+        filename=file.original_filename,
+        source_type=file.source_type,
+        sheet_name=ws_name,
+        row_count=row_count,
+        columns=columns,
+        preview_rows=preview_rows,
+        file_size=file.file_size,
+        uploaded_at=file.uploaded_at,
+    )
+
+
 # ── DQ Runs ────────────────────────────────────────────────────────────────────
 
 @router.get("", response_model=PaginatedDQRun)
@@ -178,11 +246,29 @@ async def create_dq_run(
     body: DQRunCreate, db: DB,
     current_user: Annotated[User, Depends(require_permission("dq:create"))],
 ) -> DQRun:
+    # Resolve stored_path + override dataset fields for project_file source type
+    stored_path: str | None = None
+    dataset_name = body.dataset_name
+    dataset_location = body.dataset_location
+
+    if body.source_type == "project_file":
+        if not body.source_file_id:
+            raise HTTPException(status_code=400, detail="source_file_id is required for project_file source type")
+        source_file = (await db.execute(
+            select(ProjectSourceFile).where(ProjectSourceFile.id == body.source_file_id)
+        )).scalar_one_or_none()
+        if not source_file:
+            raise HTTPException(status_code=404, detail="Source file not found")
+        stored_path = source_file.stored_path
+        dataset_name = source_file.original_filename
+        dataset_location = f"project_file://{source_file.id}"
+
     run = DQRun(
         project_id=body.project_id,
+        source_file_id=body.source_file_id,
         run_name=body.run_name,
-        dataset_name=body.dataset_name,
-        dataset_location=body.dataset_location,
+        dataset_name=dataset_name,
+        dataset_location=dataset_location,
         status="pending",
         triggered_by=current_user.id,
     )
@@ -202,7 +288,7 @@ async def create_dq_run(
         task = run_dq_generation.delay(
             run_id=str(run.id),
             source_type=body.source_type,
-            dataset_location=body.dataset_location,
+            dataset_location=dataset_location,
             gcp_project=body.gcp_project,
             bq_dataset_name=body.bq_dataset,
             bq_table=body.bq_table,
@@ -210,6 +296,7 @@ async def create_dq_run(
             sheet_name=body.sheet_name,
             postgres_connection_string=body.postgres_connection_string,
             postgres_table=body.postgres_table,
+            stored_path=stored_path,
         )
         run.celery_task_id = task.id
         await db.commit()
