@@ -75,3 +75,4 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 - Run `alembic upgrade head` before restoring if starting from a fresh database
 - This dump uses `--no-owner --no-acl` so it restores cleanly under any PostgreSQL user
 - Generated: 2026-05-26
+- Verified current Supabase/Alembic head: `b6c7d8e9f0a1` on 2026-05-28
