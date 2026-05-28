@@ -101,7 +101,7 @@ export default function AISettingsPage() {
       <div className="page-header">
         <div>
           <h1>AI Setup</h1>
-          <p className="text-sm text-surface-500 mt-0.5">Configure the provider used for metadata business definitions</p>
+          <p className="text-sm text-surface-500 mt-0.5">Configure the provider used for Metadata definitions and DQ consistency rules</p>
         </div>
         <Badge variant={statusReady ? "success" : "warning"}>
           {statusReady ? "Ready" : "Needs setup"}
@@ -123,7 +123,7 @@ export default function AISettingsPage() {
               <div className="flex items-center justify-between rounded-md border border-surface-200 px-3 py-2">
                 <div>
                   <div className="text-sm font-medium text-surface-800">AI generation</div>
-                  <div className="text-xs text-surface-500">Controls the regenerate buttons in Metadata</div>
+                  <div className="text-xs text-surface-500">Controls Metadata regeneration and DQ AI consistency checks</div>
                 </div>
                 <button
                   type="button"

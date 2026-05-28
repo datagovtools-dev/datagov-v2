@@ -12,12 +12,15 @@ import os
 import random
 import re
 import tempfile
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
 import requests
 from celery import shared_task
+
+from app.core.secrets import decrypt_secret
 
 logger = logging.getLogger(__name__)
 
@@ -58,25 +61,41 @@ Indicate your final output by typing: "HERE IS THE FINAL RESULT". Only output wh
 
 # ── AI helpers ─────────────────────────────────────────────────────────────────
 
-def _get_ai_config(db_url: str) -> tuple[str, str, int]:
-    """Return (model_name, base_url, timeout_seconds) from ai_provider_configs."""
+@dataclass(frozen=True)
+class DQAIConfig:
+    model_name: str
+    base_url: str
+    timeout_seconds: int
+    api_key: str | None = None
+
+
+def _get_ai_config(db_url: str) -> DQAIConfig | None:
+    """Return enabled Ollama config from AI Setup, or None to use rule-based fallback."""
     import psycopg2
-    defaults = ("llama3.2:3b", "http://ollama:11434", 120)
     try:
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
         cur.execute(
-            "SELECT model_name, base_url, timeout_seconds FROM ai_provider_configs "
-            "WHERE enabled = true ORDER BY created_at DESC LIMIT 1"
+            "SELECT model_name, base_url, timeout_seconds, encrypted_api_key "
+            "FROM ai_provider_configs "
+            "WHERE provider = 'ollama' AND enabled = true "
+            "ORDER BY updated_at DESC LIMIT 1"
         )
         row = cur.fetchone()
         cur.close()
         conn.close()
         if row:
-            return row[0], row[1], row[2]
+            model_name, base_url, timeout_seconds, encrypted_api_key = row
+            if model_name and base_url:
+                return DQAIConfig(
+                    model_name=model_name,
+                    base_url=base_url.rstrip("/"),
+                    timeout_seconds=timeout_seconds or 60,
+                    api_key=decrypt_secret(encrypted_api_key),
+                )
     except Exception as exc:
         logger.warning("Could not load AI config from DB: %s", exc)
-    return defaults
+    return None
 
 
 def _check_sample_size(n: int) -> int:
@@ -89,10 +108,18 @@ def _check_sample_size(n: int) -> int:
     return math.ceil(0.1 * n)
 
 
-def _call_ollama(prompt: str, model: str, base_url: str, timeout: int = 120) -> str:
+def _call_ollama(
+    prompt: str,
+    model: str,
+    base_url: str,
+    timeout: int = 120,
+    api_key: str | None = None,
+) -> str:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
     resp = requests.post(
         f"{base_url.rstrip('/')}/api/generate",
         json={"model": model, "prompt": prompt, "stream": False},
+        headers=headers,
         timeout=timeout,
     )
     resp.raise_for_status()
@@ -207,9 +234,7 @@ def _compute_ai_consistency(
     col: str,
     col_type: str,
     values: list[Any],
-    ai_model: str,
-    ai_base_url: str,
-    timeout: int,
+    ai_config: DQAIConfig | None,
 ) -> dict:
     total = len(values)
     non_null = [v for v in values if v is not None]
@@ -230,10 +255,18 @@ def _compute_ai_consistency(
             .replace("<COLUMN-TYPE>", col_type)
             .replace("<COLUMN-DATA>", str(sample))
         )
-        raw_text = _call_ollama(prompt, ai_model, ai_base_url, timeout)
+        if not ai_config:
+            raise RuntimeError("AI Setup is not enabled or configured")
+        raw_text = _call_ollama(
+            prompt,
+            ai_config.model_name,
+            ai_config.base_url,
+            ai_config.timeout_seconds,
+            ai_config.api_key,
+        )
         extracted = _extract_from_output(raw_text)
         regex_str = _clean_regex(extracted.get("regex_pattern", ""))
-        used_model = ai_model
+        used_model = ai_config.model_name
     except Exception as exc:
         logger.warning("AI consistency failed for '%s': %s — falling back to rule-based", col, exc)
         regex_str = _detect_format_regex(values) or ""
@@ -388,9 +421,7 @@ def _collect_findings(check: dict) -> list[dict]:
 
 def _analyse_dataframe(
     columns_data: dict[str, list[Any]],
-    ai_model: str,
-    ai_base_url: str,
-    ai_timeout: int,
+    ai_config: DQAIConfig | None,
 ) -> tuple[list[dict], float]:
     """Return (check_results_list, overall_score)."""
     results: list[dict] = []
@@ -410,7 +441,7 @@ def _analyse_dataframe(
         scores.append(comp["score"])
 
         # Consistency (AI-powered with rule-based fallback)
-        cons = _compute_ai_consistency(col, col_type, values, ai_model, ai_base_url, ai_timeout)
+        cons = _compute_ai_consistency(col, col_type, values, ai_config)
         cons["details"]["total_unique"] = total_unique
         cons["findings"] = _collect_findings(cons)
         results.append(cons)
@@ -539,8 +570,11 @@ def run_dq_generation(
         conn.commit()
 
         # Load AI config from DB
-        ai_model, ai_base_url, ai_timeout = _get_ai_config(db_url)
-        logger.info("DQ run %s using AI model=%s base_url=%s", run_id, ai_model, ai_base_url)
+        ai_config = _get_ai_config(db_url)
+        if ai_config:
+            logger.info("DQ run %s using AI model=%s base_url=%s", run_id, ai_config.model_name, ai_config.base_url)
+        else:
+            logger.info("DQ run %s using rule-based consistency fallback; AI Setup is not ready", run_id)
 
         # Load data
         if source_type == "project_file" and stored_path:
@@ -555,9 +589,7 @@ def run_dq_generation(
         else:
             raise ValueError(f"Unsupported source_type={source_type!r}")
 
-        check_results, overall_score = _analyse_dataframe(
-            columns_data, ai_model, ai_base_url, ai_timeout
-        )
+        check_results, overall_score = _analyse_dataframe(columns_data, ai_config)
 
         passed = sum(1 for r in check_results if r["status"] == "pass")
         failed_checks = sum(1 for r in check_results if r["status"] == "fail")
