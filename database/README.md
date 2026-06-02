@@ -18,27 +18,27 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 | `user_project_roles` | 9 | Many-to-many user to project role assignments |
 | `projects` | 5 | PRJ-2026-001, 002, 003, 004, 018 |
 | `data_owner_stewards` | 10 | Data Steward + Data Owner per project |
-| `data_sharing_requests` | 5 | DSR workflow records |
-| `dsr_approvals` | 20 | 4-step serial approval records per DSR |
+| `data_sharing_requests` | 4 | DSR workflow records |
+| `dsr_approvals` | 16 | 4-step serial approval records per DSR |
 | `data_sharing_agreements` | 0 | DSA attachments linked to DSRs |
-| `ai_compliance_checklists` | 5 | Auto-created from DSRs; 3-step serial approval |
-| `ai_checklist_approvals` | 15 | Approval step records per AICK |
-| `dpia_records` | 5 | Auto-created from DSRs; 2-step approval |
-| `dpia_approvals` | 10 | Approval step records per DPIA |
+| `ai_compliance_checklists` | 4 | Auto-created from DSRs; 3-step serial approval |
+| `ai_checklist_approvals` | 12 | Approval step records per AICK |
+| `dpia_records` | 4 | Auto-created from DSRs; 2-step approval |
+| `dpia_approvals` | 8 | Approval step records per DPIA |
 | `ropa_records` | 0 | Record of Processing Activities |
 | `bapd_records` | 0 | Data extermination/disposal requests |
 | `bapd_approvals` | 0 | Dual-approval step records per BAPD |
 | `retention_policies` | 0 | Retention policy records |
-| `dq_runs` | 0 | Data Quality run jobs per project/source; `source_file_id` FK links to `project_source_files` |
-| `dq_results` | 0 | Column-level DQ metrics per run; stores business_rules, regex_pattern, ai_model, regex_version per row |
-| `dq_findings` | 0 | Flagged issues from DQ runs |
+| `dq_runs` | 7 | Data Quality run jobs per project/source; `source_file_id` FK links to `project_source_files` |
+| `dq_results` | 299 | Column-level DQ metrics per run; stores business_rules, regex_pattern, ai_model, regex_version per row |
+| `dq_findings` | 92 | Flagged issues from DQ runs |
 | `dq_gcp_archives` | 0 | Approved DQ results archived to BigQuery |
-| `metadata_records` | 204 | 5 projects; includes standard_format and distinct_values |
-| `project_source_files` | 0 | Excel/CSV upload tracking; stored path + retention metadata |
+| `metadata_records` | 226 | 5 projects; includes standard_format and distinct_values |
+| `project_source_files` | 17 | Excel/CSV upload tracking; stored path + retention metadata |
 | `ai_provider_configs` | 1 | AI/LLM settings (provider, model, base URL, API key, batch size) |
 | `notifications` | 0 | In-app notification messages |
 | `notification_preferences` | 0 | Per-user notification opt-in/opt-out settings |
-| `audit_logs` | 1312 | Full activity history across all modules |
+| `audit_logs` | 2102 | Full activity history across all modules |
 | `alembic_version` | 1 | Alembic migration state |
 
 ## Metadata Records Breakdown
@@ -48,7 +48,7 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 | PRJ-2026-001 - AI-Powered Customer Analytics Platform | 93 | 4 | Excel |
 | PRJ-2026-002 - Smart Credit Risk Analytics Platform | 33 | 3 | Excel |
 | PRJ-2026-003 - Enterprise Data Governance Implementation | 33 | 3 | Excel |
-| PRJ-2026-004 - Customer 360 Analytics and Personalization Platform | 18 | 2 | Excel |
+| PRJ-2026-004 - Customer 360 Analytics and Personalization Platform | 40 | 4 | Excel |
 | PRJ-2026-018 - Enterprise Data Integration Platform Implementation | 27 | 3 | Excel |
 
 ## Key Field Notes
@@ -73,5 +73,5 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 
 - Run `alembic upgrade head` before restoring if starting from a fresh database
 - This dump uses `--no-owner --no-acl` so it restores cleanly under any PostgreSQL user
-- Generated from Supabase project `datagov-tools` on 2026-05-28
+- Refreshed from local Docker database container `ag_db` on 2026-06-02
 - Verified current Supabase/Alembic head: `b6c7d8e9f0a1`
