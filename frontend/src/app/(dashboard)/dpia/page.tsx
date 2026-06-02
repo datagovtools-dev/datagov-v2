@@ -158,8 +158,8 @@ export default function DPIAListPage() {
               <TableCell className="font-mono text-xs text-surface-500">
                 {d.project_code ?? <span className="text-surface-300">—</span>}
               </TableCell>
-              <TableCell className="max-w-[160px] truncate">{d.project_name ?? "—"}</TableCell>
-              <TableCell className="max-w-[140px] truncate text-surface-600">{d.customer_name ?? "—"}</TableCell>
+              <TableCell className="max-w-[160px] truncate" title={d.project_name ?? ""}>{d.project_name ?? "—"}</TableCell>
+              <TableCell className="max-w-[140px] truncate text-surface-600" title={d.customer_name ?? ""}>{d.customer_name ?? "—"}</TableCell>
               <TableCell>
                 {d.dsr_status
                   ? <Badge variant={dsrVariant(d.dsr_status)}>{label(d.dsr_status)}</Badge>

@@ -8,10 +8,14 @@ import { ArrowLeft, Download, Pencil, Save, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
-import { Badge } from "@/components/ui/Badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { UserCombobox } from "@/components/ui/UserCombobox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import {
+  ProjectBasicInformationContent,
+  ProjectOwnerStewardContent,
+  ProjectTeamContent,
+} from "@/components/details/ProjectDetailView";
 import { formatDate } from "@/lib/utils";
 import { printA4, pdfField } from "@/lib/exportPdf";
 
@@ -32,17 +36,6 @@ interface ProjectOut {
 const CATEGORIES = ["AI / ML", "Analytics", "Data Governance", "Data Quality", "Integration", "Other"];
 const CURRENT_YEAR = new Date().getFullYear();
 const YEARS = Array.from({ length: 6 }, (_, i) => CURRENT_YEAR - 2 + i);
-
-function UserName({ id, users }: { id: string | null; users: UserOption[] }) {
-  if (!id) return <span className="text-surface-400">—</span>;
-  const u = users.find(u => u.id === id);
-  return u ? (
-    <span className="flex flex-col">
-      <span className="font-medium text-surface-900">{u.full_name}</span>
-      <span className="text-xs text-surface-400">{u.email}</span>
-    </span>
-  ) : <span className="text-surface-400">—</span>;
-}
 
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -353,26 +346,7 @@ export default function ProjectDetailPage() {
                 </div>
               </>
             ) : (
-              <>
-                <div>
-                  <p className="text-xs text-surface-400 mb-0.5">Project ID</p>
-                  {project.project_code
-                    ? <p className="font-mono font-medium text-primary-700">{project.project_code}</p>
-                    : <span className="text-surface-400">—</span>}
-                </div>
-                <div />
-                <div><p className="text-xs text-surface-400 mb-0.5">Project Name</p><p className="font-medium">{project.project_name}</p></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">Customer / Client</p><p className="font-medium">{project.customer_name}</p></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">Line of Business</p><p>{project.line_of_business ?? <span className="text-surface-400">—</span>}</p></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">Project Category</p><Badge variant="default">{project.project_category}</Badge></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">Project Year</p><p>{project.project_year}</p></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">Monetized</p><Badge variant={project.is_monetized ? "approved" : "default"}>{project.is_monetized ? "Yes" : "No"}</Badge></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">Start Date</p><p>{project.start_date ? formatDate(project.start_date) : <span className="text-surface-400">—</span>}</p></div>
-                <div><p className="text-xs text-surface-400 mb-0.5">End Date</p><p>{project.end_date ? formatDate(project.end_date) : <span className="text-surface-400">—</span>}</p></div>
-                {project.use_case && (
-                  <div className="md:col-span-2"><p className="text-xs text-surface-400 mb-0.5">Use Case / Description</p><p className="text-sm">{project.use_case}</p></div>
-                )}
-              </>
+              <ProjectBasicInformationContent project={project} />
             )}
           </CardContent>
         </Card>
@@ -392,24 +366,12 @@ export default function ProjectDetailPage() {
                 <UserCombobox label="PIC Data Compliance"     required options={userOptions} value={form.pic_data_compliance_id}     onChange={v => set("pic_data_compliance_id", v)}     error={teamErrors.pic_data_compliance_id} />
               </>
             ) : (
-              <>
-                <div><p className="text-xs text-surface-400 mb-1">Subject Matter Expert (SME)</p><UserName id={project.sme_id} users={users} /></div>
-                <div><p className="text-xs text-surface-400 mb-1">Delivery Manager</p><UserName id={project.delivery_manager_id} users={users} /></div>
-                <div><p className="text-xs text-surface-400 mb-1">Project Manager</p><UserName id={project.project_manager_id} users={users} /></div>
-                <div><p className="text-xs text-surface-400 mb-1">Data Governance Officer</p><UserName id={project.dgo_id} users={users} /></div>
-                <div><p className="text-xs text-surface-400 mb-1">Metadata Officer</p><UserName id={project.metadata_officer_id} users={users} /></div>
-                <div><p className="text-xs text-surface-400 mb-1">DQ Officer</p><UserName id={project.dq_officer_id} users={users} /></div>
-                <div><p className="text-xs text-surface-400 mb-1">PIC Data Compliance</p><UserName id={project.pic_data_compliance_id} users={users} /></div>
-              </>
+              <ProjectTeamContent project={project} users={users} />
             )}
           </CardContent>
         </Card>
 
         {/* Data Steward & Data Owner */}
-        {(() => {
-          const dataSteward = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
-          const dataOwner   = owners.find(o => o.role_type === "data_owner");
-          return (
             <Card>
               <CardHeader><CardTitle>Data Steward &amp; Data Owner</CardTitle></CardHeader>
               <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -451,31 +413,10 @@ export default function ProjectDetailPage() {
                     </div>
                   </>
                 ) : (
-                  <>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-1">Data Steward</p>
-                      {dataSteward ? (
-                        <span className="flex flex-col">
-                          <span className="font-medium text-surface-900">{dataSteward.full_name}</span>
-                          <span className="text-xs text-surface-400">{dataSteward.email}</span>
-                        </span>
-                      ) : <span className="text-surface-400">—</span>}
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-1">Data Owner</p>
-                      {dataOwner ? (
-                        <span className="flex flex-col">
-                          <span className="font-medium text-surface-900">{dataOwner.full_name}</span>
-                          <span className="text-xs text-surface-400">{dataOwner.email}</span>
-                        </span>
-                      ) : <span className="text-surface-400">—</span>}
-                    </div>
-                  </>
+                  <ProjectOwnerStewardContent owners={owners} />
                 )}
               </CardContent>
             </Card>
-          );
-        })()}
 
         {serverError && (
           <p className="rounded-md bg-red-50 border border-red-200 px-4 py-2 text-sm text-red-600">{serverError}</p>

@@ -139,8 +139,8 @@ export default function DSRListPage() {
             <TableRow key={dsr.id}>
               <TableCell className="font-mono text-sm font-medium text-primary-700">{dsr.tracking_id}</TableCell>
               <TableCell className="font-mono text-xs text-surface-500">{dsr.project_code ?? <span className="text-surface-300">—</span>}</TableCell>
-              <TableCell className="max-w-[180px] truncate">{dsr.project_name}</TableCell>
-              <TableCell className="max-w-[160px] truncate text-surface-600">{dsr.recipient}</TableCell>
+              <TableCell className="max-w-[180px] truncate" title={dsr.project_name}>{dsr.project_name}</TableCell>
+              <TableCell className="max-w-[160px] truncate text-surface-600" title={dsr.recipient}>{dsr.recipient}</TableCell>
               <TableCell>{dsr.is_ai_use ? <Badge variant="warning">AI</Badge> : <span className="text-surface-400">—</span>}</TableCell>
               <TableCell>
                 <Badge variant={statusVariant(dsr.status)}>

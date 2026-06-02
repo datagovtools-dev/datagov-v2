@@ -134,8 +134,8 @@ export default function ProjectsPage() {
               <TableCell className="font-mono text-sm text-primary-700">
                 {p.project_code ?? <span className="text-surface-400">—</span>}
               </TableCell>
-              <TableCell className="font-medium max-w-[200px] truncate">{p.project_name}</TableCell>
-              <TableCell className="max-w-[160px] truncate text-surface-600">{p.customer_name}</TableCell>
+              <TableCell className="max-w-[200px] truncate" title={p.project_name}>{p.project_name}</TableCell>
+              <TableCell className="max-w-[160px] truncate text-surface-600" title={p.customer_name}>{p.customer_name}</TableCell>
               <TableCell><Badge variant="default">{p.project_category}</Badge></TableCell>
               <TableCell>{p.project_year}</TableCell>
               <TableCell>

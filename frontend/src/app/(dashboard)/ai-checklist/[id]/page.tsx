@@ -9,6 +9,9 @@ import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { DetailModal } from "@/components/details/DetailModal";
+import { DsrDetailCards } from "@/components/details/DsrDetailView";
+import { ProjectDetailCards } from "@/components/details/ProjectDetailView";
 import { formatDate, formatDateTime } from "@/lib/utils";
 import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 
@@ -215,6 +218,7 @@ const DSR_CHECKLIST_TEMPLATE: { section: string; title: string; aiOnly?: boolean
 ];
 
 interface UserOption { id: string; full_name: string; email: string; position?: string | null }
+interface OwnerRecord { role_type: string; full_name: string; email: string }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -568,11 +572,22 @@ export default function AIChecklistDetailPage() {
     staleTime: 0,
   });
 
+  const { data: owners = [], refetch: refetchOwners } = useQuery<OwnerRecord[]>({
+    queryKey: ["project-owner-stewards", dsr?.project_id],
+    queryFn: () => api.get<OwnerRecord[]>(`/metadata/owners/${dsr!.project_id}`),
+    enabled: !!dsr?.project_id,
+    staleTime: 0,
+  });
+
   function openProjectModal() {
     setShowProjectModal(true);
     refetchProject();
     refetchUsers();
+    refetchOwners();
   }
+
+  const dataSteward = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
+  const dataOwner = owners.find(o => o.role_type === "data_owner");
 
   function openDSRModal() {
     setShowDSRModal(true);
@@ -1073,205 +1088,26 @@ export default function AIChecklistDetailPage() {
 
       {/* Project Detail Modal */}
       {showProjectModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowProjectModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-200 sticky top-0 bg-white rounded-t-xl">
-              <div>
-                <p className="text-xs text-surface-400 font-mono">{project?.project_code ?? dsr.project_code}</p>
-                <h2 className="text-base font-semibold text-surface-900">{project?.project_name ?? dsr.project_name}</h2>
-              </div>
-              <button onClick={() => setShowProjectModal(false)}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-surface-100 text-surface-500">✕</button>
-            </div>
-            {!project ? (
-              <p className="text-sm text-surface-400 text-center py-10">Loading…</p>
-            ) : (
-              <div className="px-6 py-5 space-y-6 text-sm">
-                <div>
-                  <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Project Information</p>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    <div><p className="text-xs text-surface-400 mb-0.5">Customer / Client</p><p className="font-medium">{project.customer_name}</p></div>
-                    <div><p className="text-xs text-surface-400 mb-0.5">Category</p><p className="font-medium">{project.project_category}</p></div>
-                    <div><p className="text-xs text-surface-400 mb-0.5">Line of Business</p><p className="font-medium">{project.line_of_business ?? "—"}</p></div>
-                    <div><p className="text-xs text-surface-400 mb-0.5">Year</p><p className="font-medium">{project.project_year}</p></div>
-                    <div><p className="text-xs text-surface-400 mb-0.5">Start Date</p><p className="font-medium">{project.start_date ? formatDate(project.start_date) : "—"}</p></div>
-                    <div><p className="text-xs text-surface-400 mb-0.5">End Date</p><p className="font-medium">{project.end_date ? formatDate(project.end_date) : "—"}</p></div>
-                    <div><p className="text-xs text-surface-400 mb-0.5">Monetized</p><p className="font-medium">{project.is_monetized ? "Yes" : "No"}</p></div>
-                    {project.use_case && (
-                      <div className="col-span-2"><p className="text-xs text-surface-400 mb-0.5">Use Case</p><p className="text-surface-700 leading-relaxed">{project.use_case}</p></div>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Project Team</p>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    {([
-                      ["Delivery Manager",        project.delivery_manager_id],
-                      ["Project Manager",         project.project_manager_id],
-                      ["Subject Matter Expert",   project.sme_id],
-                      ["Data Governance Officer", project.dgo_id],
-                      ["Metadata Officer",        project.metadata_officer_id],
-                      ["Data Quality Officer",    project.dq_officer_id],
-                      ["PIC Data Compliance",     project.pic_data_compliance_id],
-                    ] as [string, string | null][]).map(([label, uid]) => {
-                      const u = resolveUser(uid);
-                      return (
-                        <div key={label}>
-                          <p className="text-xs text-surface-400 mb-0.5">{label}</p>
-                          <p className="font-medium">{u.name}</p>
-                          {u.email && <p className="text-xs text-surface-400">{u.email}</p>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+        <DetailModal
+          code={project?.project_code ?? dsr.project_code}
+          title={project?.project_name ?? dsr.project_name}
+          onClose={() => setShowProjectModal(false)}
+          loading={!project}
+        >
+          {project && (
+            <ProjectDetailCards project={project} users={users} owners={owners} />
+          )}
+        </DetailModal>
       )}
-
       {/* DSR Detail Modal */}
       {showDSRModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowDSRModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-200 sticky top-0 bg-white rounded-t-xl">
-              <div>
-                <p className="text-xs text-surface-400 font-mono">{dsr.tracking_id}</p>
-                <h2 className="text-base font-semibold text-surface-900">{dsr.project_name}</h2>
-              </div>
-              <button onClick={() => setShowDSRModal(false)}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-surface-100 text-surface-500">✕</button>
-            </div>
-            <div className="px-6 py-5 space-y-6 text-sm">
-              <div>
-                <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Request Details</p>
-                <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                  <div><p className="text-xs text-surface-400 mb-0.5">Project ID</p><p className="font-mono font-medium">{dsr.project_code ?? dsr.project_id}</p></div>
-                  <div><p className="text-xs text-surface-400 mb-0.5">Status</p><p className="font-medium capitalize">{dsr.status.replace(/_/g, " ")}</p></div>
-                  <div><p className="text-xs text-surface-400 mb-0.5">Customer / Client</p><p className="font-medium">{dsr.recipient}</p></div>
-                  <div><p className="text-xs text-surface-400 mb-0.5">AI / ML Use</p><p className="font-medium">{dsr.is_ai_use ? "Yes" : "No"}</p></div>
-                  <div><p className="text-xs text-surface-400 mb-0.5">Sharing Start Date</p><p className="font-medium">{formatDate(dsr.duration_start)}</p></div>
-                  <div><p className="text-xs text-surface-400 mb-0.5">Sharing End Date</p><p className="font-medium">{formatDate(dsr.duration_end)}</p></div>
-                  <div className="col-span-2"><p className="text-xs text-surface-400 mb-0.5">Purpose / Justification</p><p className="text-surface-700 leading-relaxed">{dsr.purpose}</p></div>
-                </div>
-              </div>
-              <div>
-                <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">DSR Approval Timeline</p>
-                <ol className="relative border-l border-surface-200 space-y-5 ml-3">
-                  {[...dsr.approvals].sort((a, b) => a.step_order - b.step_order).map((step) => (
-                    <li key={step.id} className="ml-4">
-                      <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${
-                        step.status === "approved"  ? "bg-green-500" :
-                        step.status === "rejected"  ? "bg-red-500" :
-                        step.status === "requested" ? "bg-primary-500" :
-                        "bg-surface-200"
-                      }`} />
-                      <p className={`text-sm font-medium ${step.status === "pending" ? "text-surface-400" : "text-surface-800"}`}>{DSR_STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}</p>
-                      <p className={`text-xs ${step.status === "pending" ? "text-surface-400" : "text-surface-500"}`}>{step.approver_name || "—"}</p>
-                      <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                        step.status === "approved"  ? "bg-green-100 text-green-700" :
-                        step.status === "rejected"  ? "bg-red-100 text-red-700" :
-                        step.status === "requested" ? "bg-primary-100 text-primary-700" :
-                        "bg-surface-100 text-surface-400"
-                      }`}>
-                        {step.status === "approved" ? "Approved" : step.status === "rejected" ? "Rejected" : step.status === "pending" ? "Not Yet" : "Requested"}
-                      </span>
-                      {step.actioned_at && (
-                        <p className="text-xs text-surface-400 mt-0.5">{new Date(step.actioned_at).toLocaleString()}</p>
-                      )}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-
-              {dsr.ai_checklist && (() => {
-                const cj = dsr.ai_checklist.checklist_json ?? {};
-                const so = (cj.sign_off ?? {}) as Record<string, string>;
-                return (
-                  <>
-                    <div>
-                      <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Data & Insights Sharing Evaluation Checklist</p>
-                      <div className="space-y-3">
-                        {DSR_CHECKLIST_TEMPLATE.filter(s => !s.aiOnly || dsr.is_ai_use).map((sec) => (
-                          <div key={sec.section}>
-                            <p className="text-xs font-semibold text-surface-700 bg-surface-100 px-2 py-1.5 rounded-t border border-surface-200">
-                              {sec.section}. {sec.title}
-                            </p>
-                            <div className="border border-t-0 border-surface-200 rounded-b divide-y divide-surface-100">
-                              {sec.items.map((item) => {
-                                const rows = item.sub
-                                  ? item.sub.map(s => ({ id: s.id, label: s.label, val: cj[s.id] ?? {} }))
-                                  : [{ id: item.id, label: item.label, val: cj[item.id] ?? {} }];
-                                return (
-                                  <div key={item.id} className="px-3 py-2 space-y-1.5">
-                                    {item.sub && <p className="text-xs font-medium text-surface-600">{item.label}</p>}
-                                    {rows.map(r => (
-                                      <div key={r.id} className={`flex items-start gap-2 ${item.sub ? "pl-2 border-l-2 border-surface-200" : ""}`}>
-                                        <span className={`shrink-0 inline-block px-2 py-0.5 rounded text-xs font-semibold mt-0.5 ${
-                                          r.val.answer === "Yes" ? "bg-green-100 text-green-700" :
-                                          r.val.answer === "No"  ? "bg-red-100 text-red-700" :
-                                          "bg-surface-100 text-surface-400"
-                                        }`}>{r.val.answer || "—"}</span>
-                                        <div>
-                                          {!item.sub && <p className="text-xs text-surface-600">{r.label}</p>}
-                                          {item.sub && <p className="text-xs text-surface-600">{r.label}</p>}
-                                          {r.val.remarks && <p className="text-xs text-surface-400 italic mt-0.5">{r.val.remarks}</p>}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Sign Off</p>
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-surface-500 w-24 shrink-0">Approved?</span>
-                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${
-                            so.approved === "Yes" ? "bg-green-100 text-green-700" :
-                            so.approved === "No"  ? "bg-red-100 text-red-700" : "bg-surface-100 text-surface-400"
-                          }`}>{so.approved || "—"}</span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-4">
-                          <div className="space-y-1">
-                            <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Prepared By</p>
-                            <p className="font-medium text-sm">{so.prepared_by || "—"}</p>
-                            <p className="text-xs text-surface-400">{so.prepared_position || ""}</p>
-                            {so.prepared_signature
-                              ? <img src={so.prepared_signature} alt="signature" className="h-12 border border-surface-200 rounded bg-white object-contain w-full mt-1" />
-                              : <div className="h-12 border border-dashed border-surface-200 rounded flex items-center justify-center mt-1"><span className="text-xs text-surface-300">Not signed</span></div>}
-                            {so.prepared_date && <p className="text-xs text-surface-400">Signed: {so.prepared_date}</p>}
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Acknowledged By</p>
-                            <p className="font-medium text-sm">{so.acknowledged_by || "—"}</p>
-                            <p className="text-xs text-surface-400">{so.acknowledged_position || ""}</p>
-                            {so.acknowledged_signature
-                              ? <img src={so.acknowledged_signature} alt="signature" className="h-12 border border-surface-200 rounded bg-white object-contain w-full mt-1" />
-                              : <div className="h-12 border border-dashed border-surface-200 rounded flex items-center justify-center mt-1"><span className="text-xs text-surface-300">Not signed</span></div>}
-                            {so.acknowledged_date && <p className="text-xs text-surface-400">Signed: {so.acknowledged_date}</p>}
-                          </div>
-                        </div>
-                        {so.remarks && (
-                          <div><p className="text-xs text-surface-500 mb-0.5">Remarks</p><p className="text-xs text-surface-700 italic">{so.remarks}</p></div>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          </div>
-        </div>
+        <DetailModal
+          code={dsr.tracking_id}
+          title={dsr.project_name}
+          onClose={() => setShowDSRModal(false)}
+        >
+          <DsrDetailCards dsr={dsr} />
+        </DetailModal>
       )}
     </div>
   );

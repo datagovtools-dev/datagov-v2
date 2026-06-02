@@ -10,6 +10,7 @@ __pycache__/
 *.pyd
 .Python
 *.egg-info/
+.coverage
 dist/
 build/
 *.egg
@@ -44,6 +45,7 @@ clear_prepared_sig.sql
 .DS_Store
 Thumbs.db
 desktop.ini
+nul
 
 # Claude Code session memory
 .claude/

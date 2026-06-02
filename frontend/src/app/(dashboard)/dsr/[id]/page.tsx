@@ -10,6 +10,8 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { DetailModal } from "@/components/details/DetailModal";
+import { ProjectDetailCards } from "@/components/details/ProjectDetailView";
 import { formatDate, formatDateTime } from "@/lib/utils";
 import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 
@@ -47,6 +49,7 @@ interface ProjectDetail {
 }
 
 interface UserOption { id: string; full_name: string; email: string; position?: string | null }
+interface OwnerRecord { role_type: string; full_name: string; email: string }
 
 type StatusVariant = "draft" | "pending" | "in-review" | "approved" | "rejected" | "done" | "default";
 
@@ -593,10 +596,18 @@ export default function DSRDetailPage() {
     staleTime: 0,
   });
 
+  const { data: owners = [], refetch: refetchOwners } = useQuery<OwnerRecord[]>({
+    queryKey: ["project-owner-stewards-modal", dsr?.project_id],
+    queryFn: () => api.get<OwnerRecord[]>(`/metadata/owners/${dsr!.project_id}`),
+    enabled: !!dsr?.project_id,
+    staleTime: 0,
+  });
+
   function openProjectModal() {
     setShowProjectModal(true);
     refetchProject();
     refetchUsers();
+    refetchOwners();
   }
 
   function resolveUser(id: string | null): { name: string; email: string | null; position: string | null } {
@@ -604,6 +615,9 @@ export default function DSRDetailPage() {
     const u = allUsers.find(u => u.id === id);
     return u ? { name: u.full_name, email: u.email, position: u.position ?? null } : { name: "—", email: null, position: null };
   }
+
+  const dataSteward = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
+  const dataOwner = owners.find(o => o.role_type === "data_owner");
 
   function startEdit() {
     if (!dsr || isSigned) return;
@@ -1074,94 +1088,16 @@ export default function DSRDetailPage() {
 
       {/* Project Detail Modal */}
       {showProjectModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setShowProjectModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
-            {/* Modal header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-200 sticky top-0 bg-white rounded-t-xl">
-              <div>
-                <p className="text-xs text-surface-400 font-mono">{projectDetail?.project_code ?? dsr.project_code}</p>
-                <h2 className="text-base font-semibold text-surface-900">{projectDetail?.project_name ?? dsr.project_name}</h2>
-              </div>
-              <button onClick={() => setShowProjectModal(false)}
-                className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-surface-100 text-surface-500">
-                ✕
-              </button>
-            </div>
-
-            {!projectDetail ? (
-              <p className="text-sm text-surface-400 text-center py-10">Loading…</p>
-            ) : (
-              <div className="px-6 py-5 space-y-6 text-sm">
-                {/* Project Info */}
-                <div>
-                  <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Project Information</p>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">Customer / Client</p>
-                      <p className="font-medium">{projectDetail.customer_name}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">Category</p>
-                      <p className="font-medium">{projectDetail.project_category}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">Line of Business</p>
-                      <p className="font-medium">{projectDetail.line_of_business ?? "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">Year</p>
-                      <p className="font-medium">{projectDetail.project_year}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">Start Date</p>
-                      <p className="font-medium">{projectDetail.start_date ? formatDate(projectDetail.start_date) : "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">End Date</p>
-                      <p className="font-medium">{projectDetail.end_date ? formatDate(projectDetail.end_date) : "—"}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-surface-400 mb-0.5">Monetized</p>
-                      <p className="font-medium">{projectDetail.is_monetized ? "Yes" : "No"}</p>
-                    </div>
-                    {projectDetail.use_case && (
-                      <div className="col-span-2">
-                        <p className="text-xs text-surface-400 mb-0.5">Use Case</p>
-                        <p className="text-surface-700 leading-relaxed">{projectDetail.use_case}</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Project Team */}
-                <div>
-                  <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide mb-3">Project Team</p>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-3">
-                    {([
-                      ["Delivery Manager",       projectDetail.delivery_manager_id],
-                      ["Project Manager",        projectDetail.project_manager_id],
-                      ["Subject Matter Expert",  projectDetail.sme_id],
-                      ["Data Governance Officer",projectDetail.dgo_id],
-                      ["Metadata Officer",       projectDetail.metadata_officer_id],
-                      ["Data Quality Officer",   projectDetail.dq_officer_id],
-                      ["PIC Data Compliance",    projectDetail.pic_data_compliance_id],
-                    ] as [string, string | null][]).map(([label, uid]) => {
-                      const u = resolveUser(uid);
-                      return (
-                        <div key={label}>
-                          <p className="text-xs text-surface-400 mb-0.5">{label}</p>
-                          <p className="font-medium">{u.name}</p>
-                          {u.email && <p className="text-xs text-surface-400">{u.email}</p>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+        <DetailModal
+          code={projectDetail?.project_code ?? dsr.project_code}
+          title={projectDetail?.project_name ?? dsr.project_name}
+          onClose={() => setShowProjectModal(false)}
+          loading={!projectDetail}
+        >
+          {projectDetail && (
+            <ProjectDetailCards project={projectDetail} users={allUsers} owners={owners} />
+          )}
+        </DetailModal>
       )}
     </div>
   );
