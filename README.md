@@ -48,6 +48,8 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 
 Current baseline: **AI Governance Tools v1.0.0**. This local environment was last validated against commit `1e2b441` on `2026-06-02`.
 
+Developer configuration reference: see `development.config.yml` for AI model parameters, prompt contracts, database dump rules, shared UI contracts, and validation notes that should be considered during development.
+
 ### Required Local Tools
 
 | Tool | Required / Tested Version | Notes |

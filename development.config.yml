@@ -1,0 +1,439 @@
+# AI Governance Tools - Developer Configuration Reference
+#
+# Purpose:
+#   This file documents development-critical configuration decisions that are
+#   easy to miss when working across frontend, backend, AI, database, and Docker.
+#   It is intended for developers and reviewers, not for storing secrets.
+#
+# Important:
+#   - Do not put real API keys, passwords, tokens, private certificates, or
+#     customer-sensitive data in this file.
+#   - Runtime AI settings are stored in the database table `ai_provider_configs`
+#     and are managed from Settings > AI Setup in the UI.
+#   - Treat this file as the development contract. If the code changes, update
+#     this file in the same PR/commit.
+
+project:
+  name: "AI Governance Tools"
+  app_version: "1.0.0"
+  repo: "https://github.com/datagovtools-dev/datagov-tools"
+  primary_branch: "main"
+  validated_snapshot:
+    date: "2026-06-02"
+    latest_known_commit: "d6285f4"
+    note: "Latest pushed snapshot after README and database dump refresh."
+
+local_runtime:
+  source_of_truth: "Docker Compose"
+  app_url: "http://localhost"
+  default_login:
+    email: "admin@governance.local"
+    password: "Admin1234!"
+    note: "Local seeded admin only. Do not reuse for production."
+  required_tools:
+    docker: "Docker Desktop with Docker Compose v2"
+    git: "Current Git client"
+    browser: "Chrome or Edge recommended"
+    node: "20.x only when running frontend outside Docker"
+    python: "3.11.x only when running backend outside Docker"
+  containers:
+    nginx:
+      image: "nginx:1.25-alpine"
+      container_name: "ag_nginx"
+      public_port: 80
+    frontend:
+      image_base: "node:20-alpine"
+      container_name: "ag_frontend"
+      framework: "Next.js 14.2.4"
+      react: "18.3.1"
+      tailwind: "3.4.4"
+    backend:
+      image_base: "python:3.11-slim"
+      container_name: "ag_api"
+      framework: "FastAPI 0.111.0"
+      orm: "SQLAlchemy 2.0.30"
+      migrations: "Alembic 1.13.1"
+      pydantic: "2.7.1"
+    database:
+      image: "postgres:15-alpine"
+      container_name: "ag_db"
+      database_name: "ag_db"
+      user: "ag_user"
+    redis:
+      image: "redis:7-alpine"
+      container_name: "ag_redis"
+    ollama:
+      image: "ollama/ollama:latest"
+      container_name: "ag_ollama"
+
+commands:
+  start_local: "docker compose up -d"
+  stop_local: "docker compose down"
+  rebuild_frontend: "docker compose -f docker-compose.yml build frontend"
+  recreate_frontend_nginx: "docker compose -f docker-compose.yml up -d --force-recreate frontend nginx"
+  run_migrations: "docker exec ag_api alembic upgrade head"
+  seed_admin: "docker exec ag_api python -m scripts.seed_admin"
+  pull_local_llm_model: "docker exec ag_ollama ollama pull llama3.2:3b"
+  refresh_database_dump: "docker exec ag_db pg_dump -U ag_user -d ag_db --no-owner --no-acl > database/ag_db_dump.sql"
+  restore_database_dump: "docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql"
+  frontend_build_check: "docker compose -f docker-compose.yml build frontend"
+  backend_unit_tests: "docker exec ag_api pytest"
+
+secrets_policy:
+  never_commit:
+    - ".env"
+    - "API keys"
+    - "database passwords"
+    - "JWT or encryption secrets"
+    - "uploaded source files from users"
+    - "Docker volume contents"
+    - "coverage artifacts"
+    - "local cache files"
+  ai_api_key_storage:
+    table: "ai_provider_configs"
+    encrypted_column: "encrypted_api_key"
+    display_column: "api_key_last4"
+    rule: "Only last 4 characters may be displayed. Never log or dump plaintext API keys."
+  database_dump_check:
+    before_push:
+      - "Search database/ag_db_dump.sql for key-like values."
+      - "Confirm ai_provider_configs.encrypted_api_key is null or intentionally sanitized."
+      - "Confirm database/README.md counts match the dump."
+
+ai_settings:
+  source_of_truth:
+    ui: "Settings > AI Setup"
+    table: "ai_provider_configs"
+    backend_model: "backend/app/models/ai_config.py"
+    api_schema: "backend/app/schemas/settings.py"
+    settings_router: "backend/app/routers/settings.py"
+  supported_provider:
+    provider: "ollama"
+    note: "The settings schema rejects any provider other than ollama."
+  modes:
+    local:
+      base_url: "http://ollama:11434"
+      api_key_required: false
+      recommended_model: "llama3.2:3b"
+    cloud:
+      base_url_example: "https://ollama.com"
+      api_key_required: true
+      model_rule: "Use an Ollama cloud-supported model."
+  default_runtime_values:
+    provider: "ollama"
+    mode: "local"
+    enabled: true
+    base_url: "http://ollama:11434"
+    model_name: "llama3.2:3b"
+    timeout_seconds: 60
+    batch_size: 5
+  validation_limits:
+    timeout_seconds:
+      min: 5
+      max: 180
+    batch_size:
+      min: 1
+      max: 25
+    model_name:
+      min_length: 1
+      max_length: 160
+    base_url:
+      max_length: 500
+      must_start_with:
+        - "http://"
+        - "https://"
+  developer_warning:
+    - "Do not tune active AI behavior through backend/app/config.py only."
+    - "Metadata generation and DQ consistency generation read from ai_provider_configs."
+    - "Legacy env defaults may still exist for compatibility, but DB-backed settings are the active path."
+
+metadata_ai_definition_generation:
+  purpose: "Generate business definitions for metadata attributes."
+  active_code_paths:
+    api_service: "backend/app/services/ai_generation.py"
+    celery_worker: "backend/app/worker/tasks/metadata.py"
+    metadata_router: "backend/app/routers/metadata.py"
+    frontend_page: "frontend/src/app/(dashboard)/metadata/[projectId]/page.tsx"
+  model_baseline:
+    recommended_model: "llama3.2:3b"
+    prompt_variant: "Variant A"
+    reason: "Validated for concise, plain-language, governance-friendly definitions."
+  ollama_options:
+    temperature: 0.20
+    top_p: 0.85
+    top_k: 30
+    repeat_penalty: 1.15
+    num_predict: 160
+  prompt_context_fields:
+    always_included:
+      - "Source table, cleaned to remove file extension and sheet suffix."
+      - "Business term, or data attribute when business term is empty."
+      - "Data type, defaulting to text."
+    optional:
+      - "Domain from data_grouping."
+      - "Line of business."
+      - "Possible values from distinct_values."
+      - "Value format/range from standard_format."
+      - "Example value from sample_data."
+      - "Sensitivity."
+      - "Primary key flag."
+      - "Nullable flag."
+  prompt_contract:
+    output_shape: "One continuous paragraph."
+    sentence_count:
+      categorical_or_boolean: 3
+      non_categorical: 2
+    required_starting_verbs:
+      - "Captures"
+      - "Records"
+      - "Identifies"
+      - "Measures"
+      - "Tracks"
+      - "Indicates"
+      - "Reflects"
+    hard_rules:
+      - "Every sentence must end with a period."
+      - "Semicolons are forbidden."
+      - "Never name the column or business term."
+      - "Do not mention the table name."
+      - "Use plain everyday language."
+      - "No jargon, acronyms, or technical terms."
+      - "No line breaks between sentences."
+      - "Output the definition only."
+    conditional_rules:
+      sensitive_data:
+        applies_when: "data_sensitivity is Highly Confidential or Restricted"
+        instruction: "Briefly note that it is personally identifiable and handled under data privacy policy."
+      primary_key:
+        applies_when: "is_primary_key is true"
+        instruction: "Mention that the value uniquely identifies each record."
+      nullable:
+        applies_when: "is_nullable is true"
+        instruction: "Briefly note when or why the value may be absent."
+  rendered_prompt_template: |
+    You are a senior data governance specialist writing a business data dictionary entry.
+
+    Source table: <cleaned table context>
+    Business term: <business term or data attribute>
+    Data type: <data type or text>
+    Domain: <optional data grouping>
+    Line of business: <optional line of business>
+    Possible values: <optional distinct values>
+    Value format / range: <optional standard format>
+    Example value: <optional sample data>
+    Sensitivity: <optional sensitivity>
+    Primary key: <Yes or No when known>
+    Nullable: <Yes or No when known>
+
+    CRITICAL: Every sentence must end with a period (.).
+    Using a semicolon (;) anywhere in your response is forbidden - if you use one, your answer is wrong.
+
+    Write exactly <2 or 3> sentences as one continuous paragraph. Rules:
+    1. Start with a verb - Captures / Records / Identifies / Measures / Tracks / Indicates / Reflects
+    2. Never name the column or business term
+    3. Sentence 1: what real-world fact this records, anchored to the business area and domain
+    4. Sentence 2: how it is used in business decisions or reporting
+    5. Do not mention the table name - draw context from the business area or domain only.
+    6. Write in plain, everyday language - no jargon, no acronyms, no technical terms.
+       Any reader regardless of background should understand what this data means.
+    7. No line breaks between sentences. Output the definition only.
+    <optional conditional rules for sensitive data, primary key, nullable fields>
+  post_processing:
+    - "Collapse newlines into spaces."
+    - "Convert semicolon followed by a letter into a new sentence."
+    - "Collapse repeated spaces."
+    - "Append a trailing period when missing."
+  ui_behavior:
+    generate_all_button:
+      disabled_when: "All records already have business_definition and definition_status is ai_generated."
+      enabled_when: "Any record is missing a definition or has pending status."
+    single_record_regeneration: "Available from the metadata attributes grid."
+  batch_behavior:
+    default_batch_size: 5
+    reason: "Avoids connection pool exhaustion and keeps Ollama requests manageable."
+
+data_quality_ai_generation:
+  purpose: "Generate consistency business rules and regex patterns for DQ checks."
+  active_code_path: "backend/app/worker/tasks/dq.py"
+  ai_config_source: "Enabled row in ai_provider_configs where provider = ollama."
+  fallback_behavior:
+    when_ai_unavailable: "Use rule-based regex detection."
+    recorded_ai_model_value: "rule-based"
+  generated_dimensions:
+    completeness:
+      rule: "There should be no empty field for <column> in this table."
+      scoring:
+        pass: ">= 95"
+        warning: ">= 80 and < 95"
+        fail: "< 80"
+    consistency:
+      ai_prompt: "CONSISTENCY_PROMPT"
+      scoring:
+        pass: ">= 95"
+        warning: ">= 70 and < 95"
+        fail: "< 70"
+      regex_requirement: "Regex should be compatible with Python import re and use ^...$ anchors."
+    uniqueness:
+      created_only_when: "All non-null values are unique."
+      score: 100
+      rule: "There should be no duplicated field for <column> in this table."
+    latency:
+      created_only_when: "Column is detected as datetime/date-like."
+      rule: "Latest date in <column> should not be more than 14 days ago."
+      scoring:
+        today_or_future: 100
+        up_to_7_days_old: 70
+        8_to_14_days_old: 50
+        15_to_30_days_old: 30
+        over_30_days_old: 0
+  sample_selection:
+    random_seed: 42
+    max_values_sent_to_ai: 25
+    unique_value_sample_size:
+      less_than_200: "Use all unique values."
+      less_than_500: "ceil(50% of unique values)."
+      up_to_5000: "ceil(30% of unique values)."
+      over_5000: "ceil(10% of unique values)."
+  consistency_prompt_template: |
+    Offer broad validation rules and a RegEx pattern based on the dataset's characteristics (Column Name, Type, and Value). Aim to capture the essence of what makes data reliable and uniform in the larger dataset. Consider the data snapshot thoroughly and assume the provided information is accurate but may not fully encompass all data. Prioritize creating the output from the data snapshot based on Sample Values, followed by Column Name, and then Column Type.
+
+    Requirements:
+    1. Validation Rules:
+    - Propose validation rules that encompass all the sample data provided.
+    - Clearly differentiate between mandatory and optional segments in the sample values.
+    - Identify edge cases that might arise.
+
+    2. Generalized Regex Pattern:
+    - Create a generalized RegEx pattern (only in UTF-8) based on the rules.
+    - For column type float64, ensure the regex pattern handles floating-point numbers including optional decimal places.
+    - Do not overcomplicate the pattern; use a general pattern if the value is too complex and varied.
+    - The regex pattern should be compatible with the "import re" library in Python.
+    - Use ^ at the beginning and $ at the end of the pattern.
+
+    3. Test the regex against each sample value and iterate until all values match (or stop after 2 minutes).
+
+    4. Sample data:
+    Column Name: <COLUMN-NAME>
+    Column Type: <COLUMN-TYPE>
+    Sample Values: <COLUMN-DATA>
+
+    5. Generate this as final output:
+    - Column Name: <INSERT_SOMETHING>
+    - Column Type: <INSERT_SOMETHING>
+    - Business Rules: a. <INSERT_SOMETHING>; b. <INSERT_SOMETHING>; c. <INSERT_SOMETHING>
+    - RegEx Pattern: r'^<INSERT-YOUR-REGEX-HERE>$'
+    - Complexity: <High, Medium, Low>
+    - Reasoning: <The reasoning>
+
+    Indicate your final output by typing: "HERE IS THE FINAL RESULT". Only output what is in template number 5 after that line.
+
+metadata_standard_format:
+  active_code_paths:
+    sync_api: "backend/app/services/metadata_population.py"
+    celery_worker: "backend/app/worker/tasks/metadata.py"
+    reapply_script: "backend/scripts/reapply_standard_format.py"
+  requirement: "All three paths must use identical classification logic."
+  important_rules:
+    - "Boolean labels should match actual data, such as Boolean (Yes / No), Boolean (True / False), or Boolean (1 / 0)."
+    - "Categorical detection uses column-name hints, value length, cardinality, ratio, and frequency."
+    - "Columns with name/notes/description/address-like names should not be forced into Category unless evidence is strong."
+    - "Phone detection requires a separator unless the column name clearly indicates phone/mobile/tel/hp."
+    - "Distinct values are stored for Category/Boolean columns and any column with <= 25 unique non-null values."
+    - "Editing table-level fields should propagate to all attributes in the same data_domain_table."
+  after_logic_change:
+    command: "docker exec ag_api python -m scripts.reapply_standard_format"
+    note: "Run this after changing classification logic so existing metadata rows are refreshed."
+
+database:
+  dump_file: "database/ag_db_dump.sql"
+  readme_file: "database/README.md"
+  latest_refresh:
+    date: "2026-06-02"
+    source: "local Docker database container ag_db"
+    alembic_head: "b6c7d8e9f0a1"
+  current_documented_counts:
+    users: 113
+    projects: 5
+    data_owner_stewards: 10
+    data_sharing_requests: 4
+    ai_compliance_checklists: 4
+    dpia_records: 4
+    metadata_records: 226
+    project_source_files: 17
+    dq_runs: 7
+    dq_results: 299
+    dq_findings: 92
+    audit_logs: 2102
+  developer_rules:
+    - "When refreshing the dump, update database/README.md counts in the same commit."
+    - "Run migrations before restoring into a fresh database."
+    - "Use --no-owner --no-acl so the dump restores cleanly under local PostgreSQL users."
+    - "Do not include plaintext secrets in dumps."
+    - "GitHub folder timestamps only change when files in that folder are touched; an older timestamp does not automatically mean stale content."
+
+frontend_ui_contracts:
+  detail_popups:
+    rule: "Project ID, DSR ID, AICK ID, and DPIA-related popup content should reuse the same shared detail views used by origin detail pages."
+    shared_components:
+      - "frontend/src/components/details/DetailModal.tsx"
+      - "frontend/src/components/details/ProjectDetailView.tsx"
+      - "frontend/src/components/details/DsrDetailView.tsx"
+      - "frontend/src/components/details/AickDetailView.tsx"
+    reason: "Avoid manual drift when detail page UI/data changes."
+  overview_tables:
+    rule: "Projects, Data Sharing, AI Checklist, and DPIA overview tables should match the Metadata Source Tables white table style."
+    shared_table_component: "frontend/src/components/ui/Table.tsx"
+    text_visibility:
+      - "Project name and client columns should expose full values through tooltip or equivalent."
+      - "Do not make project names bold in the Projects overview table."
+  design_notes:
+    - "Keep operational pages quiet, dense, and scannable."
+    - "Avoid unrelated UI redesign when the task is logic/config/data only."
+    - "Prefer shared components over page-specific duplicated markup."
+
+backend_contracts:
+  workflows:
+    dsr: "4-step serial approval."
+    aick: "3-step serial approval."
+    dpia: "2-step approval."
+    bapd: "Dual approval."
+  auto_creation:
+    dsr_submit_creates:
+      - "AI Compliance Checklist"
+      - "DPIA record"
+  rbac:
+    super_admin: "Bypasses user-identity and approval-step UI gates; business rules still apply."
+    viewer: "Read-only across modules; can create DSR drafts."
+  audit:
+    rule: "All important create/update/approval/sign-off actions should write audit log entries."
+
+testing_and_validation:
+  before_push:
+    minimum_checks:
+      - "git status --short --branch"
+      - "git diff --stat"
+      - "docker compose -f docker-compose.yml build frontend when frontend changed"
+      - "docker exec ag_api alembic upgrade head when backend schema changed"
+      - "docker exec ag_api pytest when backend logic changed"
+    known_backend_test_gap:
+      issue: "Some tests still rely on SQLite setup and fail on PostgreSQL JSONB models."
+      expected_action: "Use PostgreSQL-compatible test setup for DB integration tests involving JSONB."
+  after_push:
+    verify_alignment:
+      - "git fetch origin main"
+      - "git rev-list --left-right --count origin/main...HEAD"
+      - "Expected result: 0 0"
+
+change_management:
+  update_this_file_when:
+    - "AI model, base URL rules, prompt template, or sampling parameters change."
+    - "Settings > AI Setup schema or validation limits change."
+    - "DQ scoring, prompt, regex extraction, or fallback behavior changes."
+    - "Metadata standard format classification logic changes."
+    - "Docker image versions or service names change."
+    - "Database dump is refreshed."
+    - "Shared popup/detail-page contracts change."
+  commit_guidance:
+    - "Keep config/doc updates in the same commit as the related code change when possible."
+    - "For database refreshes, commit database/ag_db_dump.sql and database/README.md together."
+    - "For AI prompt changes, include the reason and expected behavior in the commit message or PR notes."
