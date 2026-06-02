@@ -44,6 +44,50 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 
 ---
 
+## Environment & Version Requirements
+
+Current baseline: **AI Governance Tools v1.0.0**. This local environment was last validated against commit `1e2b441` on `2026-06-02`.
+
+### Required Local Tools
+
+| Tool | Required / Tested Version | Notes |
+|------|---------------------------|-------|
+| Docker Desktop | Recent version with Docker Compose v2 | Primary runtime for local development and production-style testing |
+| Git | Any current Git client | Required for clone, pull, branch, commit, and push workflows |
+| Browser | Chrome or Edge recommended | The UI is served through Nginx at `http://localhost` |
+| Node.js | 20.x, only when running the frontend outside Docker | Docker uses `node:20-alpine`; host `node_modules` are not required for the Docker flow |
+| Python | 3.11.x, only when running the backend outside Docker | Backend supports Python `>=3.11,<3.13`; Docker uses `python:3.11-slim` |
+| Ollama | Local container or cloud endpoint | Local model baseline is `llama3.2:3b`; cloud mode is configured in Settings > AI Setup with base URL, API key, and model |
+
+### Container Baseline
+
+| Service | Version / Image |
+|---------|-----------------|
+| Nginx | `nginx:1.25-alpine` |
+| Frontend | Next.js `14.2.4`, React `18.3.1`, Tailwind CSS `3.4.4`, running on `node:20-alpine` |
+| Backend API | FastAPI `0.111.0`, SQLAlchemy `2.0.30`, Alembic `1.13.1`, Pydantic `2.7.1`, running on `python:3.11-slim` |
+| Database | `postgres:15-alpine` |
+| Cache / Queue | `redis:7-alpine` with Celery `5.4.0` |
+| LLM | `ollama/ollama:latest`; recommended local model `llama3.2:3b` |
+
+### Important Team Notes
+
+- Use Docker Compose as the source-of-truth runtime unless a task specifically requires native frontend or backend execution.
+- For frontend-only updates, rebuild and recreate the frontend and Nginx services:
+  ```bash
+  docker compose -f docker-compose.yml build frontend
+  docker compose -f docker-compose.yml up -d --force-recreate frontend nginx
+  ```
+- For backend or schema updates, run Alembic migrations in the API container before seeding or testing:
+  ```bash
+  docker exec ag_api alembic upgrade head
+  ```
+- Do not commit `.env`, API keys, uploaded source files, coverage artifacts, Docker volumes, or generated local cache files.
+- Backend tests that exercise models with PostgreSQL `JSONB` columns need a PostgreSQL-compatible test setup. SQLite-based test setup will fail on those columns.
+- Production readiness and open follow-up work are tracked in `docs/open-items.md`.
+
+---
+
 ## Architecture
 
 ```
