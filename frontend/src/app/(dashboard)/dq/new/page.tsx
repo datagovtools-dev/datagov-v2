@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -34,8 +34,8 @@ interface ProjectFilePreview {
 
 // ── Step labels ────────────────────────────────────────────────────────────────
 const STEPS = [
-  { n: 1, label: "Source" },
-  { n: 2, label: "Connect" },
+  { n: 1, label: "Project" },
+  { n: 2, label: "Data" },
   { n: 3, label: "Preview" },
   { n: 4, label: "Generate" },
   { n: 5, label: "Results" },
@@ -80,31 +80,12 @@ function DQWizardPage() {
   const initialProject = searchParams.get("project") ?? "";
   const initialFile    = searchParams.get("file") ?? "";
 
-  const [step, setStep] = useState(initialProject && initialFile ? 2 : 1);
-  const [sourceType, setSourceType] = useState<"gcp" | "excel" | "postgres" | "project_file">(
-    initialFile ? "project_file" : "gcp"
-  );
+  const [step, setStep] = useState(initialProject ? 2 : 1);
   const [project_id, setProjectId] = useState(initialProject);
   const initialFileRef = useRef(initialFile);
+  const projectResetInitializedRef = useRef(false);
+  const autoSelectInitializedRef = useRef(false);
   const [runName, setRunName] = useState("");
-
-  // GCP params
-  const [gcp, setGcp] = useState({ project: "", dataset: "", table: "" });
-  const [gcpValid, setGcpValid] = useState<{ valid: boolean; message: string; columns?: string[]; row_count?: number } | null>(null);
-  const [validating, setValidating] = useState(false);
-
-  // Excel params
-  const [uploadResult, setUploadResult] = useState<{
-    filename: string; sheet_name: string; row_count: number;
-    columns: string[]; preview_rows: Record<string, string | null>[]; temp_file_key: string;
-  } | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // PostgreSQL / Supabase params
-  const [pg, setPg] = useState({ connection_string: "", table: "" });
-  const [pgValid, setPgValid] = useState<{ valid: boolean; message: string; columns?: string[]; row_count?: number } | null>(null);
-  const [pgValidating, setPgValidating] = useState(false);
 
   // Project file params (multi-select)
   const [selectedProjectFiles, setSelectedProjectFiles] = useState<Set<string>>(new Set());
@@ -120,16 +101,6 @@ function DQWizardPage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<{ status: string; progress_pct: number; overall_score: string | null; message: string } | null>(null);
 
-  // Reset source-specific selection when source type changes
-  useEffect(() => {
-    setSelectedProjectFiles(new Set());
-    setSelectedProjectFileItems([]);
-    setUploadResult(null);
-    setGcpValid(null);
-    setPgValid(null);
-  }, [sourceType]);
-
-
   const { data: projects } = useQuery<ProjectOption[]>({
     queryKey: ["projects-select"],
     queryFn: () => api.get<{ items: ProjectOption[] }>("/projects?page_size=100").then((r) => r.items),
@@ -138,7 +109,7 @@ function DQWizardPage() {
   const { data: projectFiles, isLoading: projectFilesLoading } = useQuery<ProjectFileItem[]>({
     queryKey: ["dq-project-sources", project_id],
     queryFn: () => api.get<ProjectFileItem[]>(`/dq/project/${project_id}/sources`),
-    enabled: sourceType === "project_file" && !!project_id,
+    enabled: !!project_id,
   });
 
   // Pre-select file when arriving from the DQ list page via ?project=&file= params
@@ -150,6 +121,31 @@ function DQWizardPage() {
     setSelectedProjectFileItems([file]);
     initialFileRef.current = "";
   }, [projectFiles]);
+
+  useEffect(() => {
+    if (!projectResetInitializedRef.current) {
+      projectResetInitializedRef.current = true;
+      if (initialFile) return;
+    }
+    setSelectedProjectFiles(new Set());
+    setSelectedProjectFileItems([]);
+    setRunInitiated(false);
+    setBatchRunIds([]);
+    setBatchRunFiles([]);
+    setBatchRunStatuses({});
+    setRunId(null);
+    setRunStatus(null);
+  }, [project_id, initialFile]);
+
+  useEffect(() => {
+    if (!autoSelectInitializedRef.current) {
+      autoSelectInitializedRef.current = true;
+      if (initialFile) return;
+    }
+    if (!projectFiles || projectFiles.length === 0 || initialFileRef.current) return;
+    setSelectedProjectFiles(new Set(projectFiles.map((f: ProjectFileItem) => f.id)));
+    setSelectedProjectFileItems([...projectFiles]);
+  }, [projectFiles, initialFile]);
 
   const firstSelectedFile = selectedProjectFileItems[0] ?? null;
 
@@ -229,133 +225,50 @@ function DQWizardPage() {
   });
 
   // ── Handlers ────────────────────────────────────────────────────────────────
-  async function handleValidateGCP() {
-    setValidating(true);
-    setGcpValid(null);
-    try {
-      const result = await api.post<typeof gcpValid>("/dq/validate-gcp", {
-        gcp_project: gcp.project, bq_dataset: gcp.dataset, bq_table: gcp.table,
-      });
-      setGcpValid(result);
-    } catch {
-      setGcpValid({ valid: false, message: "Validation request failed" });
-    } finally {
-      setValidating(false);
-    }
-  }
-
-  async function handleValidatePostgres() {
-    setPgValidating(true);
-    setPgValid(null);
-    try {
-      const result = await api.post<typeof pgValid>("/dq/validate-postgres", {
-        connection_string: pg.connection_string, table_name: pg.table,
-      });
-      setPgValid(result);
-    } catch {
-      setPgValid({ valid: false, message: "Validation request failed" });
-    } finally {
-      setPgValidating(false);
-    }
-  }
-
-  async function handleUploadExcel(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    const formData = new FormData();
-    formData.append("file", file);
-    try {
-      const res = await fetch("/api/v1/dq/upload-excel", {
-        method: "POST",
-        body: formData,
-        headers: { Authorization: `Bearer ${localStorage.getItem("access_token") ?? ""}` },
-      });
-      if (!res.ok) throw new Error(await res.text());
-      setUploadResult(await res.json());
-    } catch (err) {
-      alert("Upload failed: " + String(err));
-    } finally {
-      setUploading(false);
-    }
-  }
-
   function handleLaunchRun() {
     const base = {
       project_id, run_name: runName || `DQ Run — ${new Date().toISOString().slice(0, 10)}`,
-      source_type: sourceType,
+      source_type: "project_file",
     };
-    if (sourceType === "gcp") {
+    if (selectedProjectFileItems.length === 1) {
+      const f = selectedProjectFileItems[0];
       createRunMutation.mutate({
         ...base,
-        dataset_name: `${gcp.project}.${gcp.dataset}.${gcp.table}`,
-        dataset_location: `bigquery://${gcp.project}.${gcp.dataset}.${gcp.table}`,
-        gcp_project: gcp.project, bq_dataset: gcp.dataset, bq_table: gcp.table,
+        dataset_name: f.original_filename,
+        dataset_location: `project_file://${f.id}`,
+        source_file_id: f.id,
       });
-    } else if (sourceType === "postgres") {
-      createRunMutation.mutate({
-        ...base,
-        dataset_name: pg.table,
-        dataset_location: `postgres://${pg.table}`,
-        postgres_connection_string: pg.connection_string,
-        postgres_table: pg.table,
-      });
-    } else if (sourceType === "project_file") {
-      if (selectedProjectFileItems.length === 1) {
-        const f = selectedProjectFileItems[0];
-        createRunMutation.mutate({
-          ...base,
-          dataset_name: f.original_filename,
-          dataset_location: `project_file://${f.id}`,
-          source_file_id: f.id,
-        });
-      } else if (selectedProjectFileItems.length > 1) {
-        const items = [...selectedProjectFileItems];
-        setBatchLaunching(true);
-        setBatchRunIds([]);
-        setBatchRunFiles([]);
-        setBatchRunStatuses({});
-        setStep(4);
-        (async () => {
-          const ids: string[] = [];
-          const runFiles: Array<{ id: string; filename: string }> = [];
-          for (const f of items) {
-            try {
-              const result = await api.post<{ id: string }>("/dq", {
-                ...base,
-                run_name: runName ? `${runName} (${f.original_filename})` : `DQ Run — ${f.original_filename.replace(/\.[^.]+$/, "")}`,
-                dataset_name: f.original_filename,
-                dataset_location: `project_file://${f.id}`,
-                source_file_id: f.id,
-              });
-              ids.push(result.id);
-              runFiles.push({ id: result.id, filename: f.original_filename });
-            } catch { /* continue with remaining files */ }
-          }
-          setBatchRunFiles(runFiles);
-          setBatchRunIds(ids);
-          setBatchLaunching(false);
-        })();
-      }
-      return;
-    } else {
-      createRunMutation.mutate({
-        ...base,
-        dataset_name: uploadResult!.filename,
-        dataset_location: uploadResult!.filename,
-        temp_file_key: uploadResult!.temp_file_key,
-        sheet_name: uploadResult!.sheet_name,
-      });
+    } else if (selectedProjectFileItems.length > 1) {
+      const items = [...selectedProjectFileItems];
+      setBatchLaunching(true);
+      setBatchRunIds([]);
+      setBatchRunFiles([]);
+      setBatchRunStatuses({});
+      setStep(4);
+      (async () => {
+        const ids: string[] = [];
+        const runFiles: Array<{ id: string; filename: string }> = [];
+        for (const f of items) {
+          try {
+            const result = await api.post<{ id: string }>("/dq", {
+              ...base,
+              run_name: runName ? `${runName} (${f.original_filename})` : `DQ Run — ${f.original_filename.replace(/\.[^.]+$/, "")}`,
+              dataset_name: f.original_filename,
+              dataset_location: `project_file://${f.id}`,
+              source_file_id: f.id,
+            });
+            ids.push(result.id);
+            runFiles.push({ id: result.id, filename: f.original_filename });
+          } catch { /* continue with remaining files */ }
+        }
+        setBatchRunFiles(runFiles);
+        setBatchRunIds(ids);
+        setBatchLaunching(false);
+      })();
     }
   }
 
-  const canProceedStep2 = sourceType === "gcp"
-    ? (gcpValid?.valid ?? false)
-    : sourceType === "postgres"
-    ? (pgValid?.valid ?? false)
-    : sourceType === "project_file"
-    ? selectedProjectFiles.size > 0
-    : !!uploadResult;
+  const canProceedStep2 = selectedProjectFiles.size > 0;
 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
@@ -363,37 +276,20 @@ function DQWizardPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">New Data Quality Run</h1>
         <p className="text-sm text-gray-500 mt-1">
-          6-step wizard — connect a data source, generate DQ checks, review, and archive to GCP
+          Select a project, use its Metadata-imported data, then generate DQ checks for one or all files
         </p>
       </div>
 
       <StepBar current={step} />
 
-      {/* ── Step 1: Source selection ── */}
+      {/* ── Step 1: Project selection ── */}
       {step === 1 && (
         <div className="bg-white rounded-lg shadow p-6 space-y-6">
-          <h2 className="font-semibold text-gray-800">Step 1 — Choose Data Source</h2>
-          <div className="grid grid-cols-2 gap-4">
-            {([
-              { type: "project_file", icon: "📁", label: "From Project Files",    desc: "Use data already imported via the Metadata module — no re-upload needed" },
-              { type: "excel",        icon: "📊", label: "Excel (.xlsx)",          desc: "Upload a local .xlsx file for analysis" },
-              { type: "gcp",         icon: "☁",  label: "GCP BigQuery",           desc: "Connect to a BigQuery table using a service account" },
-              { type: "postgres",    icon: "🐘", label: "PostgreSQL / Supabase",   desc: "Connect directly via a PostgreSQL connection string" },
-            ] as const).map(({ type, icon, label, desc }) => (
-              <button key={type} onClick={() => setSourceType(type)}
-                className={`p-5 rounded-xl border-2 text-left transition-all ${
-                  sourceType === type ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300"
-                }`}>
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-2xl">{icon}</span>
-                  {type === "project_file" && (
-                    <span className="text-xs font-semibold bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Recommended</span>
-                  )}
-                </div>
-                <p className="font-semibold text-gray-800">{label}</p>
-                <p className="text-sm text-gray-500 mt-1">{desc}</p>
-              </button>
-            ))}
+          <div>
+            <h2 className="font-semibold text-gray-800">Step 1 — Select Project</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              DQ uses data already imported or connected in the Metadata module, so no duplicate upload is needed here.
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-4 pt-2">
             <div>
@@ -409,8 +305,11 @@ function DQWizardPage() {
               <Input value={runName} onChange={(e) => setRunName(e.target.value)} placeholder="Auto-generated if blank" />
             </div>
           </div>
+          <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+            After selecting a project, all available project files will be selected by default. You can still choose specific files on the next step.
+          </div>
           <div className="flex justify-end">
-            <Button disabled={!project_id} onClick={() => setStep(2)}>Next →</Button>
+            <Button disabled={!project_id} onClick={() => setStep(2)}>Continue to Project Data →</Button>
           </div>
         </div>
       )}
@@ -418,18 +317,15 @@ function DQWizardPage() {
       {/* ── Step 2: Connect / Upload / Select ── */}
       {step === 2 && (
         <div className="bg-white rounded-lg shadow p-6 space-y-5">
-          <h2 className="font-semibold text-gray-800">
-            Step 2 — {
-              sourceType === "gcp" ? "Connect to BigQuery" :
-              sourceType === "postgres" ? "Connect to PostgreSQL / Supabase" :
-              sourceType === "project_file" ? "Select Project Files" :
-              "Upload Excel File"
-            }
-          </h2>
+          <div>
+            <h2 className="font-semibold text-gray-800">Step 2 — Select Project Data</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              Files imported through Metadata are selected automatically. Select all for full-project DQ or narrow the run to specific files.
+            </p>
+          </div>
 
           {/* ── From Project Files ── */}
-          {sourceType === "project_file" && (
-            <div className="space-y-3">
+          <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <p className="text-sm text-gray-500">
                   Files imported via the Metadata module. Select one or more — each generates a separate DQ run.
@@ -513,110 +409,11 @@ function DQWizardPage() {
                     : `✓ ${selectedProjectFiles.size} files selected — ${selectedProjectFiles.size} DQ runs will be queued`}
                 </div>
               )}
-            </div>
-          )}
-
-          {/* ── PostgreSQL ── */}
-          {sourceType === "postgres" && (
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Connection String <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="password"
-                  value={pg.connection_string}
-                  onChange={(e) => setPg((p) => ({ ...p, connection_string: e.target.value }))}
-                  placeholder="postgresql://postgres:[password]@db.[ref].supabase.co:5432/postgres"
-                  className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <p className="text-xs text-gray-400 mt-1">
-                  Find this in Supabase → Project Settings → Database → Connection string (URI mode)
-                </p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Table Name <span className="text-red-500">*</span>
-                </label>
-                <Input
-                  value={pg.table}
-                  onChange={(e) => setPg((p) => ({ ...p, table: e.target.value }))}
-                  placeholder="e.g. customer"
-                />
-              </div>
-              <Button
-                variant="outline"
-                disabled={!pg.connection_string || !pg.table || pgValidating}
-                onClick={handleValidatePostgres}
-              >
-                {pgValidating ? "Validating…" : "Test Connection"}
-              </Button>
-              {pgValid && (
-                <div className={`p-3 rounded-lg border text-sm ${pgValid.valid ? "bg-green-50 border-green-300 text-green-800" : "bg-red-50 border-red-300 text-red-800"}`}>
-                  {pgValid.valid ? "✓ " : "✗ "}{pgValid.message}
-                  {pgValid.valid && pgValid.columns && (
-                    <p className="mt-1 text-xs text-green-600">{pgValid.columns.length} columns detected</p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── GCP BigQuery ── */}
-          {sourceType === "gcp" && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">GCP Project</label>
-                  <Input value={gcp.project} onChange={(e) => setGcp((g) => ({ ...g, project: e.target.value }))} placeholder="my-gcp-project" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Dataset</label>
-                  <Input value={gcp.dataset} onChange={(e) => setGcp((g) => ({ ...g, dataset: e.target.value }))} placeholder="my_dataset" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Table</label>
-                  <Input value={gcp.table} onChange={(e) => setGcp((g) => ({ ...g, table: e.target.value }))} placeholder="my_table" />
-                </div>
-              </div>
-              <Button variant="outline" disabled={!gcp.project || !gcp.dataset || !gcp.table || validating}
-                onClick={handleValidateGCP}>
-                {validating ? "Validating…" : "Validate Connection"}
-              </Button>
-              {gcpValid && (
-                <div className={`p-3 rounded-lg border ${gcpValid.valid ? "bg-green-50 border-green-300 text-green-800" : "bg-red-50 border-red-300 text-red-800"} text-sm`}>
-                  {gcpValid.valid ? "✓ " : "✗ "}{gcpValid.message}
-                  {gcpValid.valid && gcpValid.columns && (
-                    <p className="mt-1 text-xs text-green-600">{gcpValid.columns.length} columns detected</p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ── Excel upload ── */}
-          {sourceType === "excel" && (
-            <div className="space-y-4">
-              <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:border-blue-400 transition-colors"
-                onClick={() => fileInputRef.current?.click()}>
-                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleUploadExcel} />
-                <div className="text-4xl mb-2">📎</div>
-                <p className="font-medium text-gray-700">Click to upload or drag & drop</p>
-                <p className="text-sm text-gray-400 mt-1">.xlsx or .xls files only</p>
-              </div>
-              {uploading && <p className="text-sm text-blue-600 text-center">Uploading and parsing…</p>}
-              {uploadResult && (
-                <div className="bg-green-50 border border-green-200 rounded p-3 text-sm text-green-800">
-                  ✓ <strong>{uploadResult.filename}</strong> — {uploadResult.row_count.toLocaleString()} rows,{" "}
-                  {uploadResult.columns.length} columns (sheet: {uploadResult.sheet_name})
-                </div>
-              )}
-            </div>
-          )}
+          </div>
 
           <div className="flex justify-between pt-2">
             <Button variant="outline" onClick={() => setStep(1)}>← Back</Button>
-            <Button disabled={!canProceedStep2} onClick={() => setStep(3)}>Next →</Button>
+            <Button disabled={!canProceedStep2} onClick={() => setStep(3)}>Preview Selection →</Button>
           </div>
         </div>
       )}
@@ -627,7 +424,7 @@ function DQWizardPage() {
           <h2 className="font-semibold text-gray-800">Step 3 — Data Preview</h2>
 
           {/* Project file preview */}
-          {sourceType === "project_file" && selectedProjectFiles.size > 0 && (
+          {selectedProjectFiles.size > 0 && (
             <div className="space-y-3">
               {selectedProjectFiles.size > 1 ? (
                 <div className="space-y-2">
@@ -693,77 +490,6 @@ function DQWizardPage() {
             </div>
           )}
 
-          {/* Excel preview */}
-          {sourceType === "excel" && uploadResult && (
-            <div className="space-y-3">
-              <div className="flex gap-4 text-sm text-gray-600">
-                <span><strong>File:</strong> {uploadResult.filename}</span>
-                <span><strong>Sheet:</strong> {uploadResult.sheet_name}</span>
-                <span><strong>Rows:</strong> {uploadResult.row_count.toLocaleString()}</span>
-                <span><strong>Columns:</strong> {uploadResult.columns.length}</span>
-              </div>
-              <div className="overflow-x-auto rounded border border-gray-200">
-                <table className="min-w-full text-xs">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      {uploadResult.columns.map((c) => (
-                        <th key={c} className="px-3 py-2 text-left font-medium text-gray-600 whitespace-nowrap border-r border-gray-200 last:border-r-0">
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {uploadResult.preview_rows.map((row, i) => (
-                      <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-gray-50"}>
-                        {uploadResult.columns.map((c) => (
-                          <td key={c} className="px-3 py-1.5 border-r border-gray-100 last:border-r-0 text-gray-700 max-w-[120px] truncate">
-                            {row[c] ?? <span className="text-gray-300 italic">null</span>}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p className="text-xs text-gray-400">Showing first 10 rows</p>
-            </div>
-          )}
-
-          {/* PostgreSQL preview */}
-          {sourceType === "postgres" && pgValid?.columns && (
-            <div className="space-y-3">
-              <div className="flex gap-4 text-sm text-gray-600">
-                <span><strong>Table:</strong> {pg.table}</span>
-                <span><strong>Rows:</strong> {pgValid.row_count?.toLocaleString()}</span>
-                <span><strong>Columns:</strong> {pgValid.columns.length}</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {pgValid.columns.map((c) => (
-                  <span key={c} className="bg-purple-50 text-purple-700 text-xs px-2 py-1 rounded border border-purple-200 font-mono">{c}</span>
-                ))}
-              </div>
-              <p className="text-xs text-gray-400">Full data preview available after DQ run completes</p>
-            </div>
-          )}
-
-          {/* GCP preview */}
-          {sourceType === "gcp" && gcpValid?.columns && (
-            <div className="space-y-3">
-              <div className="flex gap-4 text-sm text-gray-600">
-                <span><strong>Table:</strong> {gcp.project}.{gcp.dataset}.{gcp.table}</span>
-                <span><strong>Rows:</strong> {gcpValid.row_count?.toLocaleString()}</span>
-                <span><strong>Columns:</strong> {gcpValid.columns.length}</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {gcpValid.columns.map((c) => (
-                  <span key={c} className="bg-blue-50 text-blue-700 text-xs px-2 py-1 rounded border border-blue-200 font-mono">{c}</span>
-                ))}
-              </div>
-              <p className="text-xs text-gray-400">Full data preview requires BigQuery live connection</p>
-            </div>
-          )}
-
           <div className="flex justify-between pt-2">
             <Button variant="outline" onClick={() => setStep(2)}>← Back</Button>
             <Button onClick={() => setStep(4)}>Next →</Button>
@@ -777,7 +503,7 @@ function DQWizardPage() {
           <h2 className="font-semibold text-gray-800 text-center">Step 4 — Generate DQ Checks</h2>
 
           {/* Batch mode: runInitiated flips synchronously on button click → guaranteed immediate UI change */}
-          {sourceType === "project_file" && selectedProjectFileItems.length > 1 ? (
+          {selectedProjectFileItems.length > 1 ? (
             runInitiated ? (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">

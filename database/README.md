@@ -75,3 +75,5 @@ docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql
 - This dump uses `--no-owner --no-acl` so it restores cleanly under any PostgreSQL user
 - Refreshed from local Docker database container `ag_db` on 2026-06-02
 - Verified current Supabase/Alembic head: `b6c7d8e9f0a1`
+- The 2026-06-04 project-based DQ reference method integration does not require a new migration; complexity and reasoning are stored in `dq_results.details` JSONB
+- Do not refresh this dump from a local database that contains failed DQ model-availability trial runs unless those failed records are intentionally part of the baseline

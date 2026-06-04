@@ -12,6 +12,7 @@
 | 6 | DSR access provisioning scope | DGO / Data Owner | Before P2 go-live | Define what "access granted" means per dataset type (BigQuery permissions, S3 policy, etc.). |
 | 7 | Retention policy matrix | DGO / Legal / Compliance | Before P3 go-live | Seed data in `POST /api/v1/bapd/retention-policies/seed`. Review and update for each dataset type. |
 | 8 | PostgreSQL backup strategy | IT Infrastructure / DevOps | Before P6-013 | Minimum: daily WAL archiving to GCS + weekly base backup. Define RTO/RPO targets. |
+| 9 | DQ reference method model availability | DevOps / Tech Lead | Before DQ production validation | Provide `qwen2.5-coder:32b` and `llama3.1:70b` through local Ollama or an Ollama-compatible cloud endpoint. Without these models, DQ file runs can fail at Generate with `/api/generate` 404. |
 
 ## Resolution Checklist
 
@@ -23,3 +24,4 @@
 - [ ] Item 6 resolved — Access provisioning flow documented and implemented
 - [ ] Item 7 resolved — Retention policy matrix seeded via API
 - [ ] Item 8 resolved — Backup strategy implemented and tested
+- [ ] Item 9 resolved — Required DQ reference models installed locally or configured through cloud/API and PRJ-001 test run completed successfully

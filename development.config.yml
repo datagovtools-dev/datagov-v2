@@ -19,9 +19,9 @@ project:
   repo: "https://github.com/datagovtools-dev/datagov-tools"
   primary_branch: "main"
   validated_snapshot:
-    date: "2026-06-02"
-    latest_known_commit: "d6285f4"
-    note: "Latest pushed snapshot after README and database dump refresh."
+    date: "2026-06-04"
+    latest_known_commit: "local-unpushed-dq-reference-method"
+    note: "Local development snapshot for project-based DQ reference method integration. Do not treat as pushed Git state until the team explicitly commits and pushes."
 
 local_runtime:
   source_of_truth: "Docker Compose"
@@ -65,6 +65,11 @@ local_runtime:
     ollama:
       image: "ollama/ollama:latest"
       container_name: "ag_ollama"
+  backend_dq_python_dependencies:
+    pandas: "2.2.2"
+    numpy: "1.26.4"
+    regex: "2024.5.15"
+    note: "Required by backend/app/services/reference_dq.py. These are installed inside the Docker API/worker images through backend/requirements.txt, so host installation is not required for Docker development."
 
 commands:
   start_local: "docker compose up -d"
@@ -74,6 +79,9 @@ commands:
   run_migrations: "docker exec ag_api alembic upgrade head"
   seed_admin: "docker exec ag_api python -m scripts.seed_admin"
   pull_local_llm_model: "docker exec ag_ollama ollama pull llama3.2:3b"
+  pull_dq_primary_model: "docker compose -f docker-compose.yml exec -T ollama ollama pull qwen2.5-coder:32b"
+  pull_dq_secondary_model: "docker compose -f docker-compose.yml exec -T ollama ollama pull llama3.1:70b"
+  list_ollama_models: "docker compose -f docker-compose.yml exec -T ollama ollama list"
   refresh_database_dump: "docker exec ag_db pg_dump -U ag_user -d ag_db --no-owner --no-acl > database/ag_db_dump.sql"
   restore_database_dump: "docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql"
   frontend_build_check: "docker compose -f docker-compose.yml build frontend"
@@ -144,7 +152,8 @@ ai_settings:
         - "https://"
   developer_warning:
     - "Do not tune active AI behavior through backend/app/config.py only."
-    - "Metadata generation and DQ consistency generation read from ai_provider_configs."
+    - "Metadata generation reads model/base URL from ai_provider_configs."
+    - "DQ reference method reads base URL/API key from ai_provider_configs when available, but its default model sequence is DQ-specific: qwen2.5-coder:32b then llama3.1:70b."
     - "Legacy env defaults may still exist for compatibility, but DB-backed settings are the active path."
 
 metadata_ai_definition_generation:
@@ -252,33 +261,74 @@ metadata_ai_definition_generation:
     default_batch_size: 5
     reason: "Avoids connection pool exhaustion and keeps Ollama requests manageable."
 
-data_quality_ai_generation:
-  purpose: "Generate consistency business rules and regex patterns for DQ checks."
-  active_code_path: "backend/app/worker/tasks/dq.py"
-  ai_config_source: "Enabled row in ai_provider_configs where provider = ollama."
-  fallback_behavior:
-    when_ai_unavailable: "Use rule-based regex detection."
-    recorded_ai_model_value: "rule-based"
+data_quality_reference_method:
+  purpose: "Run Data Quality from project Metadata source files using the provided Existing Data Quality reference method."
+  status: "Integrated locally on 2026-06-04; full successful execution requires the configured Ollama endpoint to provide the required DQ models."
+  user_flow:
+    overview_page: "Select a project first. The page then shows source tables/files already documented by Metadata."
+    new_run_page: "Project -> Data -> Preview -> Generate -> Results -> Archive."
+    source_policy: "Project Files only for the primary UI path. The user should not re-upload files already imported through Metadata."
+    default_selection: "All project files are selected by default after project selection."
+    run_granularity: "One dq_runs record per selected file so success/failure is isolated by dataset."
+  active_code_paths:
+    reference_service: "backend/app/services/reference_dq.py"
+    worker_task: "backend/app/worker/tasks/dq.py"
+    overview_page: "frontend/src/app/(dashboard)/dq/page.tsx"
+    new_run_page: "frontend/src/app/(dashboard)/dq/new/page.tsx"
+    run_detail_page: "frontend/src/app/(dashboard)/dq/[id]/page.tsx"
+  intentionally_excluded_from_reference_folder:
+    - "Telegram token, notification, or bot logic."
+    - "External BigQuery/GCS upload code from the sample scripts."
+    - "Any hard-coded secret or personal token from Existing Data Quality."
+  runtime_ai_config:
+    base_url_priority:
+      - "DQ_OLLAMA_BASE_URL env var."
+      - "Enabled Settings > AI Setup base_url from ai_provider_configs."
+      - "http://ollama:11434."
+    api_key_priority:
+      - "Enabled Settings > AI Setup encrypted API key from ai_provider_configs."
+      - "DQ_OLLAMA_API_KEY env var."
+      - "No API key for local Ollama."
+    timeout_priority:
+      - "DQ_OLLAMA_TIMEOUT_SECONDS env var."
+      - "Settings > AI Setup timeout_seconds."
+      - "120 seconds."
+  model_sequence:
+    primary:
+      default_model: "qwen2.5-coder:32b"
+      env_override: "DQ_PRIMARY_MODEL"
+      use: "Generate initial business rules, regex pattern, complexity, and reasoning."
+    secondary:
+      default_model: "llama3.1:70b"
+      env_override: "DQ_SECONDARY_MODEL"
+      use: "Reprocess columns with Consistency Index below 70 and keep the better consistency result."
+    operational_warning:
+      - "The metadata default model llama3.2:3b is not sufficient for this reference DQ method."
+      - "If the configured Ollama endpoint does not have the selected model, /api/generate returns 404 and the file run fails."
+      - "The local Docker volume ollama_data must have enough storage for both large models, or the team should use an Ollama-compatible cloud endpoint."
+  required_python_packages:
+    pandas: "2.2.2"
+    numpy: "1.26.4"
+    regex: "2024.5.15"
+    requests: "Already present in backend requirements."
+    openpyxl: "Already present; used to read project Excel files."
   generated_dimensions:
     completeness:
       rule: "There should be no empty field for <column> in this table."
-      scoring:
-        pass: ">= 95"
-        warning: ">= 80 and < 95"
-        fail: "< 80"
+      index: "(non_null / total_rows) * 100."
+      status_mapping: "pass >= 95, warning >= 70, fail < 70 through reference mapper."
     consistency:
-      ai_prompt: "CONSISTENCY_PROMPT"
-      scoring:
-        pass: ">= 95"
-        warning: ">= 70 and < 95"
-        fail: "< 70"
-      regex_requirement: "Regex should be compatible with Python import re and use ^...$ anchors."
+      rule_source: "AI-generated Business Rules from the reference prompt."
+      regex_source: "AI-generated RegEx Pattern from the reference prompt."
+      index: "Weighted regex match percentage against value counts."
+      threshold_for_secondary_model: 70
+      regex_requirement: "Regex must be compatible with Python regex/re semantics and use ^...$ anchors."
     uniqueness:
-      created_only_when: "All non-null values are unique."
-      score: 100
+      created_only_when: "Total Rows equals Total Unique and both are non-zero."
+      index: 100
       rule: "There should be no duplicated field for <column> in this table."
     latency:
-      created_only_when: "Column is detected as datetime/date-like."
+      created_only_when: "Column is identified as datetime/date-like by the reference method."
       rule: "Latest date in <column> should not be more than 14 days ago."
       scoring:
         today_or_future: 100
@@ -288,44 +338,37 @@ data_quality_ai_generation:
         over_30_days_old: 0
   sample_selection:
     random_seed: 42
-    max_values_sent_to_ai: 25
+    method: "Sample unique non-null values per column."
     unique_value_sample_size:
       less_than_200: "Use all unique values."
       less_than_500: "ceil(50% of unique values)."
       up_to_5000: "ceil(30% of unique values)."
       over_5000: "ceil(10% of unique values)."
-  consistency_prompt_template: |
-    Offer broad validation rules and a RegEx pattern based on the dataset's characteristics (Column Name, Type, and Value). Aim to capture the essence of what makes data reliable and uniform in the larger dataset. Consider the data snapshot thoroughly and assume the provided information is accurate but may not fully encompass all data. Prioritize creating the output from the data snapshot based on Sample Values, followed by Column Name, and then Column Type.
-
-    Requirements:
-    1. Validation Rules:
-    - Propose validation rules that encompass all the sample data provided.
-    - Clearly differentiate between mandatory and optional segments in the sample values.
-    - Identify edge cases that might arise.
-
-    2. Generalized Regex Pattern:
-    - Create a generalized RegEx pattern (only in UTF-8) based on the rules.
-    - For column type float64, ensure the regex pattern handles floating-point numbers including optional decimal places.
-    - Do not overcomplicate the pattern; use a general pattern if the value is too complex and varied.
-    - The regex pattern should be compatible with the "import re" library in Python.
-    - Use ^ at the beginning and $ at the end of the pattern.
-
-    3. Test the regex against each sample value and iterate until all values match (or stop after 2 minutes).
-
-    4. Sample data:
-    Column Name: <COLUMN-NAME>
-    Column Type: <COLUMN-TYPE>
-    Sample Values: <COLUMN-DATA>
-
-    5. Generate this as final output:
-    - Column Name: <INSERT_SOMETHING>
-    - Column Type: <INSERT_SOMETHING>
-    - Business Rules: a. <INSERT_SOMETHING>; b. <INSERT_SOMETHING>; c. <INSERT_SOMETHING>
-    - RegEx Pattern: r'^<INSERT-YOUR-REGEX-HERE>$'
-    - Complexity: <High, Medium, Low>
-    - Reasoning: <The reasoning>
-
-    Indicate your final output by typing: "HERE IS THE FINAL RESULT". Only output what is in template number 5 after that line.
+  result_mapping:
+    dq_results_actual_value: "Reference Index rounded to 2 decimals."
+    dq_results_check_type: "Lowercase DQ Dimension."
+    dq_results_business_rules: "Reference Business Rules."
+    dq_results_regex_pattern: "Reference RegEx Pattern with r'...' wrapper stripped."
+    dq_results_ai_model: "Model used for the row."
+    dq_results_regex_version: "New Version."
+    dq_results_details:
+      - "reference_method"
+      - "index"
+      - "raw_text"
+      - "complexity"
+      - "reasoning"
+      - "total_unique"
+      - "total_null"
+    dq_findings: "Created when index is below 70."
+  validation_status:
+    completed:
+      - "API and worker Docker images built successfully after dependency changes."
+      - "reference_dq.py and dq.py compiled successfully with python -m py_compile."
+      - "Frontend Docker build completed successfully after DQ UI changes."
+      - "DQ overview and New DQ Run pages returned HTTP 200 through http://localhost."
+    blocked:
+      - "Full successful PRJ-001 DQ execution could not be validated locally because qwen2.5-coder:32b and llama3.1:70b are not installed and local disk capacity may be insufficient."
+      - "Observed failure mode: selected project file runs fail during Generate when Ollama returns 404 for missing model."
 
 metadata_standard_format:
   active_code_paths:
@@ -351,6 +394,7 @@ database:
     date: "2026-06-02"
     source: "local Docker database container ag_db"
     alembic_head: "b6c7d8e9f0a1"
+    note: "Not refreshed after the 2026-06-04 DQ reference method integration because full successful DQ execution was blocked by unavailable large Ollama models."
   current_documented_counts:
     users: 113
     projects: 5
@@ -370,6 +414,8 @@ database:
     - "Use --no-owner --no-acl so the dump restores cleanly under local PostgreSQL users."
     - "Do not include plaintext secrets in dumps."
     - "GitHub folder timestamps only change when files in that folder are touched; an older timestamp does not automatically mean stale content."
+    - "Do not refresh database/ag_db_dump.sql from a local database containing failed DQ trial runs unless the team intentionally wants those records preserved."
+    - "The existing dq_results AI fields are sufficient for the reference method output; no new migration is required for complexity/reasoning because those values live in details JSONB."
 
 frontend_ui_contracts:
   detail_popups:
@@ -413,8 +459,15 @@ testing_and_validation:
       - "git status --short --branch"
       - "git diff --stat"
       - "docker compose -f docker-compose.yml build frontend when frontend changed"
+      - "docker compose -f docker-compose.yml build api worker when backend dependencies or DQ worker logic changed"
+      - "docker compose -f docker-compose.yml run --rm --no-deps api python -m py_compile app/services/reference_dq.py app/worker/tasks/dq.py when DQ reference code changed"
       - "docker exec ag_api alembic upgrade head when backend schema changed"
       - "docker exec ag_api pytest when backend logic changed"
+    dq_reference_method_checks:
+      - "Confirm ollama list includes qwen2.5-coder:32b and llama3.1:70b, or configure DQ_* env vars to available cloud-supported equivalents."
+      - "Run one PRJ-001 file end to end from DQ New Run after required models are available."
+      - "Confirm dq_runs status becomes completed and dq_results contains completeness, consistency, uniqueness, and latency rows where applicable."
+      - "Confirm Rules tab shows Business Rules, Regex Pattern, AI Model, Regex Version, Complexity, and Reasoning."
     known_backend_test_gap:
       issue: "Some tests still rely on SQLite setup and fail on PostgreSQL JSONB models."
       expected_action: "Use PostgreSQL-compatible test setup for DB integration tests involving JSONB."
@@ -433,6 +486,7 @@ change_management:
     - "Docker image versions or service names change."
     - "Database dump is refreshed."
     - "Shared popup/detail-page contracts change."
+    - "Project-based DQ reference method behavior changes; also update docs/data-quality-reference-method.md."
   commit_guidance:
     - "Keep config/doc updates in the same commit as the related code change when possible."
     - "For database refreshes, commit database/ag_db_dump.sql and database/README.md together."

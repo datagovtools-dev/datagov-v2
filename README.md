@@ -22,7 +22,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 | **Data Protection Impact Assessment (DPIA)** | Auto-created from DSR; tracks residual risk, data categories, regulatory references, and governance activities (4 sections A–D); 2-step approval workflow; filter by DPIA status and year; export to PDF |
 | **Record of Processing Activities (ROPA)** | Document and track all data processing activities; filter by legal basis |
 | **Data Extermination / BAPD** | Manage data disposal/extermination requests with evidence upload and approval; manage retention policies (8 built-in policy types); auto-discover datasets eligible for disposal based on retention expiry |
-| **Data Quality (DQ)** | Connect to GCP BigQuery, PostgreSQL, or Supabase and run automated 4-dimension data quality checks — **Completeness** (% non-null), **Consistency** (AI-generated regex pattern + business rules via Ollama with rule-based fallback), **Uniqueness** (for fully-unique / ID-like columns), **Latency** (recency scoring for datetime columns); each column-level result stores business rules, regex pattern, AI model used, and regex version; DQ runs go through a review/approval workflow (pending → running → completed → under_review → approved/rejected); AI config loaded from Settings > AI Setup |
+| **Data Quality (DQ)** | Project-based DQ workflow using source files already imported or connected through Metadata; the New DQ Run wizard starts with project selection, auto-selects all available project files, then lets the user run one or all files without re-uploading; integrates the provided Existing Data Quality reference method for **Completeness**, **Consistency** (AI-generated regex pattern + business rules), **Uniqueness**, and **Latency**; each file creates an independent DQ run and each column-level result stores business rules, regex pattern, AI model, regex version, complexity, and reasoning |
 | **Metadata Management** | Auto-populate data dictionaries from GCP BigQuery, PostgreSQL, or Excel/CSV files; Source Tables section shows all documented tables for a project across all source types with **"Open All Tables →"** shortcut to the full attribute grid; enrich with AI-generated business definitions via configurable Ollama (local or cloud); batch-process definitions in chunks to avoid connection pool exhaustion; responsive project info strip (Data Steward/Owner, Business Users, Line of Business); auto-assess Standard Format from data values; bulk grouping assignment per table; export to Excel (25-col) or styled PDF (A3 landscape with sensitivity pills, PK/NULL colour coding, AI badges); uploaded Excel/CSV files persisted to `uploads_data` volume and tracked in `project_source_files`; 30-day post-project retention with 7-day advance warning and auto-deletion |
 | **Settings** | Manage users, roles, notification preferences, and AI/LLM configuration (provider, mode, base URL, model name, API key, batch size, timeout); test connection from the settings page |
 | **Audit Log** | Full audit trail of all actions across modules; filter by module, action, entity, actor, and date range |
@@ -37,7 +37,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 | **Backend** | FastAPI (Python) + SQLAlchemy + Alembic |
 | **Database** | PostgreSQL |
 | **Cache / Queue** | Redis + Celery |
-| **AI / LLM** | Ollama — configurable provider (local or cloud), model name, base URL, API key, and batch size via Settings UI |
+| **AI / LLM** | Ollama - metadata definitions use DB-configured Settings > AI Setup; DQ reference method requires `qwen2.5-coder:32b` as the primary model and `llama3.1:70b` as the secondary recheck model unless overridden by DQ env vars |
 | **Infrastructure** | Docker Compose + Nginx (reverse proxy) |
 | **Cloud Integrations** | GCP BigQuery, GCS, PostgreSQL/Supabase |
 | **CI/CD** | GitHub Actions |
@@ -48,7 +48,7 @@ The platform was built across 7 development phases (85 Kanban cards) and is full
 
 Current baseline: **AI Governance Tools v1.0.0**. This local environment was last validated against commit `1e2b441` on `2026-06-02`.
 
-Developer configuration reference: see `development.config.yml` for AI model parameters, prompt contracts, database dump rules, shared UI contracts, and validation notes that should be considered during development.
+Developer configuration reference: see `development.config.yml` for AI model parameters, prompt contracts, database dump rules, shared UI contracts, and validation notes. For the new project-based Data Quality flow and reference method handoff, see `docs/data-quality-reference-method.md`.
 
 ### Required Local Tools
 
@@ -61,6 +61,29 @@ Developer configuration reference: see `development.config.yml` for AI model par
 | Python | 3.11.x, only when running the backend outside Docker | Backend supports Python `>=3.11,<3.13`; Docker uses `python:3.11-slim` |
 | Ollama | Local container or cloud endpoint | Local model baseline is `llama3.2:3b`; cloud mode is configured in Settings > AI Setup with base URL, API key, and model |
 
+### DQ Reference Method Model Requirements
+
+The Data Quality module now uses the provided Existing Data Quality reference method. Unlike Metadata AI definition generation, this method has its own model sequence:
+
+| Purpose | Default model | Override env var |
+|---------|---------------|------------------|
+| Primary regex/rule generation | `qwen2.5-coder:32b` | `DQ_PRIMARY_MODEL` |
+| Secondary recheck for consistency scores below 70 | `llama3.1:70b` | `DQ_SECONDARY_MODEL` |
+| Ollama endpoint | Settings > AI Setup base URL, then `http://ollama:11434` | `DQ_OLLAMA_BASE_URL` |
+| Request timeout | Settings > AI Setup timeout, then 120 seconds | `DQ_OLLAMA_TIMEOUT_SECONDS` |
+| API key fallback | Settings > AI Setup encrypted key | `DQ_OLLAMA_API_KEY` |
+
+Local model install commands:
+
+```bash
+docker compose -f docker-compose.yml up -d ollama
+docker compose -f docker-compose.yml exec -T ollama ollama pull qwen2.5-coder:32b
+docker compose -f docker-compose.yml exec -T ollama ollama pull llama3.1:70b
+docker compose -f docker-compose.yml exec -T ollama ollama list
+```
+
+These models are large. If local disk, memory, or GPU capacity is not enough, configure an Ollama-compatible cloud endpoint instead and make sure the cloud account supports both required model names or explicit DQ override names. If the exact model is missing, DQ generation reaches the Generate step but each file run can fail with an Ollama `/api/generate` 404.
+
 ### Container Baseline
 
 | Service | Version / Image |
@@ -70,7 +93,7 @@ Developer configuration reference: see `development.config.yml` for AI model par
 | Backend API | FastAPI `0.111.0`, SQLAlchemy `2.0.30`, Alembic `1.13.1`, Pydantic `2.7.1`, running on `python:3.11-slim` |
 | Database | `postgres:15-alpine` |
 | Cache / Queue | `redis:7-alpine` with Celery `5.4.0` |
-| LLM | `ollama/ollama:latest`; recommended local model `llama3.2:3b` |
+| LLM | `ollama/ollama:latest`; metadata recommended local model `llama3.2:3b`; DQ reference models are listed above |
 
 ### Important Team Notes
 
@@ -147,11 +170,13 @@ docker compose up -d
 
 This starts all services: `api`, `worker`, `frontend`, `db`, `redis`, `nginx`, `ollama`.
 
-### 4. Pull the AI model
+### 4. Pull the Metadata AI model
 
 ```bash
 docker exec ag_ollama ollama pull llama3.2:3b
 ```
+
+This model supports the Metadata definition flow. For the Data Quality reference method, also install or provide the DQ models listed in "DQ Reference Method Model Requirements".
 
 ### 5. Run database migrations
 
@@ -198,7 +223,7 @@ Default admin login:
 - **Source file retention policy** — uploaded source files (Excel/CSV) kept for 30 days after project `end_date`, then auto-deleted; 7-day advance warning notification sent to the full project team and super admins; GCP/PostgreSQL imports have no physical files — all derived metadata attributes remain permanent regardless of retention
 - **Metadata attributes grid** — inline-editable grid with project info strip (Data Steward, Data Owner, Business Users, Line of Business); per-table or all-tables view via dropdown; bulk Save All stamp; bulk grouping assignment per table
 - **Retention policies & eligibility detection** — BAPD manages 8 built-in retention policy types; eligible datasets (past expiry) are auto-discovered and surfaced as a warning panel
-- **4-dimension AI-powered Data Quality** — Completeness (% non-null), Consistency (Ollama-generated regex + business rules per column, with rule-based fallback), Uniqueness (only for fully-unique / ID-like columns, index = 100), Latency (datetime recency scored 100/70/50/30/0 based on days since latest value); each `dq_results` row stores `business_rules`, `regex_pattern`, `ai_model`, `regex_version` — matching the DQ Template output format; AI model and URL loaded from `ai_provider_configs`; DQ runs progress through pending → running → completed → under_review → approved/rejected states
+- **Project-based reference Data Quality** — DQ uses project source files already imported through Metadata, so users do not need to upload the same Excel files again; New DQ Run auto-selects all files for the chosen project and creates one independent run per file; the backend executes the provided Existing Data Quality method for Completeness, Consistency, Uniqueness, and Latency; `dq_results` stores `business_rules`, `regex_pattern`, `ai_model`, `regex_version`, and `details` JSON containing complexity and reasoning; DQ runs progress through pending → running → completed → under_review → approved/rejected states
 - **Styled PDF & Excel export** — Metadata PDF (A3 landscape) renders sensitivity pills, PK/NULL colour coding, AI badges, and monospace column names; Excel export inserts 7 project-level columns; all document PDFs (Project, DSR, AICK, DPIA) share a standardised header with colour-coded status and flag badges
 - **Data Steward & Data Owner** — assignable per project via free-text name + email; surfaced in the Metadata Attributes info strip and all exports
 - **RBAC** — role-based access control enforced on both frontend and backend; `super_admin` role bypasses all user-identity and approval-step UI gates (DPIA approver check, DSR/AICK signature step locks, ROPA edit lock) while business rules remain in effect for other roles
@@ -206,6 +231,27 @@ Default admin login:
 - **Configurable AI settings** — provider, mode (local/cloud), base URL, model name, API key, batch size, and timeout configurable via the Settings UI with a live test-connection check
 - **Audit trail** — all changes logged with user, timestamp, and action; filterable by module, action, entity, actor, and date range
 - **Notification system** — in-app notifications for approval actions and status changes
+
+---
+
+## Recent Updates (2026-06-04) — Project-Based DQ Reference Method
+
+### DQ User Flow
+- Data Quality is now project-first. The overview page asks the user to select a project and then shows the project's Metadata-imported source tables.
+- The New DQ Run wizard no longer starts with source-type cards. Step 1 is project selection, Step 2 is project data selection, then Preview, Generate, Results, and Archive.
+- All available project files are selected by default. The user can still deselect specific files before generation.
+- Each selected file creates its own DQ run so failures and results remain isolated per dataset.
+
+### Reference Method Integration
+- Added `backend/app/services/reference_dq.py` to adapt the provided Existing Data Quality method into the application.
+- Telegram notification and external BigQuery upload concerns from the reference folder are intentionally excluded from the app integration.
+- The worker maps the reference output into existing `dq_runs`, `dq_results`, and `dq_findings` records; no new DQ schema migration is required.
+- The DQ result detail page now exposes regex version, complexity, and reasoning from the reference output.
+
+### Model Availability Caveat
+- The reference DQ method requires `qwen2.5-coder:32b` and `llama3.1:70b` by default. Smaller local models such as `llama3.2:3b`, `qwen2.5:3b`, `phi3`, or `gemma3:4b` are not equivalent.
+- If either required model is missing from the configured Ollama endpoint, DQ generation can fail during Step 4 with an Ollama `/api/generate` 404.
+- If local disk or memory is insufficient, use an Ollama-compatible cloud endpoint and set `DQ_PRIMARY_MODEL`, `DQ_SECONDARY_MODEL`, and `DQ_OLLAMA_BASE_URL` as needed.
 
 ---
 
@@ -224,6 +270,7 @@ Default admin login:
 
 ### AI Config Integration
 - DQ Celery task reads the active AI config from `ai_provider_configs` (enabled=true) to get `model_name`, `base_url`, and `timeout_seconds`; defaults to `llama3.2:3b` at `http://ollama:11434` if none found
+- Superseded for the 2026-06-04 reference method integration: DQ now uses the DB AI base URL/key but defaults model names to `qwen2.5-coder:32b` and `llama3.1:70b` unless DQ env vars override them.
 
 ### Frontend — Detail Page
 - **Score tab**: dynamic 1–4 dimension bars per column (shows only dimensions present in the run); 2×2 or 4-column responsive grid

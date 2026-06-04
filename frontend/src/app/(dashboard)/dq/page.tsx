@@ -117,7 +117,9 @@ export default function DQListPage() {
           )}
         </div>
         <Link href={`/dq/new${projectId ? `?project=${projectId}` : ""}`} className="shrink-0">
-          <Button className="whitespace-nowrap"><Plus className="h-4 w-4 mr-1" /> New DQ Run</Button>
+          <Button className="whitespace-nowrap">
+            <Plus className="h-4 w-4 mr-1" /> {projectId ? "Run All Project Data" : "New Project DQ Run"}
+          </Button>
         </Link>
       </div>
 
@@ -164,6 +166,13 @@ export default function DQListPage() {
                 ))}
               </div>
             </div>
+            {allTables.length > 0 && (
+              <Link href={`/dq/new?project=${projectId}`} className="shrink-0">
+                <Button size="sm" variant="outline" className="whitespace-nowrap">
+                  <Plus className="h-3.5 w-3.5 mr-1" /> Run All Project Data
+                </Button>
+              </Link>
+            )}
           </div>
 
           <Table>

@@ -351,6 +351,9 @@ export default function DQDetailPage() {
                       <th className="px-3 py-2 text-left">Business Rules</th>
                       <th className="px-3 py-2 text-left">Regex Pattern</th>
                       <th className="px-3 py-2 text-left">Model</th>
+                      <th className="px-3 py-2 text-left">Regex Version</th>
+                      <th className="px-3 py-2 text-left">Complexity</th>
+                      <th className="px-3 py-2 text-left">Reasoning</th>
                       <th className="px-3 py-2 text-left">Rows</th>
                       <th className="px-3 py-2 text-left">Failed</th>
                       <th className="px-3 py-2 text-left">Status</th>
@@ -380,6 +383,19 @@ export default function DQDetailPage() {
                         </td>
                         <td className="px-3 py-2 text-xs text-surface-500">
                           {r.ai_model ?? "—"}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-surface-500">
+                          {r.regex_version ?? "—"}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-surface-500">
+                          {r.details?.complexity ? String(r.details.complexity) : "—"}
+                        </td>
+                        <td className="px-3 py-2 text-surface-600 max-w-xs text-xs">
+                          {r.details?.reasoning ? (
+                            <ExpandableText text={String(r.details.reasoning)} />
+                          ) : (
+                            <span className="text-surface-300">—</span>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-surface-500">
                           {r.row_count?.toLocaleString()}

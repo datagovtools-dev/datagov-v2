@@ -422,49 +422,37 @@ def _collect_findings(check: dict) -> list[dict]:
 def _analyse_dataframe(
     columns_data: dict[str, list[Any]],
     ai_config: DQAIConfig | None,
+    table_name: str = "",
+    project_name: str = "",
 ) -> tuple[list[dict], float]:
-    """Return (check_results_list, overall_score)."""
-    results: list[dict] = []
-    scores: list[float] = []
+    """Return (check_results_list, overall_score) using the provided reference DQ method."""
+    import pandas as pd
+    from app.services.reference_dq import (
+        ReferenceDQConfig,
+        result_rows_from_reference,
+        run_reference_dq_for_dataframe,
+    )
 
-    datetime_cols = _detect_datetime_cols(columns_data)
-
-    for col, values in columns_data.items():
-        col_type = _infer_dtype(values)
-        total_unique = len(set(str(v) for v in values if v is not None))
-
-        # Completeness
-        comp = _compute_completeness(col, values)
-        comp["details"]["total_unique"] = total_unique
-        comp["findings"] = _collect_findings(comp)
-        results.append(comp)
-        scores.append(comp["score"])
-
-        # Consistency (AI-powered with rule-based fallback)
-        cons = _compute_ai_consistency(col, col_type, values, ai_config)
-        cons["details"]["total_unique"] = total_unique
-        cons["findings"] = _collect_findings(cons)
-        results.append(cons)
-        scores.append(cons["score"])
-
-        # Uniqueness (only for fully-unique columns)
-        uniq = _compute_uniqueness(col, values)
-        if uniq:
-            uniq["details"]["total_unique"] = total_unique
-            uniq["findings"] = []
-            results.append(uniq)
-            scores.append(uniq["score"])
-
-        # Latency (only for datetime columns)
-        if col in datetime_cols:
-            lat = _compute_latency(col, values)
-            lat["details"]["total_unique"] = total_unique
-            lat["findings"] = _collect_findings(lat)
-            results.append(lat)
-            scores.append(lat["score"])
-
-    overall = round(sum(scores) / len(scores), 2) if scores else 0.0
-    return results, overall
+    base_url = (
+        os.getenv("DQ_OLLAMA_BASE_URL")
+        or (ai_config.base_url if ai_config else None)
+        or "http://ollama:11434"
+    )
+    config = ReferenceDQConfig(
+        base_url=base_url,
+        timeout_seconds=int(os.getenv("DQ_OLLAMA_TIMEOUT_SECONDS") or (ai_config.timeout_seconds if ai_config else 120)),
+        api_key=ai_config.api_key if ai_config else os.getenv("DQ_OLLAMA_API_KEY"),
+        primary_model=os.getenv("DQ_PRIMARY_MODEL", "qwen2.5-coder:32b"),
+        secondary_model=os.getenv("DQ_SECONDARY_MODEL", "llama3.1:70b"),
+    )
+    df_raw = pd.DataFrame(columns_data)
+    reference_df = run_reference_dq_for_dataframe(
+        df_raw=df_raw,
+        table_name=table_name,
+        project_name=project_name,
+        config=config,
+    )
+    return result_rows_from_reference(reference_df)
 
 
 # ── Read data helpers ──────────────────────────────────────────────────────────
@@ -568,6 +556,14 @@ def run_dq_generation(
             (started_at, self.request.id, run_uuid),
         )
         conn.commit()
+        cur.execute(
+            "SELECT r.dataset_name, COALESCE(p.project_name, '') "
+            "FROM dq_runs r LEFT JOIN projects p ON p.id = r.project_id "
+            "WHERE r.id = %s",
+            (run_uuid,),
+        )
+        run_meta = cur.fetchone() or ("", "")
+        current_dataset_name, current_project_name = run_meta
 
         # Load AI config from DB
         ai_config = _get_ai_config(db_url)
@@ -589,7 +585,12 @@ def run_dq_generation(
         else:
             raise ValueError(f"Unsupported source_type={source_type!r}")
 
-        check_results, overall_score = _analyse_dataframe(columns_data, ai_config)
+        check_results, overall_score = _analyse_dataframe(
+            columns_data,
+            ai_config,
+            table_name=current_dataset_name or dataset_location,
+            project_name=current_project_name or "",
+        )
 
         passed = sum(1 for r in check_results if r["status"] == "pass")
         failed_checks = sum(1 for r in check_results if r["status"] == "fail")

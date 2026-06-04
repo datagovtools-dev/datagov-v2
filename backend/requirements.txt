@@ -37,6 +37,9 @@ sendgrid==6.11.0
 
 # Excel
 openpyxl==3.1.2
+pandas==2.2.2
+numpy==1.26.4
+regex==2024.5.15
 
 # Utilities
 python-dateutil==2.9.0
