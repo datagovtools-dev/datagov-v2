@@ -3,6 +3,12 @@
 .env.local
 .env.*.local
 
+# TLS private keys
+nginx/ssl/*.key
+*.pem
+*.p12
+*.pfx
+
 # Python
 __pycache__/
 *.py[cod]
