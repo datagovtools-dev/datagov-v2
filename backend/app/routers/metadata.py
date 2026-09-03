@@ -158,6 +158,36 @@ async def upload_excel_metadata(
 
 # ── FR-META-001: Source Table Discovery ───────────────────────────────────────
 
+@router.get("/tables", response_model=list[SourceTableInfo])
+async def list_tables_query(
+    db: DB,
+    _: Annotated[User, Depends(require_permission("metadata:read"))],
+    project_id: uuid.UUID | None = Query(default=None),
+) -> list[SourceTableInfo]:
+    """List available tables globally or filtered by project_id."""
+    query = select(
+        MetadataRecord.data_domain_table,
+        MetadataRecord.source_type,
+        func.count(MetadataRecord.id).label("col_count"),
+        func.max(MetadataRecord.source_row_count).label("row_count"),
+    )
+    if project_id:
+        query = query.where(MetadataRecord.project_id == project_id)
+    query = query.group_by(MetadataRecord.data_domain_table, MetadataRecord.source_type).order_by(MetadataRecord.data_domain_table)
+
+    result = await db.execute(query)
+    tables: list[SourceTableInfo] = []
+    for row in result.fetchall():
+        tables.append(SourceTableInfo(
+            table_name=row.data_domain_table,
+            column_count=row.col_count,
+            documented=True,
+            source_type=row.source_type or "db",
+            row_count=row.row_count,
+        ))
+    return tables
+
+
 @router.get("/tables/{project_id}", response_model=list[SourceTableInfo])
 async def list_source_tables(
     project_id: uuid.UUID,

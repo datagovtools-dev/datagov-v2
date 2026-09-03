@@ -17,8 +17,8 @@ const ModalOverlay = React.forwardRef<
   <DialogPrimitive.Overlay
     ref={ref}
     className={cn(
-      "fixed inset-0 z-50 bg-black/40 backdrop-blur-sm animate-fade-in",
-      className,
+      "fixed inset-0 z-50 bg-slate-950/40 animate-in fade-in-0",
+      className
     )}
     {...props}
   />
@@ -42,14 +42,14 @@ const ModalContent = React.forwardRef<
       <DialogPrimitive.Content
         ref={ref}
         className={cn(
-          "fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 rounded-xl bg-white shadow-modal animate-slide-in",
+          "fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2 rounded-md border border-slate-200 bg-white p-0 shadow-modal animate-in fade-in-0 zoom-in-95 overflow-hidden",
           sizeClass,
-          className,
+          className
         )}
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-primary-500">
+        <DialogPrimitive.Close className="absolute right-3.5 top-3.5 rounded-md p-1 text-slate-400 opacity-70 hover:opacity-100 hover:bg-slate-100 focus:outline-none focus:ring-1 focus:ring-slate-950 transition-colors">
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
@@ -60,22 +60,42 @@ const ModalContent = React.forwardRef<
 ModalContent.displayName = "ModalContent";
 
 function ModalHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex flex-col gap-1.5 px-6 pt-6 pb-4 border-b border-surface-200", className)} {...props} />;
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-0.5 px-5 py-3.5 border-b border-slate-100 bg-slate-50/50",
+        className
+      )}
+      {...props}
+    />
+  );
 }
 
 function ModalFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex justify-end gap-2 px-6 pb-6 pt-4 border-t border-surface-200", className)} {...props} />;
+  return (
+    <div
+      className={cn(
+        "flex justify-end gap-2 px-5 py-3 border-t border-slate-100 bg-slate-50/50",
+        className
+      )}
+      {...props}
+    />
+  );
 }
 
 function ModalBody({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("px-6 py-4", className)} {...props} />;
+  return <div className={cn("px-5 py-4 overflow-y-auto max-h-[75vh]", className)} {...props} />;
 }
 
 const ModalTitle = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Title ref={ref} className={cn("text-lg font-semibold text-surface-900", className)} {...props} />
+  <DialogPrimitive.Title
+    ref={ref}
+    className={cn("text-base font-semibold text-slate-900 tracking-tight", className)}
+    {...props}
+  />
 ));
 ModalTitle.displayName = "ModalTitle";
 
@@ -83,12 +103,22 @@ const ModalDescription = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Description>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>
 >(({ className, ...props }, ref) => (
-  <DialogPrimitive.Description ref={ref} className={cn("text-sm text-surface-500", className)} {...props} />
+  <DialogPrimitive.Description
+    ref={ref}
+    className={cn("text-xs text-slate-500", className)}
+    {...props}
+  />
 ));
 ModalDescription.displayName = "ModalDescription";
 
 export {
-  Modal, ModalTrigger, ModalClose, ModalContent,
-  ModalHeader, ModalFooter, ModalBody,
-  ModalTitle, ModalDescription,
+  Modal,
+  ModalTrigger,
+  ModalClose,
+  ModalContent,
+  ModalHeader,
+  ModalFooter,
+  ModalBody,
+  ModalTitle,
+  ModalDescription,
 };

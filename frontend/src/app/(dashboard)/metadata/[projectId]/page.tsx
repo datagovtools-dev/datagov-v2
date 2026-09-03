@@ -56,10 +56,10 @@ const SENSITIVITY_OPTIONS = ["Public", "Internal", "Confidential", "Highly Confi
 const DATA_LEVEL_OPTIONS = ["Raw", "Staging", "Aggregate"];
 
 const SENSITIVITY_COLORS: Record<string, string> = {
-  "Public": "bg-green-100 text-green-700 border-green-200",
-  "Internal": "bg-blue-100 text-blue-700 border-blue-200",
-  "Confidential": "bg-yellow-100 text-yellow-700 border-yellow-200",
-  "Highly Confidential": "bg-red-100 text-red-700 border-red-200",
+  "Public": "bg-slate-100 text-slate-700 border-slate-200",
+  "Internal": "bg-slate-100 text-slate-700 border-slate-200",
+  "Confidential": "bg-amber-50 text-amber-700 border-amber-200",
+  "Highly Confidential": "bg-rose-50 text-rose-700 border-rose-200",
 };
 
 const SF_GROUPS = [
@@ -150,17 +150,17 @@ function StandardFormatCombobox({
 
   return (
     <div ref={ref} className="relative min-w-[160px]">
-      <div className="flex items-stretch border border-surface-300 rounded overflow-hidden focus-within:ring-1 focus-within:ring-primary-400">
+      <div className="flex items-stretch border border-slate-200 rounded-md overflow-hidden focus-within:ring-1 focus-within:ring-slate-950">
         <textarea
           value={value}
           onChange={(e) => onChange(e.target.value)}
           rows={2}
-          className="flex-1 text-xs px-2 py-1 resize-none focus:outline-none bg-white"
+          className="flex-1 text-xs px-2 py-1 resize-none focus:outline-none bg-white text-slate-900 font-mono"
         />
         <button
           type="button"
           onMouseDown={(e) => { e.preventDefault(); setOpen((o) => !o); }}
-          className="px-1.5 bg-surface-50 hover:bg-surface-100 border-l border-surface-300 text-surface-400 hover:text-surface-600 shrink-0"
+          className="px-1.5 bg-slate-50 hover:bg-slate-100 border-l border-slate-200 text-slate-400 hover:text-slate-600 shrink-0"
           tabIndex={-1}
         >
           <ChevronDown className="h-3.5 w-3.5" />
@@ -168,10 +168,10 @@ function StandardFormatCombobox({
       </div>
 
       {open && (
-        <div className="absolute z-50 left-0 top-full mt-0.5 w-56 bg-white border border-surface-200 rounded-lg shadow-lg max-h-72 overflow-y-auto">
+        <div className="absolute z-50 left-0 top-full mt-0.5 w-56 bg-white border border-slate-200 rounded-md shadow-lg max-h-72 overflow-y-auto">
           {SF_GROUPS.map(({ group, options }) => (
             <div key={group}>
-              <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-surface-400">
+              <div className="px-3 pt-2 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono">
                 {group}
               </div>
               {options.map((opt) => (
@@ -179,7 +179,7 @@ function StandardFormatCombobox({
                   key={opt}
                   type="button"
                   onMouseDown={(e) => { e.preventDefault(); pick(opt); }}
-                  className="w-full text-left px-3 py-1.5 text-xs text-surface-700 hover:bg-primary-50 hover:text-primary-700"
+                  className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 hover:text-slate-900 font-mono"
                 >
                   {opt === "Category: " ? "Category: [type values…]" : opt}
                 </button>
@@ -194,7 +194,7 @@ function StandardFormatCombobox({
 
 function SensitivityPill({ value }: { value: string }) {
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border ${SENSITIVITY_COLORS[value] ?? "bg-gray-100 text-gray-600 border-gray-200"}`}>
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-mono border ${SENSITIVITY_COLORS[value] ?? "bg-slate-100 text-slate-600 border-slate-200"}`}>
       {value}
     </span>
   );
@@ -203,8 +203,8 @@ function SensitivityPill({ value }: { value: string }) {
 function AiBadge({ status }: { status: string }) {
   if (status !== "ai_generated") return null;
   return (
-    <span className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 border border-violet-300">
-      AI
+    <span className="ml-1 inline-flex items-center px-1.5 py-0.2 rounded-md text-[9px] font-mono font-medium bg-slate-100 text-slate-700 border border-slate-200">
+      ai
     </span>
   );
 }
@@ -577,44 +577,48 @@ function MetadataGridContent() {
   const dataOwner = owners.find((o) => o.role_type === "data_owner");
 
   return (
-    <div className="flex flex-col h-full gap-4">
+    <div className="flex flex-col h-full gap-3.5">
       {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div className="min-w-0">
-          <button onClick={() => router.push("/metadata")} className="text-surface-400 hover:text-surface-600 flex items-center gap-1 text-sm mb-1">
-            <ChevronLeft className="h-4 w-4" /> Back to Metadata
+          <button onClick={() => router.push("/metadata")} className="text-slate-400 hover:text-slate-700 flex items-center gap-1 text-xs mb-0.5 font-mono">
+            <ChevronLeft className="h-3.5 w-3.5" /> Back to Metadata
           </button>
-          <h1 className="text-xl font-bold text-surface-800">Metadata Attributes</h1>
-          <p className="text-sm text-surface-500">{records.length} attributes · {allTables.length} tables</p>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">Metadata Attributes</h1>
+          <p className="text-xs text-slate-500 font-mono">{records.length} attributes · {allTables.length} tables</p>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           <div className="relative group">
-            <Button variant="outline" disabled={filteredRecords.length === 0}>
-              <Download className="h-4 w-4 mr-1" /> Export
+            <Button variant="outline" size="sm" disabled={filteredRecords.length === 0} className="h-7.5 text-xs font-medium">
+              <Download className="h-3.5 w-3.5 mr-1" /> Export
             </Button>
-            <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-surface-200 rounded-lg shadow-lg z-20 hidden group-hover:block">
+            <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-slate-200 rounded-md shadow-md z-20 hidden group-hover:block overflow-hidden">
               <button onClick={handleExportExcel}
-                className="w-full text-left px-4 py-2 text-sm text-surface-700 hover:bg-surface-50 rounded-t-lg">
-                📊 Excel (.xlsx)
+                className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 font-mono">
+                Excel (.xlsx)
               </button>
               <button onClick={handleExportPDF}
-                className="w-full text-left px-4 py-2 text-sm text-surface-700 hover:bg-surface-50 rounded-b-lg">
-                📄 PDF
+                className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 font-mono border-t border-slate-100">
+                PDF
               </button>
             </div>
           </div>
           <Button
             variant="outline"
+            size="sm"
             onClick={handleRegenAll}
+            className="h-7.5 text-xs font-medium"
             disabled={regenAllRunning || records.length === 0 || !aiReady || (records.length > 0 && records.every((r) => r.business_definition && r.definition_status === "ai_generated"))}
             title={aiReady ? `Using ${aiStatus?.provider ?? "AI"} ${aiStatus?.model_name ?? ""}` : "Configure Ollama Cloud in Settings > AI Setup"}
           >
             {regenAllRunning
               ? `Generating… (${regenQueued.size} queued)`
-              : "✦ Generate All AI Definitions"}
+              : "Generate AI Definitions"}
           </Button>
           <Button
             variant="outline"
+            size="sm"
+            className="h-7.5 text-xs font-medium"
             onClick={() => bulkStampMutation.mutate()}
             disabled={bulkStampMutation.isPending || records.length === 0}
             title="Stamp today's date and your name as Updated By on all records"
@@ -622,7 +626,12 @@ function MetadataGridContent() {
             {bulkStampMutation.isPending ? "Saving…" : "Save All"}
           </Button>
           {hasDrafts && (
-            <Button onClick={() => batchSaveMutation.mutate()} disabled={batchSaveMutation.isPending}>
+            <Button
+              size="sm"
+              className="h-7.5 text-xs font-medium"
+              onClick={() => batchSaveMutation.mutate()}
+              disabled={batchSaveMutation.isPending}
+            >
               {batchSaveMutation.isPending ? "Saving…" : `Save ${Object.keys(drafts).length} Changes`}
             </Button>
           )}
@@ -630,14 +639,14 @@ function MetadataGridContent() {
       </div>
 
       {regenError && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 font-mono">
           {regenError}
         </div>
       )}
 
       {/* Project info strip */}
       {project && (
-        <div className="bg-white border border-surface-200 rounded-xl shadow-sm px-6 py-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-x-4 gap-y-4">
+        <div className="bg-white border border-slate-200 rounded-md shadow-2xs px-4 py-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-x-3 gap-y-2">
           {[
             { label: "Project ID",       value: project.project_code ?? "—", mono: true,  bold: true },
             { label: "Project Name",     value: project.project_name,                      bold: true },
@@ -646,42 +655,42 @@ function MetadataGridContent() {
             { label: "Line of Business", value: project.line_of_business || "—",           bold: false },
           ].map(({ label, value, mono, bold }) => (
             <div key={label} className="min-w-0">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-primary-500 truncate">{label}</div>
-              <div className={`text-sm mt-1 truncate text-surface-800 ${bold ? "font-semibold" : "font-normal"} ${mono ? "font-mono" : ""}`} title={value}>{value}</div>
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono truncate">{label}</div>
+              <div className={`text-xs mt-0.5 truncate text-slate-800 ${bold ? "font-semibold" : "font-normal"} ${mono ? "font-mono" : ""}`} title={value}>{value}</div>
             </div>
           ))}
           <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-primary-500">Data Steward</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono">Data Steward</div>
             {dataSteward ? (
               <>
-                <div className="text-sm font-normal text-surface-800 mt-1 truncate" title={dataSteward.full_name}>{dataSteward.full_name}</div>
-                <div className="text-xs text-surface-500 truncate" title={dataSteward.email}>{dataSteward.email}</div>
+                <div className="text-xs font-normal text-slate-800 mt-0.5 truncate" title={dataSteward.full_name}>{dataSteward.full_name}</div>
+                <div className="text-[10px] text-slate-400 font-mono truncate" title={dataSteward.email}>{dataSteward.email}</div>
               </>
-            ) : <div className="text-sm text-surface-400 mt-1">—</div>}
+            ) : <div className="text-xs text-slate-300 mt-0.5 font-mono">—</div>}
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-primary-500">Data Owner</div>
+            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono">Data Owner</div>
             {dataOwner ? (
               <>
-                <div className="text-sm font-normal text-surface-800 mt-1 truncate" title={dataOwner.full_name}>{dataOwner.full_name}</div>
-                <div className="text-xs text-surface-500 truncate" title={dataOwner.email}>{dataOwner.email}</div>
+                <div className="text-xs font-normal text-slate-800 mt-0.5 truncate" title={dataOwner.full_name}>{dataOwner.full_name}</div>
+                <div className="text-[10px] text-slate-400 font-mono truncate" title={dataOwner.email}>{dataOwner.email}</div>
               </>
-            ) : <div className="text-sm text-surface-400 mt-1">—</div>}
+            ) : <div className="text-xs text-slate-300 mt-0.5 font-mono">—</div>}
           </div>
         </div>
       )}
 
       {/* Filters toolbar */}
-      <div className="flex flex-wrap items-center gap-2 mb-1">
+      <div className="flex flex-wrap items-center gap-2 mb-0.5">
         <Select value={tableFilter || "all"} onValueChange={(v) => setTableFilter(v === "all" ? "" : v)}>
-          <SelectTrigger className="h-10 flex-1 min-w-[160px] max-w-[220px] truncate"><SelectValue placeholder="All Tables" /></SelectTrigger>
+          <SelectTrigger className="h-8 flex-1 min-w-[150px] max-w-[200px] text-xs font-mono truncate"><SelectValue placeholder="All Tables" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Tables</SelectItem>
             {allTables.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={sensitivityFilter || "all"} onValueChange={(v) => setSensitivityFilter(v === "all" ? "" : v)}>
-          <SelectTrigger className="h-10 flex-1 min-w-[160px] max-w-[220px]"><SelectValue placeholder="All Sensitivity" /></SelectTrigger>
+          <SelectTrigger className="h-8 flex-1 min-w-[140px] max-w-[180px] text-xs font-mono"><SelectValue placeholder="All Sensitivity" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Sensitivity</SelectItem>
             <SelectItem value="Public">Public</SelectItem>
@@ -690,13 +699,13 @@ function MetadataGridContent() {
             <SelectItem value="Highly Confidential">Highly Confidential</SelectItem>
           </SelectContent>
         </Select>
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-surface-400 pointer-events-none" />
-          <input className="input-base h-10 pl-9 w-full" placeholder="Search attribute, term, or definition…"
+        <div className="relative flex-1 min-w-[180px]">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-slate-400 pointer-events-none" />
+          <input className="input-base h-8 pl-8 text-xs font-mono w-full" placeholder="Search attribute, term, or definition…"
             value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         {tableFilter && (
-          <Button variant="outline" className="h-10 shrink-0" onClick={() => setShowBulkGrouping(true)}>
+          <Button variant="outline" size="sm" className="h-8 shrink-0 text-xs font-medium" onClick={() => setShowBulkGrouping(true)}>
             Bulk Grouping
           </Button>
         )}
@@ -704,44 +713,30 @@ function MetadataGridContent() {
 
       {/* Bulk grouping popover */}
       {showBulkGrouping && tableFilter && (
-        <div className="bg-primary-50 border border-primary-200 rounded-lg p-4 flex items-center gap-3">
-          <span className="text-sm text-primary-800 font-medium">Apply data_grouping to all rows in <strong>{tableFilter}</strong>:</span>
+        <div className="bg-slate-50 border border-slate-200 rounded-md p-3 flex items-center gap-2.5">
+          <span className="text-xs text-slate-700 font-mono">Apply grouping to rows in <strong>{tableFilter}</strong>:</span>
           <Input value={bulkGrouping} onChange={(e) => setBulkGrouping(e.target.value)}
-            placeholder="Enter grouping label…" className="w-48" />
-          <Button size="sm" disabled={!bulkGrouping || bulkGroupMutation.isPending}
+            placeholder="Enter grouping label…" className="w-48 h-7 text-xs font-mono" />
+          <Button size="sm" className="h-7 text-xs font-medium" disabled={!bulkGrouping || bulkGroupMutation.isPending}
             onClick={() => bulkGroupMutation.mutate()}>
             {bulkGroupMutation.isPending ? "Applying…" : "Apply"}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setShowBulkGrouping(false)}>Cancel</Button>
+          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setShowBulkGrouping(false)}>Cancel</Button>
         </div>
       )}
 
-      {/* Legend — visible above the grid */}
-      <div className="flex flex-wrap gap-4 text-xs text-surface-400 items-center">
-        <span>✎ Edit row inline</span>
-        <span className="flex items-center gap-1">
-          <span className="text-violet-500">✦</span> Regenerate AI definition
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-100 text-violet-700 border border-violet-300">AI</span>
-          = AI-generated definition{aiStatus?.configured ? ` (${aiStatus.model_name})` : ""}
-        </span>
-        <span>Amber left border = unsaved changes</span>
-        <span className="text-surface-400">· Table Type, Data Year, Grouping, Level changes apply to all columns in the same table</span>
-      </div>
-
       {/* Unsaved indicator */}
       {hasDrafts && (
-        <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 text-xs text-amber-700 font-medium">
-          {Object.keys(drafts).length} unsaved row{Object.keys(drafts).length > 1 ? "s" : ""} — highlighted in amber border
+        <div className="bg-amber-50 border border-amber-200 rounded-md px-3 py-1.5 text-xs text-amber-800 font-mono font-medium">
+          {Object.keys(drafts).length} unsaved row{Object.keys(drafts).length > 1 ? "s" : ""} — highlighted in amber
         </div>
       )}
 
       {/* Grid */}
-      <div className="flex-1 min-h-0 bg-white rounded-xl border border-surface-200 overflow-hidden">
+      <div className="flex-1 min-h-0 bg-white rounded-md border border-slate-200 shadow-2xs overflow-hidden">
         <div className="overflow-auto h-full">
-          <table className="min-w-full divide-y divide-surface-100 text-sm">
-            <thead className="bg-surface-50 sticky top-0 z-10">
+          <table className="min-w-full divide-y divide-slate-100 text-xs">
+            <thead className="bg-slate-50 sticky top-0 z-10 border-b border-slate-200">
               <tr>
                 {[
                   { label: "#",                   w: "w-10",  tip: "Running number" },
@@ -764,11 +759,11 @@ function MetadataGridContent() {
                   { label: "Remarks",             w: "w-40",  tip: "Free-text notes or additional context for this attribute. e.g. deprecated column, used only for legacy reports" },
                   { label: "",                    w: "w-20",  tip: "" },
                 ].map((col) => (
-                  <th key={col.label} className={`${col.w} px-3 py-2 text-left`}>
+                  <th key={col.label} className={`${col.w} px-2.5 py-2 text-left font-semibold text-slate-600 font-mono text-[10px] uppercase tracking-wider`}>
                     <div className="flex items-center gap-1 whitespace-nowrap">
-                      <span className="text-xs font-semibold text-surface-600 uppercase tracking-wider">{col.label}</span>
+                      <span>{col.label}</span>
                       {col.tip && (
-                        <span title={col.tip} className="text-surface-300 hover:text-surface-500 cursor-help shrink-0">
+                        <span title={col.tip} className="text-slate-300 hover:text-slate-500 cursor-help shrink-0">
                           <Info className="h-3 w-3" />
                         </span>
                       )}
@@ -777,169 +772,169 @@ function MetadataGridContent() {
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-surface-50">
+            <tbody className="divide-y divide-slate-100">
               {isLoading ? (
-                <tr><td colSpan={19} className="px-4 py-8 text-center text-surface-400">Loading…</td></tr>
+                <tr><td colSpan={19} className="px-4 py-8 text-center text-slate-400 font-mono">Loading…</td></tr>
               ) : !filteredRecords.length ? (
-                <tr><td colSpan={19} className="px-4 py-8 text-center text-surface-400">No attributes found</td></tr>
+                <tr><td colSpan={19} className="px-4 py-8 text-center text-slate-400 font-mono">No attributes found</td></tr>
               ) : filteredRecords.map((r, idx) => {
                 const isDirty = dirtyIds.has(r.id);
                 const isEditing = editingId === r.id;
                 return (
                   <tr key={r.id}
-                    className={`hover:bg-surface-50 transition-colors ${isDirty ? "border-l-4 border-amber-400 bg-amber-50/30" : ""}`}>
+                    className={`hover:bg-slate-50 transition-colors ${isDirty ? "bg-amber-50/40" : ""}`}>
 
                     {/* # */}
-                    <td className="px-3 py-2 text-surface-400 text-xs">{idx + 1}</td>
+                    <td className="px-2.5 py-1.5 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
 
                     {/* Table */}
-                    <td className="px-3 py-2 font-mono text-xs text-surface-600 max-w-[160px] truncate" title={r.data_domain_table}>{r.data_domain_table}</td>
+                    <td className="px-2.5 py-1.5 font-mono text-[11px] text-slate-600 max-w-[160px] truncate" title={r.data_domain_table}>{r.data_domain_table}</td>
 
-                    {/* Table Type — table-level: propagates to all columns in same table */}
-                    <td className="px-3 py-2">
+                    {/* Table Type */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <select value={getDraft(r, "table_type") as string}
                           onChange={(e) => setTableDraft(r, "table_type", e.target.value)}
-                          className="text-xs border border-surface-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400">
+                          className="text-xs border border-slate-200 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-slate-950 font-mono">
                           {["Source","Target","Lookup","Reference","Staging"].map((v) => <option key={v} value={v}>{v}</option>)}
                         </select>
-                      ) : <span className="text-xs text-surface-600">{r.table_type}</span>}
+                      ) : <span className="text-xs text-slate-600 font-mono">{r.table_type}</span>}
                     </td>
 
-                    {/* Data Year — table-level: propagates to all columns in same table */}
-                    <td className="px-3 py-2">
+                    {/* Data Year */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <input type="number" value={getDraft(r, "data_year") as number ?? ""}
                           onChange={(e) => setTableDraft(r, "data_year", e.target.value ? parseInt(e.target.value) : null)}
-                          className="text-xs border border-surface-300 rounded px-1.5 py-1 w-20 focus:outline-none focus:ring-1 focus:ring-primary-400" />
-                      ) : <span className="text-xs text-surface-600 text-center block">{r.data_year ?? new Date(r.created_at).getFullYear()}</span>}
+                          className="text-xs border border-slate-200 rounded-md px-1.5 py-0.5 w-20 focus:outline-none focus:ring-1 focus:ring-slate-950 font-mono" />
+                      ) : <span className="text-xs text-slate-600 font-mono text-center block">{r.data_year ?? new Date(r.created_at).getFullYear()}</span>}
                     </td>
 
-                    {/* Grouping — table-level: propagates to all columns in same table */}
-                    <td className="px-3 py-2">
+                    {/* Grouping */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <Input value={getDraft(r, "data_grouping") as string ?? ""}
                           onChange={(e) => setTableDraft(r, "data_grouping", e.target.value)}
-                          className="text-xs h-7 py-1" />
-                      ) : <span className="text-surface-600 text-xs">{r.data_grouping ?? "—"}</span>}
+                          className="text-xs h-6.5 py-0.5 font-mono" />
+                      ) : <span className="text-slate-600 text-xs font-mono">{r.data_grouping ?? "—"}</span>}
                     </td>
 
-                    {/* Level — table-level: propagates to all columns in same table */}
-                    <td className="px-3 py-2">
+                    {/* Level */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <select value={getDraft(r, "data_level") as string}
                           onChange={(e) => setTableDraft(r, "data_level", e.target.value)}
-                          className="text-xs border border-surface-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400">
+                          className="text-xs border border-slate-200 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-slate-950 font-mono">
                           {DATA_LEVEL_OPTIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                         </select>
-                      ) : <span className="text-xs text-surface-600">{r.data_level}</span>}
+                      ) : <span className="text-xs text-slate-600 font-mono">{r.data_level}</span>}
                     </td>
 
                     {/* Attribute */}
-                    <td className="px-3 py-2 font-mono font-medium text-surface-800 text-xs">{r.data_attribute}</td>
+                    <td className="px-2.5 py-1.5 font-mono font-medium text-slate-900 text-xs">{r.data_attribute}</td>
 
                     {/* Type */}
-                    <td className="px-3 py-2 text-surface-600 text-xs">{r.data_type ?? "—"}</td>
+                    <td className="px-2.5 py-1.5 text-slate-600 font-mono text-xs">{r.data_type ?? "—"}</td>
 
-                    {/* Sensitivity — editable */}
-                    <td className="px-3 py-2">
+                    {/* Sensitivity */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <select value={getDraft(r, "data_sensitivity") as string}
                           onChange={(e) => setDraft(r.id, "data_sensitivity", e.target.value)}
-                          className="text-xs border border-surface-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400">
+                          className="text-xs border border-slate-200 rounded-md px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-slate-950 font-mono">
                           {SENSITIVITY_OPTIONS.map((s) => <option key={s} value={s}>{s}</option>)}
                         </select>
                       ) : <SensitivityPill value={getDraft(r, "data_sensitivity") as string} />}
                     </td>
 
-                    {/* Business Term — editable */}
-                    <td className="px-3 py-2">
+                    {/* Business Term */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <Input value={getDraft(r, "business_term") as string ?? ""}
                           onChange={(e) => setDraft(r.id, "business_term", e.target.value)}
-                          className="text-xs h-7 py-1" />
-                      ) : <span className="text-surface-700 text-xs">{r.business_term ?? "—"}</span>}
+                          className="text-xs h-6.5 py-0.5 font-mono" />
+                      ) : <span className="text-slate-800 text-xs font-mono">{r.business_term ?? "—"}</span>}
                     </td>
 
-                    {/* Business Definition — editable with AI badge */}
-                    <td className="px-3 py-2 max-w-[260px]">
+                    {/* Business Definition */}
+                    <td className="px-2.5 py-1.5 max-w-[260px]">
                       {isEditing ? (
                         <textarea value={getDraft(r, "business_definition") as string ?? ""}
                           onChange={(e) => setDraft(r.id, "business_definition", e.target.value)}
-                          rows={2} className="w-full text-xs border border-surface-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400 resize-none" />
+                          rows={2} className="w-full text-xs border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-slate-950 resize-none font-sans" />
                       ) : (
                         <div className="flex items-start gap-1">
-                          <span className="text-surface-700 text-xs leading-relaxed line-clamp-2">
+                          <span className="text-slate-700 text-xs leading-relaxed line-clamp-2">
                             {(regenQueued.has(r.id) || (regenAllRunning && r.definition_status === "pending" && !r.business_definition))
-                              ? <span className="text-violet-500 italic">Generating…</span>
-                              : (r.business_definition ?? <span className="text-gray-400 italic">Not set</span>)}
+                              ? <span className="text-slate-400 italic font-mono">Generating…</span>
+                              : (r.business_definition ?? <span className="text-slate-300 italic font-mono">—</span>)}
                           </span>
                           <AiBadge status={r.definition_status} />
                         </div>
                       )}
                     </td>
 
-                    {/* Standard Format — combobox with predefined options + free text */}
-                    <td className="px-3 py-2">
+                    {/* Standard Format */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <StandardFormatCombobox
                           value={(getDraft(r, "standard_format") as string) ?? ""}
                           onChange={(v) => setDraft(r.id, "standard_format", v)}
                           distinctValues={r.distinct_values}
                         />
-                      ) : <span className="text-xs text-surface-600 line-clamp-2">{r.standard_format ?? "—"}</span>}
+                      ) : <span className="text-xs text-slate-600 font-mono line-clamp-2">{r.standard_format ?? "—"}</span>}
                     </td>
 
                     {/* PK */}
-                    <td className="px-3 py-2 text-center">
-                      {r.is_primary_key ? <span className="text-blue-600 font-bold text-xs">PK</span> : <span className="text-gray-200">—</span>}
+                    <td className="px-2.5 py-1.5 text-center">
+                      {r.is_primary_key ? <span className="text-slate-900 font-bold font-mono text-[11px]">PK</span> : <span className="text-slate-200 font-mono">—</span>}
                     </td>
 
-                    {/* Nullable — No=green (required field, good quality), Yes=red (nullable, quality risk) */}
-                    <td className="px-3 py-2 text-center">
-                      {r.is_nullable === null ? <span className="text-gray-300 text-xs">—</span>
+                    {/* Nullable */}
+                    <td className="px-2.5 py-1.5 text-center">
+                      {r.is_nullable === null ? <span className="text-slate-300 text-xs font-mono">—</span>
                         : r.is_nullable
-                          ? <span className="text-xs font-medium text-red-500">Yes</span>
-                          : <span className="text-xs font-medium text-green-600">No</span>}
+                          ? <span className="text-xs font-medium text-rose-700 font-mono">Yes</span>
+                          : <span className="text-xs font-medium text-emerald-700 font-mono">No</span>}
                     </td>
 
                     {/* Sample */}
-                    <td className="px-3 py-2 text-xs text-gray-500 max-w-[110px] truncate" title={r.sample_data ?? ""}>{r.sample_data ?? "—"}</td>
+                    <td className="px-2.5 py-1.5 text-xs font-mono text-slate-500 max-w-[110px] truncate" title={r.sample_data ?? ""}>{r.sample_data ?? "—"}</td>
 
-                    {/* Updated Date — falls back to created_at date, yyyy-mm-dd */}
-                    <td className="px-3 py-2 text-xs text-surface-400">
+                    {/* Updated Date */}
+                    <td className="px-2.5 py-1.5 text-xs font-mono text-slate-400">
                       {r.updated_date ?? r.created_at.slice(0, 10)}
                     </td>
 
-                    {/* Updated By — read-only */}
-                    <td className="px-3 py-2 text-xs text-surface-400 max-w-[140px] truncate" title={r.updated_by ?? ""}>
+                    {/* Updated By */}
+                    <td className="px-2.5 py-1.5 text-xs font-mono text-slate-400 max-w-[140px] truncate" title={r.updated_by ?? ""}>
                       {r.updated_by ? r.updated_by.split("<")[0].trim() : "—"}
                     </td>
 
-                    {/* Remarks — editable */}
-                    <td className="px-3 py-2">
+                    {/* Remarks */}
+                    <td className="px-2.5 py-1.5">
                       {isEditing ? (
                         <textarea value={getDraft(r, "remarks") as string ?? ""}
                           onChange={(e) => setDraft(r.id, "remarks", e.target.value)}
-                          rows={2} className="w-full text-xs border border-surface-300 rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-primary-400 resize-none min-w-[140px]" />
-                      ) : <span className="text-xs text-surface-600 line-clamp-2">{(r.remarks && r.remarks !== "-") ? r.remarks : "—"}</span>}
+                          rows={2} className="w-full text-xs border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-slate-950 resize-none min-w-[140px]" />
+                      ) : <span className="text-xs text-slate-600 line-clamp-2">{(r.remarks && r.remarks !== "-") ? r.remarks : "—"}</span>}
                     </td>
 
                     {/* Actions */}
-                    <td className="px-3 py-2">
+                    <td className="px-2.5 py-1.5">
                       <div className="flex items-center gap-1">
                         {isEditing ? (
                           <>
-                            <button className="text-xs text-primary-600 hover:underline"
+                            <button className="text-xs text-slate-900 font-semibold hover:underline"
                               onClick={() => updateMutation.mutate({ id: r.id, data: drafts[r.id] ?? {} })}>Save</button>
-                            <button className="text-xs text-surface-400 hover:underline"
+                            <button className="text-xs text-slate-400 hover:underline"
                               onClick={() => { setEditingId(null); setDrafts((d) => { const n = { ...d }; delete n[r.id]; return n; }); }}>✕</button>
                           </>
                         ) : (
                           <>
-                            <button className="text-xs text-surface-500 hover:text-primary-600"
+                            <button className="text-xs text-slate-500 hover:text-slate-900"
                               onClick={() => setEditingId(r.id)} title="Edit row">✎</button>
-                            <button className="text-xs text-violet-500 hover:text-violet-700 disabled:opacity-40"
+                            <button className="text-xs text-slate-400 hover:text-slate-900 disabled:opacity-40"
                               disabled={regenQueued.has(r.id) || !aiReady}
                               onClick={() => handleRegenerate(r.id)}
                               title={aiReady ? "Regenerate AI definition" : "Configure AI setup first"}>✦</button>
@@ -954,7 +949,6 @@ function MetadataGridContent() {
           </table>
         </div>
       </div>
-
     </div>
   );
 }

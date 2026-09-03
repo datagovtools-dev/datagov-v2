@@ -21,6 +21,7 @@ from app.schemas.dpia import (
     PaginatedDPIA, TransitionRequest,
 )
 from app.worker.tasks.notifications import send_workflow_notification
+from app.services.notification_service import notify_approval_requested, notify_approval_completed
 
 router = APIRouter(prefix="/dpia", tags=["dpia"])
 DB = Annotated[AsyncSession, Depends(get_db)]
@@ -275,6 +276,22 @@ async def submit_dpia(
     db.add(AuditLog(user_id=current_user.id, module="dpia", action="submit",
                     entity_type="dpia", entity_id=str(dpia_id)))
     await db.commit()
+
+    if step1 and step1.approver_id:
+        step1_user = await db.get(User, step1.approver_id)
+        if step1_user:
+            await notify_approval_requested(
+                db=db,
+                approver=step1_user,
+                module="dpia",
+                tracking_id=record.tracking_id or str(dpia_id)[:8],
+                entity_id=str(dpia_id),
+                step=1,
+                step_label=_DPIA_STEP_LABELS[1],
+                actor_name=current_user.full_name,
+            )
+            await db.commit()
+
     return await _get_dpia_or_404(dpia_id, db)
 
 
@@ -296,10 +313,18 @@ async def action_dpia_approval(
     if approval.status not in ("pending", "requested"):
         raise HTTPException(status_code=400, detail="Approval step already actioned")
 
+    if approval.approver_id and current_user.id != approval.approver_id and not current_user.is_super_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the designated approver or a Super Admin can approve/reject this step.",
+        )
+
+    approval.approver_id = current_user.id
     approval.status = "approved" if body.action == "approve" else "rejected"
     approval.comments = body.comments
     approval.actioned_at = datetime.now(timezone.utc)
 
+    next_approval = None
     if body.action == "approve":
         next_res = await db.execute(
             select(DPIAApproval).where(
@@ -319,9 +344,54 @@ async def action_dpia_approval(
     db.add(AuditLog(
         user_id=current_user.id, module="dpia", action=f"approval_{body.action}",
         entity_type="dpia", entity_id=str(dpia_id),
-        details={"step": step},
+        details={"step": step, "comments": body.comments},
     ))
     await db.commit()
+
+    if body.action == "approve" and next_approval:
+        next_user = await db.get(User, next_approval.approver_id)
+        if next_user:
+            await notify_approval_requested(
+                db=db,
+                approver=next_user,
+                module="dpia",
+                tracking_id=record.tracking_id or str(dpia_id)[:8],
+                entity_id=str(dpia_id),
+                step=step + 1,
+                step_label=_DPIA_STEP_LABELS.get(step + 1, f"Step {step + 1}"),
+                actor_name=current_user.full_name,
+            )
+            await db.commit()
+    elif body.action == "approve" and not next_approval:
+        creator = await db.get(User, record.created_by)
+        if creator:
+            await notify_approval_completed(
+                db=db,
+                requester_id=creator.id,
+                requester_email=creator.email,
+                module="dpia",
+                tracking_id=record.tracking_id or str(dpia_id)[:8],
+                entity_id=str(dpia_id),
+                status="approved",
+                actor_name=current_user.full_name,
+            )
+            await db.commit()
+    elif body.action == "reject":
+        creator = await db.get(User, record.created_by)
+        if creator:
+            await notify_approval_completed(
+                db=db,
+                requester_id=creator.id,
+                requester_email=creator.email,
+                module="dpia",
+                tracking_id=record.tracking_id or str(dpia_id)[:8],
+                entity_id=str(dpia_id),
+                status="rejected",
+                actor_name=current_user.full_name,
+                comments=body.comments,
+            )
+            await db.commit()
+
     return await _get_dpia_or_404(dpia_id, db)
 
 

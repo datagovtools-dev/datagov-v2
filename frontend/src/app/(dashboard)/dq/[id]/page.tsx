@@ -8,6 +8,8 @@ import { api } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import { toast } from "@/components/ui/Toast";
+import { DetailSkeleton } from "@/components/ui/LoadingState";
 import { formatDate, formatDateTime } from "@/lib/utils";
 
 type DQDetailTab = "score" | "rules" | "findings" | "archive";
@@ -41,15 +43,15 @@ type DQDimension = (typeof DQ_DIMENSIONS)[number];
 
 function ScoreBar({ value }: { value: number }) {
   const color =
-    value >= 90 ? "bg-green-500" : value >= 70 ? "bg-yellow-500" : "bg-red-500";
+    value >= 90 ? "bg-emerald-600" : value >= 70 ? "bg-amber-600" : "bg-rose-600";
   return (
     <div className="flex items-center gap-2">
-      <div className="flex-1 bg-gray-100 rounded-full h-2.5 overflow-hidden">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${value}%` }} />
+      <div className="flex-1 bg-slate-100 rounded-md h-2 overflow-hidden">
+        <div className={`h-full rounded-md transition-all ${color}`} style={{ width: `${value}%` }} />
       </div>
       <span
-        className={`text-xs font-bold w-12 text-right ${
-          value >= 90 ? "text-green-600" : value >= 70 ? "text-yellow-600" : "text-red-600"
+        className={`text-xs font-mono font-bold w-12 text-right tabular-nums ${
+          value >= 90 ? "text-emerald-700" : value >= 70 ? "text-amber-700" : "text-rose-700"
         }`}
       >
         {value.toFixed(1)}%
@@ -65,7 +67,7 @@ function DimLabel({ dim }: { dim: string }) {
     uniqueness: "Uniqueness",
     latency: "Latency",
   };
-  return <span className="text-xs text-gray-400 capitalize mb-1">{labels[dim] ?? dim}</span>;
+  return <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider block mb-1">{labels[dim] ?? dim}</span>;
 }
 
 function ExpandableText({ text, maxLen = 80 }: { text: string; maxLen?: number }) {
@@ -75,7 +77,7 @@ function ExpandableText({ text, maxLen = 80 }: { text: string; maxLen?: number }
     <span>
       {open ? text : `${text.slice(0, maxLen)}…`}
       <button
-        className="ml-1 text-primary-600 hover:underline text-xs inline-flex items-center gap-0.5"
+        className="ml-1 text-slate-700 hover:underline text-xs inline-flex items-center gap-0.5 font-mono"
         onClick={() => setOpen((o) => !o)}
       >
         {open ? <><ChevronUp className="h-3 w-3" />less</> : <><ChevronDown className="h-3 w-3" />more</>}
@@ -126,11 +128,20 @@ export default function DQDetailPage() {
   });
 
   const reviewMutation = useMutation({
-    mutationFn: (payload: { action: string; comments: string }) =>
-      api.post(`/dq/${id}/review`, payload),
-    onSuccess: () => {
+    mutationFn: (payload: { action: string; comments: string }) => {
+      const label = payload.action === "approve" ? "Approving" : payload.action === "reject" ? "Rejecting" : "Requesting revision on";
+      toast.loading(`${label} DQ inspection run...`, { id: "dq-review" });
+      return api.post(`/dq/${id}/review`, payload);
+    },
+    onSuccess: (_, variables) => {
+      const msg = variables.action === "approve" ? "DQ run approved!" : variables.action === "reject" ? "DQ run rejected." : "Revision requested.";
+      toast.success(msg, { id: "dq-review" });
       qc.invalidateQueries({ queryKey: ["dq-run", id] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
       setReviewComment("");
+    },
+    onError: (e: any) => {
+      toast.error(e.message || "Failed to action review", { id: "dq-review" });
     },
   });
 
@@ -144,7 +155,7 @@ export default function DQDetailPage() {
     onSuccess: (data) => router.push(`/dq/${data.id}`),
   });
 
-  if (isLoading) return <div className="text-surface-400 py-10 text-center">Loading…</div>;
+  if (isLoading) return <DetailSkeleton />;
   if (!run) return <div className="text-red-500 py-10 text-center">DQ run not found</div>;
 
   const score = run.overall_score ? parseFloat(run.overall_score) : null;
@@ -175,46 +186,47 @@ export default function DQDetailPage() {
     : run.results;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div className="min-w-0">
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <button
               onClick={() => router.back()}
-              className="text-surface-400 hover:text-surface-600 flex items-center gap-1 text-sm shrink-0"
+              className="text-slate-400 hover:text-slate-700 flex items-center gap-1 text-xs font-mono shrink-0"
             >
-              <ChevronLeft className="h-4 w-4" /> Back
+              <ChevronLeft className="h-3.5 w-3.5" /> Back
             </button>
-            <Badge variant={statusVariant(run.status)}>
+            <Badge variant={statusVariant(run.status)} className="text-[10px]">
               {run.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
             </Badge>
           </div>
-          <h1 className="text-xl font-bold text-surface-800 mt-0.5 truncate">{run.run_name}</h1>
-          <p className="text-sm text-surface-500">
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 mt-1 truncate">{run.run_name}</h1>
+          <p className="text-xs text-slate-500 font-mono">
             {run.dataset_name} · Created {formatDateTime(run.created_at)}
             {run.completed_at && ` · Completed ${formatDateTime(run.completed_at)}`}
           </p>
         </div>
-        <div className="flex gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {run.status === "approved" && !run.gcp_archive && (
-            <Button size="sm" disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate()}>
+            <Button size="sm" className="h-7.5 text-xs font-medium" disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate()}>
               Archive to GCP
             </Button>
           )}
           <Button
             variant="outline"
             size="sm"
+            className="h-7.5 text-xs font-medium"
             disabled={rerunMutation.isPending}
             onClick={() => rerunMutation.mutate()}
           >
-            Re-run
+            Re-run Check
           </Button>
         </div>
       </div>
 
       {/* KPI cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           {
             label: "Overall Score",
@@ -222,55 +234,55 @@ export default function DQDetailPage() {
             color:
               score !== null
                 ? score >= 90
-                  ? "text-green-600"
+                  ? "text-emerald-700"
                   : score >= 70
-                  ? "text-yellow-600"
-                  : "text-red-600"
-                : "text-surface-400",
+                  ? "text-amber-700"
+                  : "text-rose-700"
+                : "text-slate-400",
           },
-          { label: "Total Checks", value: run.total_checks, color: "text-surface-800" },
-          { label: "Passed", value: run.passed_checks, color: "text-green-600" },
-          { label: "Failed", value: run.failed_checks, color: "text-red-500" },
+          { label: "Total Checks", value: run.total_checks, color: "text-slate-900" },
+          { label: "Passed", value: run.passed_checks, color: "text-emerald-700" },
+          { label: "Failed", value: run.failed_checks, color: "text-rose-700" },
         ].map((kpi) => (
-          <div key={kpi.label} className="bg-white rounded-xl border border-surface-200 p-4">
-            <p className="text-xs text-surface-400 mb-1">{kpi.label}</p>
-            <p className={`text-2xl font-bold ${kpi.color}`}>{kpi.value}</p>
+          <div key={kpi.label} className="bg-white rounded-md border border-slate-200 p-3.5 shadow-2xs">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">{kpi.label}</p>
+            <p className={`text-xl font-bold font-mono tabular-nums ${kpi.color}`}>{kpi.value}</p>
           </div>
         ))}
       </div>
 
       {/* Running indicator */}
       {(run.status === "pending" || run.status === "running") && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-center gap-3">
-          <div className="w-5 h-5 rounded-full border-2 border-blue-300 border-t-blue-600 animate-spin flex-shrink-0" />
-          <p className="text-sm text-blue-800 font-medium">
+        <div className="bg-slate-50 border border-slate-200 rounded-md p-3 flex items-center gap-3">
+          <div className="w-4 h-4 rounded-md border-2 border-slate-300 border-t-slate-900 animate-spin flex-shrink-0" />
+          <p className="text-xs text-slate-800 font-mono font-medium">
             {run.status === "pending"
               ? "Run is queued — waiting for worker…"
-              : "Running DQ checks (AI-powered Consistency may take a few minutes) — page auto-refreshes…"}
+              : "Running DQ checks — page auto-refreshes…"}
           </p>
         </div>
       )}
 
       {/* Tabs */}
-      <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
-        <div className="flex border-b border-surface-100 overflow-x-auto">
+      <div className="bg-white rounded-md border border-slate-200 shadow-2xs overflow-hidden">
+        <div className="flex border-b border-slate-200 bg-slate-50/50 overflow-x-auto">
           {(["score", "rules", "findings", "archive"] as DQDetailTab[]).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`px-5 py-3 text-sm font-medium capitalize transition-colors border-b-2 -mb-px whitespace-nowrap ${
+              className={`px-4 py-2.5 text-xs font-mono font-medium capitalize transition-colors border-b-2 -mb-px whitespace-nowrap ${
                 tab === t
-                  ? "border-primary-500 text-primary-600"
-                  : "border-transparent text-surface-500 hover:text-surface-700"
+                  ? "border-slate-900 text-slate-900 bg-white"
+                  : "border-transparent text-slate-500 hover:text-slate-800"
               }`}
             >
               {t}
               {t === "findings" && allFindings.length > 0 && (
                 <span
-                  className={`ml-1 text-xs px-1.5 py-0.5 rounded-full ${
+                  className={`ml-1.5 text-[10px] px-1.5 py-0.2 rounded-md font-mono ${
                     criticalFindings.length
-                      ? "bg-red-100 text-red-600"
-                      : "bg-yellow-100 text-yellow-700"
+                      ? "bg-rose-50 text-rose-700 border border-rose-200"
+                      : "bg-amber-50 text-amber-700 border border-amber-200"
                   }`}
                 >
                   {allFindings.length}
@@ -280,15 +292,15 @@ export default function DQDetailPage() {
           ))}
         </div>
 
-        <div className="p-5">
+        <div className="p-4">
           {/* Score tab — per-column dimension bars */}
           {tab === "score" && (
-            <div className="space-y-5">
+            <div className="space-y-4">
               {Object.entries(byColumn).map(([col, checks]) => (
-                <div key={col} className="space-y-1.5">
-                  <p className="text-sm font-mono font-medium text-gray-700">{col}</p>
+                <div key={col} className="space-y-1.5 p-3 rounded-md border border-slate-100 bg-slate-50/30">
+                  <p className="text-xs font-mono font-semibold text-slate-900">{col}</p>
                   <div
-                    className={`grid gap-4 ${
+                    className={`grid gap-3.5 ${
                       presentDims.length === 4
                         ? "grid-cols-2 lg:grid-cols-4"
                         : presentDims.length === 3
@@ -306,7 +318,7 @@ export default function DQDetailPage() {
                 </div>
               ))}
               {Object.keys(byColumn).length === 0 && (
-                <p className="text-gray-400 text-center py-4">No results yet</p>
+                <p className="text-slate-400 text-xs text-center py-6 font-mono">No results recorded yet.</p>
               )}
             </div>
           )}
@@ -315,13 +327,13 @@ export default function DQDetailPage() {
           {tab === "rules" && (
             <div>
               {/* Dimension filter */}
-              <div className="flex gap-2 mb-4 flex-wrap">
+              <div className="flex gap-1.5 mb-3.5 flex-wrap">
                 <button
                   onClick={() => setDimFilter("")}
-                  className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+                  className={`text-[10px] font-mono px-2.5 py-1 rounded-md border transition-colors ${
                     !dimFilter
-                      ? "bg-primary-600 text-white border-primary-600"
-                      : "text-surface-600 border-surface-300 hover:border-primary-400"
+                      ? "bg-slate-900 text-white border-slate-900 font-semibold"
+                      : "text-slate-600 border-slate-200 hover:bg-slate-50"
                   }`}
                 >
                   All
@@ -330,10 +342,10 @@ export default function DQDetailPage() {
                   <button
                     key={d}
                     onClick={() => setDimFilter(d)}
-                    className={`text-xs px-3 py-1 rounded-full border capitalize transition-colors ${
+                    className={`text-[10px] font-mono px-2.5 py-1 rounded-md border capitalize transition-colors ${
                       dimFilter === d
-                        ? "bg-primary-600 text-white border-primary-600"
-                        : "text-surface-600 border-surface-300 hover:border-primary-400"
+                        ? "bg-slate-900 text-white border-slate-900 font-semibold"
+                        : "text-slate-600 border-slate-200 hover:bg-slate-50"
                     }`}
                   >
                     {d}
@@ -341,9 +353,9 @@ export default function DQDetailPage() {
                 ))}
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm divide-y divide-surface-100">
-                  <thead className="bg-surface-50 text-xs uppercase text-surface-500">
+              <div className="overflow-x-auto rounded-md border border-slate-200">
+                <table className="min-w-full text-xs divide-y divide-slate-100">
+                  <thead className="bg-slate-50 text-[10px] uppercase font-mono text-slate-500 border-b border-slate-200">
                     <tr>
                       <th className="px-3 py-2 text-left">Column</th>
                       <th className="px-3 py-2 text-left">Dimension</th>
@@ -359,56 +371,56 @@ export default function DQDetailPage() {
                       <th className="px-3 py-2 text-left">Status</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-surface-50">
+                  <tbody className="divide-y divide-slate-100">
                     {filteredResults.map((r) => (
-                      <tr key={r.id} className="hover:bg-surface-50">
-                        <td className="px-3 py-2 font-mono text-xs">{r.column_name ?? "—"}</td>
-                        <td className="px-3 py-2 capitalize text-surface-700">{r.check_type}</td>
-                        <td className="px-3 py-2 font-semibold">
+                      <tr key={r.id} className="hover:bg-slate-50">
+                        <td className="px-3 py-2 font-mono text-xs text-slate-900">{r.column_name ?? "—"}</td>
+                        <td className="px-3 py-2 capitalize font-mono text-xs text-slate-700">{r.check_type}</td>
+                        <td className="px-3 py-2 font-mono font-semibold tabular-nums text-slate-900">
                           {r.actual_value ? `${parseFloat(r.actual_value).toFixed(1)}%` : "—"}
                         </td>
-                        <td className="px-3 py-2 text-surface-600 max-w-xs text-xs">
+                        <td className="px-3 py-2 text-slate-600 max-w-xs text-xs">
                           {r.business_rules ? (
                             <ExpandableText text={r.business_rules} />
                           ) : (
-                            <span className="text-surface-300">—</span>
+                            <span className="text-slate-300 font-mono">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 font-mono text-xs max-w-xs">
+                        <td className="px-3 py-2 font-mono text-xs max-w-xs text-slate-700">
                           {r.regex_pattern ? (
                             <ExpandableText text={r.regex_pattern} maxLen={40} />
                           ) : (
-                            <span className="text-surface-300">—</span>
+                            <span className="text-slate-300 font-mono">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-xs text-surface-500">
+                        <td className="px-3 py-2 text-xs font-mono text-slate-500">
                           {r.ai_model ?? "—"}
                         </td>
-                        <td className="px-3 py-2 text-xs text-surface-500">
+                        <td className="px-3 py-2 text-xs font-mono text-slate-500">
                           {r.regex_version ?? "—"}
                         </td>
-                        <td className="px-3 py-2 text-xs text-surface-500">
+                        <td className="px-3 py-2 text-xs font-mono text-slate-500">
                           {r.details?.complexity ? String(r.details.complexity) : "—"}
                         </td>
-                        <td className="px-3 py-2 text-surface-600 max-w-xs text-xs">
+                        <td className="px-3 py-2 text-slate-600 max-w-xs text-xs">
                           {r.details?.reasoning ? (
                             <ExpandableText text={String(r.details.reasoning)} />
                           ) : (
-                            <span className="text-surface-300">—</span>
+                            <span className="text-slate-300 font-mono">—</span>
                           )}
                         </td>
-                        <td className="px-3 py-2 text-surface-500">
+                        <td className="px-3 py-2 text-slate-500 font-mono tabular-nums">
                           {r.row_count?.toLocaleString()}
                         </td>
-                        <td className="px-3 py-2 text-red-500">{r.failed_count ?? 0}</td>
+                        <td className="px-3 py-2 text-rose-700 font-mono tabular-nums font-semibold">{r.failed_count ?? 0}</td>
                         <td className="px-3 py-2">
                           <span
-                            className={`text-xs font-medium px-2 py-0.5 rounded ${
+                            className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-md border ${
                               r.status === "pass"
-                                ? "bg-green-100 text-green-700"
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
                                 : r.status === "fail"
-                                ? "bg-red-100 text-red-700"
-                                : "bg-yellow-100 text-yellow-700"
+                                ? "bg-rose-50 text-rose-700 border-rose-200"
+                                : "bg-amber-50 text-amber-700 border-amber-200"
                             }`}
                           >
                             {r.status}
@@ -424,29 +436,29 @@ export default function DQDetailPage() {
 
           {/* Findings tab */}
           {tab === "findings" && (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {allFindings.length === 0 ? (
-                <p className="text-gray-400 text-center py-6">No findings — all checks passed ✓</p>
+                <p className="text-slate-400 text-xs text-center py-6 font-mono">No findings — all checks passed ✓</p>
               ) : (
                 allFindings.map((f) => (
                   <div
                     key={f.id}
-                    className={`p-3 rounded-lg border-l-4 ${
+                    className={`p-3 rounded-md border ${
                       f.severity === "critical"
-                        ? "bg-red-50 border-red-500"
-                        : "bg-yellow-50 border-yellow-400"
+                        ? "bg-rose-50/50 border-rose-200"
+                        : "bg-amber-50/50 border-amber-200"
                     }`}
                   >
                     <span
-                      className={`text-xs font-bold uppercase ${
-                        f.severity === "critical" ? "text-red-600" : "text-yellow-700"
+                      className={`text-[10px] font-mono font-bold uppercase tracking-wider ${
+                        f.severity === "critical" ? "text-rose-700" : "text-amber-800"
                       }`}
                     >
                       {f.severity}
                     </span>
-                    <p className="text-sm text-gray-800 mt-0.5">{f.description}</p>
+                    <p className="text-xs text-slate-900 mt-1">{f.description}</p>
                     {f.recommendation && (
-                      <p className="text-xs text-gray-600 mt-1">→ {f.recommendation}</p>
+                      <p className="text-[11px] text-slate-600 mt-1 font-mono">→ {f.recommendation}</p>
                     )}
                   </div>
                 ))
@@ -456,46 +468,48 @@ export default function DQDetailPage() {
 
           {/* Archive tab */}
           {tab === "archive" && (
-            <div className="space-y-4">
+            <div className="space-y-3">
               {run.gcp_archive ? (
                 <div className="space-y-3">
                   <div
-                    className={`px-3 py-2 rounded text-sm font-medium ${
+                    className={`px-3 py-2 rounded-md border text-xs font-mono font-medium ${
                       run.gcp_archive.archive_status === "completed"
-                        ? "bg-green-50 text-green-700"
-                        : "bg-yellow-50 text-yellow-700"
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        : "bg-amber-50 text-amber-700 border-amber-200"
                     }`}
                   >
                     Archive status: {run.gcp_archive.archive_status}
                   </div>
-                  <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <dl className="grid grid-cols-2 gap-3 text-xs">
                     <div>
-                      <dt className="text-gray-500">GCS Path</dt>
-                      <dd className="font-mono text-xs mt-0.5">{run.gcp_archive.gcs_report_path}</dd>
+                      <dt className="text-slate-500 font-mono">GCS Path</dt>
+                      <dd className="font-mono text-slate-900 mt-0.5">{run.gcp_archive.gcs_report_path}</dd>
                     </div>
                     <div>
-                      <dt className="text-gray-500">BigQuery</dt>
-                      <dd className="font-mono text-xs mt-0.5">
+                      <dt className="text-slate-500 font-mono">BigQuery</dt>
+                      <dd className="font-mono text-slate-900 mt-0.5">
                         {run.gcp_archive.bq_dataset}.{run.gcp_archive.bq_table}
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-gray-500">Archived At</dt>
-                      <dd className="mt-0.5">{formatDateTime(run.gcp_archive.archived_at)}</dd>
+                      <dt className="text-slate-500 font-mono">Archived At</dt>
+                      <dd className="font-mono text-slate-900 mt-0.5">{formatDateTime(run.gcp_archive.archived_at)}</dd>
                     </div>
                   </dl>
                   {run.gcp_archive.error_message && (
-                    <p className="text-sm text-red-600 bg-red-50 p-2 rounded">
+                    <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 p-2 rounded-md font-mono">
                       {run.gcp_archive.error_message}
                     </p>
                   )}
                 </div>
               ) : run.status === "approved" ? (
-                <div className="text-center py-4 space-y-3">
-                  <p className="text-gray-600 text-sm">
+                <div className="text-center py-4 space-y-2">
+                  <p className="text-slate-600 text-xs font-mono">
                     This run is approved but not yet archived to GCP.
                   </p>
                   <Button
+                    size="sm"
+                    className="h-7.5 text-xs font-medium"
                     onClick={() => archiveMutation.mutate()}
                     disabled={archiveMutation.isPending}
                   >
@@ -503,7 +517,7 @@ export default function DQDetailPage() {
                   </Button>
                 </div>
               ) : (
-                <p className="text-gray-400 text-center py-4">
+                <p className="text-slate-400 text-xs font-mono text-center py-4">
                   Archive is available after the run is approved.
                 </p>
               )}
@@ -513,17 +527,19 @@ export default function DQDetailPage() {
 
         {/* Governance review panel */}
         {canReview && (
-          <div className="px-5 pb-5 pt-3 border-t border-surface-100 space-y-3">
-            <p className="text-sm font-medium text-surface-700">Governance Review</p>
+          <div className="px-4 pb-4 pt-3 border-t border-slate-200 bg-slate-50/40 space-y-2.5">
+            <p className="text-xs font-semibold text-slate-900 font-mono uppercase tracking-wider">Governance Review</p>
             <Input
               placeholder="Review comment (optional)…"
               value={reviewComment}
               onChange={(e) => setReviewComment(e.target.value)}
+              className="h-8 text-xs font-mono"
             />
             <div className="flex gap-2 justify-end">
               <Button
                 variant="outline"
                 size="sm"
+                className="h-7 text-xs font-medium"
                 disabled={reviewMutation.isPending}
                 onClick={() =>
                   reviewMutation.mutate({ action: "request_revision", comments: reviewComment })
@@ -535,7 +551,7 @@ export default function DQDetailPage() {
                 variant="outline"
                 size="sm"
                 disabled={reviewMutation.isPending}
-                className="text-red-700 border-red-300 hover:bg-red-50"
+                className="h-7 text-xs font-medium text-rose-700 border-rose-200 hover:bg-rose-50"
                 onClick={() =>
                   reviewMutation.mutate({ action: "reject", comments: reviewComment })
                 }
@@ -544,6 +560,7 @@ export default function DQDetailPage() {
               </Button>
               <Button
                 size="sm"
+                className="h-7 text-xs font-medium"
                 disabled={reviewMutation.isPending}
                 onClick={() =>
                   reviewMutation.mutate({ action: "approve", comments: reviewComment })
@@ -564,20 +581,17 @@ type BadgeVariant =
   | "success"
   | "warning"
   | "danger"
-  | "approved"
-  | "rejected"
-  | "draft"
-  | "done"
-  | "in-review";
+  | "neutral"
+  | "info";
 
 function statusVariant(status: string): BadgeVariant {
   const map: Record<string, BadgeVariant> = {
     pending: "default",
     running: "warning",
-    completed: "in-review",
-    under_review: "in-review",
-    approved: "approved",
-    rejected: "rejected",
+    completed: "info",
+    under_review: "info",
+    approved: "success",
+    rejected: "danger",
     failed: "danger",
   };
   return map[status] ?? "default";

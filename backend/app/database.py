@@ -1,23 +1,48 @@
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, MappedColumn
 from sqlalchemy import MetaData
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
 from app.config import get_settings
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+@compiles(UUID, "sqlite")
+def compile_uuid_sqlite(type_, compiler, **kw):
+    return "VARCHAR(36)"
+
+@compiles(ARRAY, "sqlite")
+def compile_array_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+@compiles(INET, "sqlite")
+def compile_inet_sqlite(type_, compiler, **kw):
+    return "VARCHAR(45)"
 
 settings = get_settings()
 
 engine_options = {
-    "pool_pre_ping": True,
     "echo": settings.debug,
 }
 
-if settings.database_null_pool:
-    engine_options["poolclass"] = NullPool
-else:
-    engine_options["pool_size"] = 10
-    engine_options["max_overflow"] = 20
+db_url = settings.database_url.replace("@localhost:", "@127.0.0.1:")
 
-engine = create_async_engine(settings.database_url, **engine_options)
+if "sqlite" in db_url:
+    engine_options["connect_args"] = {"check_same_thread": False}
+    if ":memory:" in db_url:
+        engine_options["poolclass"] = StaticPool
+else:
+    engine_options["pool_pre_ping"] = True
+    if settings.database_null_pool:
+        engine_options["poolclass"] = NullPool
+    else:
+        engine_options["pool_size"] = 10
+        engine_options["max_overflow"] = 20
+
+engine = create_async_engine(db_url, **engine_options)
 
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False

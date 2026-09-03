@@ -4,31 +4,20 @@
 
 @layer base {
   :root {
-    --background: 248 250 252;      /* surface-50 */
-    --foreground: 15 23 42;         /* surface-900 */
+    --background: 248 250 252;      /* #F8FAFC slate-50 */
+    --foreground: 15 23 42;          /* #0F172A slate-900 */
     --card: 255 255 255;
     --card-foreground: 15 23 42;
-    --primary: 99 102 241;          /* primary-500 */
+    --primary: 15 23 42;            /* #0F172A slate-900 */
     --primary-foreground: 255 255 255;
-    --muted: 241 245 249;           /* surface-100 */
-    --muted-foreground: 100 116 139;
-    --border: 226 232 240;          /* surface-200 */
+    --muted: 241 245 249;           /* #F1F5F9 slate-100 */
+    --muted-foreground: 100 116 139; /* #64748B slate-500 */
+    --border: 226 232 240;          /* #E2E8F0 slate-200 */
     --input: 226 232 240;
-    --ring: 99 102 241;
-    --radius: 0.5rem;
-    --sidebar-width: 17rem;
-    --topnav-height: 4rem;
-  }
-
-  .dark {
-    --background: 15 23 42;
-    --foreground: 248 250 252;
-    --card: 30 41 59;
-    --card-foreground: 248 250 252;
-    --muted: 51 65 85;
-    --muted-foreground: 148 163 184;
-    --border: 51 65 85;
-    --input: 51 65 85;
+    --ring: 15 23 42;               /* #0F172A slate-900 */
+    --radius: 0.375rem;             /* 6px strict rounded-md token */
+    --sidebar-width: 16rem;
+    --topnav-height: 3.5rem;
   }
 
   * {
@@ -36,36 +25,92 @@
   }
 
   body {
-    @apply bg-surface-50 text-surface-900 font-sans antialiased;
+    background-color: #F8FAFC;
+    min-height: 100vh;
+    @apply text-slate-900 font-sans antialiased selection:bg-slate-900 selection:text-white;
   }
 
-  h1 { @apply text-2xl font-semibold tracking-tight; }
-  h2 { @apply text-xl font-semibold tracking-tight; }
-  h3 { @apply text-lg font-medium; }
-  h4 { @apply text-base font-medium; }
+  h1 { @apply text-xl sm:text-2xl font-bold tracking-tight text-slate-900; }
+  h2 { @apply text-lg sm:text-xl font-bold tracking-tight text-slate-900; }
+  h3 { @apply text-sm sm:text-base font-semibold text-slate-900; }
+  h4 { @apply text-xs font-semibold text-slate-900; }
 }
 
 @layer components {
-  /* Status badge base */
+  /* Status badge base: strict rounded-md, muted, compact */
   .badge {
-    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium tracking-tight border tabular-nums transition-colors;
   }
 
-  /* Form input base */
+  /* Form input base: strict rounded-md, compact, crisp border */
   .input-base {
-    @apply flex w-full rounded-md border border-surface-200 bg-white px-3 py-2 text-sm
-           placeholder:text-surface-300
-           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
-           disabled:cursor-not-allowed disabled:opacity-50;
+    @apply flex w-full rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs sm:text-sm text-slate-900
+           placeholder:text-slate-400 shadow-2xs transition-colors
+           focus:outline-none focus:ring-1 focus:ring-slate-900 focus:border-slate-900
+           disabled:cursor-not-allowed disabled:opacity-50 disabled:bg-slate-50;
   }
 
-  /* Card container */
+  /* Compact enterprise card */
   .card {
-    @apply rounded-lg border border-surface-200 bg-white shadow-card p-4;
+    @apply rounded-md border border-slate-200 bg-white p-4 shadow-2xs transition-colors;
   }
 
-  /* Page header */
+  /* Page header with clean bottom border */
   .page-header {
-    @apply flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-surface-200 mb-6;
+    @apply flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-200 mb-5;
   }
+
+  /* Modern custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94A3B8;
+  }
+}
+
+/* Functional Motion Loading & Progress Keyframes */
+@keyframes energyBeam {
+  0% { transform: translateX(-100%); }
+  50% { transform: translateX(0%); }
+  100% { transform: translateX(100%); }
+}
+
+@keyframes orbitSpin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+@keyframes pulseGlowRing {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.08); opacity: 0.4; }
+}
+
+@keyframes springPop {
+  0% { transform: scale(0.92); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.animate-orbit-fast {
+  animation: orbitSpin 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.animate-orbit-slow {
+  animation: orbitSpin 3s linear infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulseGlowRing 2s ease-in-out infinite;
+}
+
+.animate-spring-pop {
+  animation: springPop 0.2s ease-out forwards;
 }

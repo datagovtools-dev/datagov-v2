@@ -1,9 +1,20 @@
-# Database Dump
+# Database Dump & Datasets
 
-`ag_db_dump.sql` is a PostgreSQL dump of the AI Governance Tools database, refreshed from the `datagov-tools` Supabase project.
+This directory contains database dumps and ready-to-run database files for AI Governance Tools:
 
-## Restore
+1. `datagov.db` / `datagov_sqlite_dump.sql`: SQLite database and SQL dump for native local execution (out of the box, no Docker required).
+2. `ag_db_dump.sql`: PostgreSQL dump for Docker-based / Supabase deployments.
 
+## Restore & Usage
+
+### SQLite (Native Local Run)
+The SQLite database `datagov.db` is already pre-configured and copied into `backend/datagov.db`. If you need to restore it from the SQL dump:
+```bash
+# In backend directory
+sqlite3 datagov.db < ../database/datagov_sqlite_dump.sql
+```
+
+### PostgreSQL (Docker Run)
 ```bash
 # From inside the project folder (with Docker running):
 docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Boolean, DateTime, SmallInteger, Text, ForeignKey, func
+from sqlalchemy import String, Boolean, DateTime, SmallInteger, Integer, Text, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from app.database import Base
@@ -33,9 +33,10 @@ class User(Base):
 class Role(Base):
     __tablename__ = "roles"
 
-    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    permissions: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user_roles: Mapped[list["UserProjectRole"]] = relationship(back_populates="role")

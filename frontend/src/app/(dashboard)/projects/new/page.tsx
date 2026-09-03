@@ -10,7 +10,8 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { UserCombobox } from "@/components/ui/UserCombobox";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
+import { toast } from "@/components/ui/Toast";
 
 interface UserOption { id: string; full_name: string; email: string }
 
@@ -53,6 +54,7 @@ export default function NewProjectPage() {
 
   const create = useMutation({
     mutationFn: () => {
+      toast.loading("Registering data asset...", { id: "create-project" });
       const payload = {
         project_code: form.project_code || null,
         project_name: form.project_name,
@@ -88,9 +90,13 @@ export default function NewProjectPage() {
           });
         }
       }
+      toast.success("Data asset registered successfully!", { id: "create-project" });
       router.push("/projects");
     },
-    onError: (e: any) => setServerError(e.message),
+    onError: (e: any) => {
+      toast.error(e.message || "Failed to register data asset", { id: "create-project" });
+      setServerError(e.message);
+    },
   });
 
   function set(key: string, val: string) {
@@ -115,132 +121,237 @@ export default function NewProjectPage() {
   const userOptions = users.map(u => ({ value: u.id, label: u.full_name, sublabel: u.email }));
 
   return (
-    <div className="max-w-3xl">
-      <div className="flex items-center gap-3 mb-6">
-        <Link href="/projects" className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-surface-100">
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center gap-3 pb-3 border-b border-slate-200">
+        <Link
+          href="/projects"
+          className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-200 hover:bg-slate-100 shrink-0 text-slate-600"
+        >
           <ArrowLeft className="h-4 w-4" />
         </Link>
         <div>
-          <h1>New Project</h1>
-          <p className="text-sm text-surface-500 mt-0.5">Fill in the project details below</p>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">Register New Data Asset</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Configure project identity, classification, accountable stewards, and delivery team
+          </p>
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-5">
+      <form onSubmit={handleSubmit} className="space-y-4">
         <Card>
-          <CardHeader><CardTitle>Basic Information</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input label="Project ID" value={form.project_code}
-              onChange={e => set("project_code", e.target.value)}
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Asset Identity & Scope
+            </CardTitle>
+            <CardDescription className="text-xs text-slate-500">Core identifiers and business domain categorization</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+            <Input
+              label="Project ID / Code"
+              value={form.project_code}
+              onChange={(e) => set("project_code", e.target.value)}
               placeholder="e.g. PRJ-2026-001"
-              hint="Unique identifier from BDP and Finance Team" />
+              hint="Unique identifier from BDP & Finance Team"
+              className="h-8 text-xs font-mono"
+            />
             <div className="hidden md:block" />
-            <Input label="Project Name" value={form.project_name}
-              onChange={e => set("project_name", e.target.value)} required error={errors.project_name} />
-            <Input label="Customer / Client Name" value={form.customer_name}
-              onChange={e => set("customer_name", e.target.value)} required error={errors.customer_name} />
-            <Input label="Line of Business" value={form.line_of_business}
-              onChange={e => set("line_of_business", e.target.value)} placeholder="e.g. Retail Banking" />
+            <Input
+              label="Project / Asset Name"
+              value={form.project_name}
+              onChange={(e) => set("project_name", e.target.value)}
+              required
+              error={errors.project_name}
+              placeholder="e.g. Customer 360 Golden Record"
+              className="h-8 text-xs"
+            />
+            <Input
+              label="Customer / Client Name"
+              value={form.customer_name}
+              onChange={(e) => set("customer_name", e.target.value)}
+              required
+              error={errors.customer_name}
+              placeholder="e.g. PT Bank Central Asia"
+              className="h-8 text-xs"
+            />
+            <Input
+              label="Line of Business"
+              value={form.line_of_business}
+              onChange={(e) => set("line_of_business", e.target.value)}
+              placeholder="e.g. Retail Banking & Wealth Management"
+              className="h-8 text-xs"
+            />
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-surface-700">Project Category <span className="text-red-500">*</span></label>
-              <Select value={form.project_category} onValueChange={v => set("project_category", v)}>
-                <SelectTrigger error={!!errors.project_category}><SelectValue placeholder="Select category…" /></SelectTrigger>
+              <label className="text-xs font-semibold text-slate-700">
+                Project Category <span className="text-rose-500">*</span>
+              </label>
+              <Select value={form.project_category} onValueChange={(v) => set("project_category", v)}>
+                <SelectTrigger className="h-8 text-xs" error={!!errors.project_category}>
+                  <SelectValue placeholder="Select category..." />
+                </SelectTrigger>
                 <SelectContent>
-                  {CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                  {CATEGORIES.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
-              {errors.project_category && <p className="text-xs text-red-500">{errors.project_category}</p>}
+              {errors.project_category && (
+                <p className="text-[11px] font-medium text-rose-600 font-mono">{errors.project_category}</p>
+              )}
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-surface-700">Project Year</label>
-              <Select value={form.project_year} onValueChange={v => set("project_year", v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <label className="text-xs font-semibold text-slate-700">Project Year</label>
+              <Select value={form.project_year} onValueChange={(v) => set("project_year", v)}>
+                <SelectTrigger className="h-8 text-xs font-mono">
+                  <SelectValue />
+                </SelectTrigger>
                 <SelectContent>
-                  {YEARS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}
+                  {YEARS.map((y) => (
+                    <SelectItem key={y} value={String(y)}>
+                      {y}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-sm font-medium text-surface-700">Monetized Project?</label>
-              <Select value={form.is_monetized} onValueChange={v => set("is_monetized", v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+              <label className="text-xs font-semibold text-slate-700">Monetization Status</label>
+              <Select value={form.is_monetized} onValueChange={(v) => set("is_monetized", v)}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="false">No</SelectItem>
-                  <SelectItem value="true">Yes</SelectItem>
+                  <SelectItem value="false">Internal Governance</SelectItem>
+                  <SelectItem value="true">Monetized Commercial Asset</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <Input label="Start Date" type="date" value={form.start_date}
-              onChange={e => set("start_date", e.target.value)} />
-            <Input label="End Date" type="date" value={form.end_date}
-              onChange={e => set("end_date", e.target.value)} />
-            <div className="md:col-span-2">
-              <label className="text-sm font-medium text-surface-700 block mb-1">Use Case / Description</label>
-              <textarea className="input-base min-h-[80px] resize-y w-full"
-                value={form.use_case} onChange={e => set("use_case", e.target.value)}
-                placeholder="Brief description of this governance project…" />
+            <Input
+              label="Start Date"
+              type="date"
+              value={form.start_date}
+              onChange={(e) => set("start_date", e.target.value)}
+              className="h-8 text-xs font-mono"
+            />
+            <Input
+              label="End Date"
+              type="date"
+              value={form.end_date}
+              onChange={(e) => set("end_date", e.target.value)}
+              className="h-8 text-xs font-mono"
+            />
+            <div className="md:col-span-2 lg:col-span-3 flex flex-col gap-1">
+              <label className="text-xs font-semibold text-slate-700">Use Case & Governance Description</label>
+              <textarea
+                className="input-base min-h-[70px] resize-y w-full text-xs font-sans"
+                value={form.use_case}
+                onChange={(e) => set("use_case", e.target.value)}
+                placeholder="Describe business purpose, target consumers, and data architecture..."
+              />
             </div>
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Project Team</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <UserCombobox label="Subject Matter Expert (SME)" options={userOptions} value={form.sme_id}               onChange={v => set("sme_id", v)} />
-            <UserCombobox label="Delivery Manager"        options={userOptions} value={form.delivery_manager_id}        onChange={v => set("delivery_manager_id", v)} />
-            <UserCombobox label="Project Manager"         options={userOptions} value={form.project_manager_id}         onChange={v => set("project_manager_id", v)} />
-            <UserCombobox label="Data Governance Officer" options={userOptions} value={form.dgo_id}                     onChange={v => set("dgo_id", v)} />
-            <UserCombobox label="Metadata Officer"        options={userOptions} value={form.metadata_officer_id}        onChange={v => set("metadata_officer_id", v)} />
-            <UserCombobox label="DQ Officer"              options={userOptions} value={form.dq_officer_id}              onChange={v => set("dq_officer_id", v)} />
-            <UserCombobox label="PIC Data Compliance"     options={userOptions} value={form.pic_data_compliance_id}     onChange={v => set("pic_data_compliance_id", v)} />
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Delivery & Governance Team
+            </CardTitle>
+            <CardDescription className="text-xs text-slate-500">Assign responsible officers and technical contacts</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+            <UserCombobox label="Subject Matter Expert (SME)" options={userOptions} value={form.sme_id} onChange={(v) => set("sme_id", v)} />
+            <UserCombobox label="Delivery Manager" options={userOptions} value={form.delivery_manager_id} onChange={(v) => set("delivery_manager_id", v)} />
+            <UserCombobox label="Project Manager" options={userOptions} value={form.project_manager_id} onChange={(v) => set("project_manager_id", v)} />
+            <UserCombobox label="Data Governance Officer (DGO)" options={userOptions} value={form.dgo_id} onChange={(v) => set("dgo_id", v)} />
+            <UserCombobox label="Metadata Officer" options={userOptions} value={form.metadata_officer_id} onChange={(v) => set("metadata_officer_id", v)} />
+            <UserCombobox label="Data Quality Officer (DQO)" options={userOptions} value={form.dq_officer_id} onChange={(v) => set("dq_officer_id", v)} />
+            <UserCombobox label="PIC Data Compliance" options={userOptions} value={form.pic_data_compliance_id} onChange={(v) => set("pic_data_compliance_id", v)} />
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader><CardTitle>Data Steward &amp; Data Owner</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium text-surface-700">Data Steward</p>
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Accountable Stewardship & Ownership
+            </CardTitle>
+            <CardDescription className="text-xs text-slate-500">Formal business owners designated under data governance policy</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-5">
+            <div className="flex flex-col gap-2.5 p-3.5 rounded-md border border-slate-200 bg-slate-50/50">
+              <span className="text-xs font-semibold font-mono uppercase tracking-wider text-slate-700">Lead Business Steward</span>
               <Input
                 label="Full Name"
                 value={ownerForms.lead_business_steward.full_name}
-                onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, full_name: e.target.value } }))}
+                onChange={(e) =>
+                  setOwnerForms((f) => ({
+                    ...f,
+                    lead_business_steward: { ...f.lead_business_steward, full_name: e.target.value },
+                  }))
+                }
                 placeholder="e.g. John Doe"
+                className="h-8 text-xs"
               />
               <Input
                 label="Email Address"
                 type="email"
                 value={ownerForms.lead_business_steward.email}
-                onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, email: e.target.value } }))}
+                onChange={(e) =>
+                  setOwnerForms((f) => ({
+                    ...f,
+                    lead_business_steward: { ...f.lead_business_steward, email: e.target.value },
+                  }))
+                }
                 placeholder="e.g. john.doe@company.com"
+                className="h-8 text-xs font-mono"
               />
             </div>
-            <div className="flex flex-col gap-2">
-              <p className="text-sm font-medium text-surface-700">Data Owner</p>
+            <div className="flex flex-col gap-2.5 p-3.5 rounded-md border border-slate-200 bg-slate-50/50">
+              <span className="text-xs font-semibold font-mono uppercase tracking-wider text-slate-700">Data Owner</span>
               <Input
                 label="Full Name"
                 value={ownerForms.data_owner.full_name}
-                onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, full_name: e.target.value } }))}
+                onChange={(e) =>
+                  setOwnerForms((f) => ({
+                    ...f,
+                    data_owner: { ...f.data_owner, full_name: e.target.value },
+                  }))
+                }
                 placeholder="e.g. Jane Smith"
+                className="h-8 text-xs"
               />
               <Input
                 label="Email Address"
                 type="email"
                 value={ownerForms.data_owner.email}
-                onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, email: e.target.value } }))}
+                onChange={(e) =>
+                  setOwnerForms((f) => ({
+                    ...f,
+                    data_owner: { ...f.data_owner, email: e.target.value },
+                  }))
+                }
                 placeholder="e.g. jane.smith@company.com"
+                className="h-8 text-xs font-mono"
               />
             </div>
           </CardContent>
         </Card>
 
         {serverError && (
-          <p className="rounded-md bg-red-50 border border-red-200 px-4 py-2 text-sm text-red-600">{serverError}</p>
+          <div className="rounded-md bg-rose-50 border border-rose-200 p-3 text-xs font-mono text-rose-700">
+            {serverError}
+          </div>
         )}
 
-        <div className="flex justify-end gap-3">
-          <Button variant="secondary" type="button" onClick={() => router.back()}>Cancel</Button>
-          <Button type="submit" loading={create.isPending}>Create Project</Button>
+        <div className="flex items-center justify-end gap-2.5 pt-1">
+          <Button variant="outline" size="sm" type="button" className="h-8 text-xs" onClick={() => router.back()}>
+            Cancel
+          </Button>
+          <Button size="sm" type="submit" loading={create.isPending} className="h-8 text-xs font-medium">
+            Create Data Asset
+          </Button>
         </div>
       </form>
     </div>

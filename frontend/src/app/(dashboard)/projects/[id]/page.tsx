@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/Input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { UserCombobox } from "@/components/ui/UserCombobox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { toast } from "@/components/ui/Toast";
+import { DetailSkeleton } from "@/components/ui/LoadingState";
 import {
   ProjectBasicInformationContent,
   ProjectOwnerStewardContent,
@@ -173,7 +175,7 @@ export default function ProjectDetailPage() {
     onError: (e: any) => setServerError(e.message),
   });
 
-  if (isLoading) return <div className="py-20 text-center text-surface-400">Loading…</div>;
+  if (isLoading) return <DetailSkeleton />;
   if (!project) return <div className="py-20 text-center text-surface-400">Project not found.</div>;
 
   function userName(uid: string | null) {
@@ -262,37 +264,43 @@ export default function ProjectDetailPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-start gap-3 mb-6">
-        <Link href="/projects" className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-surface-100 shrink-0 mt-0.5">
+      <div className="flex items-start gap-3 pb-3 border-b border-slate-200">
+        <Link href="/projects" className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-200 hover:bg-slate-100 shrink-0 mt-0.5 text-slate-600">
           <ArrowLeft className="h-4 w-4" />
         </Link>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h1 className="truncate">{project.project_name}</h1>
+                <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 truncate">{project.project_name}</h1>
                 {project.project_code && (
-                  <span className="shrink-0 text-sm font-mono font-medium text-primary-600 bg-primary-50 border border-primary-200 rounded px-2 py-0.5">
+                  <span className="shrink-0 text-xs font-mono font-medium text-slate-700 bg-slate-100 border border-slate-200 rounded-md px-2 py-0.5">
                     {project.project_code}
                   </span>
                 )}
               </div>
-              <p className="text-sm text-surface-500 mt-0.5">
+              <p className="text-xs text-slate-500 font-mono mt-0.5">
                 Created {formatDate(project.created_at)} · Last updated {formatDate(project.updated_at)}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <Button variant="outline" size="sm" onClick={handleExportPDF}>
-                <Download className="h-4 w-4 mr-1" /> Export PDF
+              <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={handleExportPDF}>
+                <Download className="h-3.5 w-3.5 mr-1" /> Export PDF
               </Button>
               {!editing ? (
-                <Button variant="outline" onClick={startEdit}><Pencil className="h-4 w-4 mr-1" /> Edit</Button>
+                <Button size="sm" className="h-7.5 text-xs font-medium" onClick={startEdit}>
+                  <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+                </Button>
               ) : (
                 <>
-                  <Button variant="secondary" onClick={() => { setEditing(false); setTeamErrors({}); setServerError(""); }}><X className="h-4 w-4 mr-1" /> Cancel</Button>
-                  <Button onClick={validateAndSave} loading={update.isPending}><Save className="h-4 w-4 mr-1" /> Save</Button>
+                  <Button variant="outline" size="sm" className="h-7.5 text-xs" onClick={() => { setEditing(false); setTeamErrors({}); setServerError(""); }}>
+                    <X className="h-3.5 w-3.5 mr-1" /> Cancel
+                  </Button>
+                  <Button size="sm" className="h-7.5 text-xs font-medium" onClick={validateAndSave} loading={update.isPending}>
+                    <Save className="h-3.5 w-3.5 mr-1" /> Save
+                  </Button>
                 </>
               )}
             </div>
@@ -300,11 +308,15 @@ export default function ProjectDetailPage() {
         </div>
       </div>
 
-      <div className="space-y-5">
+      <div className="space-y-4">
         {/* Basic Info */}
         <Card>
-          <CardHeader><CardTitle>Basic Information</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Basic Information
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-3.5">
             {editing ? (
               <>
                 <Input label="Project ID" value={form.project_code} onChange={e => set("project_code", e.target.value)}
@@ -314,34 +326,34 @@ export default function ProjectDetailPage() {
                 <Input label="Customer / Client Name" value={form.customer_name} onChange={e => set("customer_name", e.target.value)} required />
                 <Input label="Line of Business" value={form.line_of_business} onChange={e => set("line_of_business", e.target.value)} placeholder="e.g. Retail Banking" />
                 <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-surface-700">Project Category</label>
+                  <label className="text-xs font-semibold text-slate-700">Project Category</label>
                   <Select value={form.project_category} onValueChange={v => set("project_category", v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>{CATEGORIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-surface-700">Project Year</label>
+                  <label className="text-xs font-semibold text-slate-700">Project Year</label>
                   <Select value={form.project_year} onValueChange={v => set("project_year", v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>{YEARS.map(y => <SelectItem key={y} value={String(y)}>{y}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-surface-700">Monetized Project?</label>
+                  <label className="text-xs font-semibold text-slate-700">Monetized Project?</label>
                   <Select value={form.is_monetized} onValueChange={v => set("is_monetized", v)}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="false">No</SelectItem>
                       <SelectItem value="true">Yes</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
-                <Input label="Start Date" type="date" value={form.start_date} onChange={e => set("start_date", e.target.value)} />
-                <Input label="End Date" type="date" value={form.end_date} onChange={e => set("end_date", e.target.value)} />
+                <Input label="Start Date" type="date" value={form.start_date} onChange={e => set("start_date", e.target.value)} className="h-8 text-xs font-mono" />
+                <Input label="End Date" type="date" value={form.end_date} onChange={e => set("end_date", e.target.value)} className="h-8 text-xs font-mono" />
                 <div className="md:col-span-2">
-                  <label className="text-sm font-medium text-surface-700 block mb-1">Use Case / Description</label>
-                  <textarea className="input-base min-h-[80px] resize-y w-full" value={form.use_case}
+                  <label className="text-xs font-semibold text-slate-700 block mb-1">Use Case / Description</label>
+                  <textarea className="input-base min-h-[70px] resize-y w-full text-xs font-sans" value={form.use_case}
                     onChange={e => set("use_case", e.target.value)} placeholder="Brief description…" />
                 </div>
               </>
@@ -353,8 +365,12 @@ export default function ProjectDetailPage() {
 
         {/* Project Team */}
         <Card>
-          <CardHeader><CardTitle>Project Team</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Project Team
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-3.5">
             {editing ? (
               <>
                 <UserCombobox label="Subject Matter Expert (SME)" required options={userOptions} value={form.sme_id}                onChange={v => set("sme_id", v)}                error={teamErrors.sme_id} />
@@ -372,54 +388,62 @@ export default function ProjectDetailPage() {
         </Card>
 
         {/* Data Steward & Data Owner */}
-            <Card>
-              <CardHeader><CardTitle>Data Steward &amp; Data Owner</CardTitle></CardHeader>
-              <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {editing ? (
-                  <>
-                    {/* Data Steward */}
-                    <div className="flex flex-col gap-2">
-                      <p className="text-sm font-medium text-surface-700">Data Steward</p>
-                      <Input
-                        label="Full Name"
-                        value={ownerForms.lead_business_steward.full_name}
-                        onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, full_name: e.target.value } }))}
-                        placeholder="e.g. John Doe"
-                      />
-                      <Input
-                        label="Email Address"
-                        type="email"
-                        value={ownerForms.lead_business_steward.email}
-                        onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, email: e.target.value } }))}
-                        placeholder="e.g. john.doe@company.com"
-                      />
-                    </div>
-                    {/* Data Owner */}
-                    <div className="flex flex-col gap-2">
-                      <p className="text-sm font-medium text-surface-700">Data Owner</p>
-                      <Input
-                        label="Full Name"
-                        value={ownerForms.data_owner.full_name}
-                        onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, full_name: e.target.value } }))}
-                        placeholder="e.g. Jane Smith"
-                      />
-                      <Input
-                        label="Email Address"
-                        type="email"
-                        value={ownerForms.data_owner.email}
-                        onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, email: e.target.value } }))}
-                        placeholder="e.g. jane.smith@company.com"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <ProjectOwnerStewardContent owners={owners} />
-                )}
-              </CardContent>
-            </Card>
+        <Card>
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Data Steward &amp; Data Owner
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-5">
+            {editing ? (
+              <>
+                {/* Data Steward */}
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-semibold text-slate-700 font-mono">Data Steward</p>
+                  <Input
+                    label="Full Name"
+                    value={ownerForms.lead_business_steward.full_name}
+                    onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, full_name: e.target.value } }))}
+                    placeholder="e.g. John Doe"
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    label="Email Address"
+                    type="email"
+                    value={ownerForms.lead_business_steward.email}
+                    onChange={e => setOwnerForms(f => ({ ...f, lead_business_steward: { ...f.lead_business_steward, email: e.target.value } }))}
+                    placeholder="e.g. john.doe@company.com"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+                {/* Data Owner */}
+                <div className="flex flex-col gap-2">
+                  <p className="text-xs font-semibold text-slate-700 font-mono">Data Owner</p>
+                  <Input
+                    label="Full Name"
+                    value={ownerForms.data_owner.full_name}
+                    onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, full_name: e.target.value } }))}
+                    placeholder="e.g. Jane Smith"
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    label="Email Address"
+                    type="email"
+                    value={ownerForms.data_owner.email}
+                    onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, email: e.target.value } }))}
+                    placeholder="e.g. jane.smith@company.com"
+                    className="h-8 text-xs font-mono"
+                  />
+                </div>
+              </>
+            ) : (
+              <ProjectOwnerStewardContent owners={owners} />
+            )}
+          </CardContent>
+        </Card>
 
         {serverError && (
-          <p className="rounded-md bg-red-50 border border-red-200 px-4 py-2 text-sm text-red-600">{serverError}</p>
+          <p className="rounded-md bg-rose-50 border border-rose-200 px-3.5 py-2 text-xs text-rose-700 font-mono">{serverError}</p>
         )}
       </div>
     </div>

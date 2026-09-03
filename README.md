@@ -146,9 +146,11 @@ These models are large. If local disk, memory, or GPU capacity is not enough, co
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/datagovtools-dev/datagov-tools.git
-cd datagov-tools
+git clone https://github.com/datagovtools-dev/datagov-v2.git
+cd datagov-v2
 ```
+
+> **Native Run (No Docker)**: You can also run natively using PowerShell `.\start-native.ps1`. The repository includes the pre-configured latest SQLite database (`backend/datagov.db` & `database/datagov.db`).
 
 ### 2. Set up environment variables
 

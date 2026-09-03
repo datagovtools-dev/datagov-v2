@@ -53,3 +53,8 @@ class BAPDApproval(Base):
     actioned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     bapd: Mapped["BAPDRecord"] = relationship("BAPDRecord", back_populates="approvals")
+    approver: Mapped["User"] = relationship("User", foreign_keys=[approver_id], lazy="selectin")
+
+    @property
+    def approver_name(self) -> str:
+        return self.approver.full_name if self.approver else ""

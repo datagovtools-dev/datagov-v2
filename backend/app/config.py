@@ -3,7 +3,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "../.env", ".env.local", "../.env.local"),
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     # App
     app_name: str = "AI Governance Tools"

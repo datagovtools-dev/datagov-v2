@@ -3,6 +3,17 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
+import {
+  Database,
+  Cloud,
+  FileSpreadsheet,
+  Server,
+  UploadCloud,
+  CheckCircle2,
+  Sparkles,
+  ArrowRight,
+  Filter,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
@@ -10,7 +21,11 @@ import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/Table";
 
-interface ProjectOption { id: string; project_code: string | null; project_name: string; }
+interface ProjectOption {
+  id: string;
+  project_code: string | null;
+  project_name: string;
+}
 interface SourceTableInfo {
   table_name: string;
   column_count: number;
@@ -63,7 +78,7 @@ export default function MetadataHomePage() {
   });
 
   // Live discovery query — only used when Discover Tables is clicked (GCP/PG)
-  const { refetch: refetchTables } = useQuery<SourceTableInfo[]>({
+  const { refetch: refetchTables, isFetching: discovering } = useQuery<SourceTableInfo[]>({
     queryKey: ["meta-tables-discover", projectId, sourceType, gcpProject, bqDataset, connectionString, pgSchema],
     queryFn: () => {
       const p = new URLSearchParams({ source_type: sourceType });
@@ -84,27 +99,31 @@ export default function MetadataHomePage() {
   });
 
   const proceedMutation = useMutation({
-    mutationFn: () => api.post<ProceedResponse>("/metadata/proceed", {
-      project_id: projectId,
-      source_type: sourceType,
-      gcp_project: gcpProject || undefined,
-      bq_dataset: bqDataset || undefined,
-      table_names: selectedTables.size > 0 ? [...selectedTables] : undefined,
-      connection_string: connectionString || undefined,
-      pg_schema: pgSchema || undefined,
-      temp_file_keys: tempFileKeys.length > 0 ? tempFileKeys : undefined,
-      file_names: uploadedFileNames.length > 0 ? uploadedFileNames : undefined,
-      uploaded_tables: sourceType === "excel"
-        ? uploadedTables.filter((table) => selectedTables.has(table.table_name))
-        : undefined,
-    }),
+    mutationFn: () =>
+      api.post<ProceedResponse>("/metadata/proceed", {
+        project_id: projectId,
+        source_type: sourceType,
+        gcp_project: gcpProject || undefined,
+        bq_dataset: bqDataset || undefined,
+        table_names: selectedTables.size > 0 ? [...selectedTables] : undefined,
+        connection_string: connectionString || undefined,
+        pg_schema: pgSchema || undefined,
+        temp_file_keys: tempFileKeys.length > 0 ? tempFileKeys : undefined,
+        file_names: uploadedFileNames.length > 0 ? uploadedFileNames : undefined,
+        uploaded_tables:
+          sourceType === "excel"
+            ? uploadedTables.filter((table) => selectedTables.has(table.table_name))
+            : undefined,
+      }),
     onSuccess: (result) => {
       setProceeded(true);
       setProceedResult(result);
       if (sourceType === "excel") {
-        setExcelSheets((sheets) => sheets.map((sheet) => (
-          selectedTables.has(sheet.table_name) ? { ...sheet, documented: true } : sheet
-        )));
+        setExcelSheets((sheets) =>
+          sheets.map((sheet) =>
+            selectedTables.has(sheet.table_name) ? { ...sheet, documented: true } : sheet
+          )
+        );
       }
       qc.invalidateQueries({ queryKey: ["meta-tables"] });
       qc.invalidateQueries({ queryKey: ["metadata", projectId] });
@@ -138,7 +157,10 @@ export default function MetadataHomePage() {
           credentials: "include",
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
-        if (!res.ok) { const err = await res.json(); throw new Error(`${file.name}: ${err.detail ?? "Upload failed"}`); }
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(`${file.name}: ${err.detail ?? "Upload failed"}`);
+        }
         const data = await res.json();
         keys.push(data.temp_key);
         names.push(file.name);
@@ -171,11 +193,13 @@ export default function MetadataHomePage() {
 
   const [statusFilter, setStatusFilter] = useState<"all" | "documented" | "undocumented">("all");
 
-  // Source Tables: if a file was just uploaded show fresh sheets, otherwise show all DB tables for the project
-  const allTables = excelSheets.length > 0 ? excelSheets : (projectTables ?? []);
-  const displayTables = statusFilter === "all" ? allTables
-    : statusFilter === "documented" ? allTables.filter((t) => t.documented)
-    : allTables.filter((t) => !t.documented);
+  const allTables = excelSheets.length > 0 ? excelSheets : projectTables ?? [];
+  const displayTables =
+    statusFilter === "all"
+      ? allTables
+      : statusFilter === "documented"
+      ? allTables.filter((t) => t.documented)
+      : allTables.filter((t) => !t.documented);
   const documented = allTables.filter((t) => t.documented).length;
   const total = allTables.length;
 
@@ -191,103 +215,186 @@ export default function MetadataHomePage() {
     const visibleNames = displayTables.map((t) => t.table_name);
     const allVisible = visibleNames.every((n) => selectedTables.has(n));
     if (allVisible && visibleNames.length > 0) {
-      setSelectedTables((s) => { const n = new Set(s); visibleNames.forEach((name) => n.delete(name)); return n; });
+      setSelectedTables((s) => {
+        const n = new Set(s);
+        visibleNames.forEach((name) => n.delete(name));
+        return n;
+      });
     } else {
       setSelectedTables((s) => new Set([...s, ...visibleNames]));
     }
   }
 
   return (
-    <div>
-      <div className="page-header">
+    <div className="space-y-4">
+      {/* Page Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3.5 border-b border-slate-200">
         <div>
-          <h1>Metadata Management</h1>
-          <p className="text-sm text-surface-500 mt-0.5">
-            Discover source tables, auto-populate attributes, and manage business definitions with AI assistance
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">
+            Metadata Management
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Discover source schemas, auto-populate column attributes, and catalog business definitions
           </p>
           {stats && (
-            <div className="flex items-center gap-4 mt-1.5">
-              <span className="text-sm text-surface-600">
-                <span className="font-semibold text-surface-800">{stats.projects.toLocaleString()}</span> project{stats.projects !== 1 ? "s" : ""}
+            <div className="flex items-center gap-2.5 mt-1 text-xs text-slate-500 font-mono">
+              <span>
+                <span className="font-semibold text-slate-900">{stats.projects.toLocaleString()}</span> projects
               </span>
-              <span className="text-surface-300">·</span>
-              <span className="text-sm text-surface-600">
-                <span className="font-semibold text-surface-800">{stats.tables.toLocaleString()}</span> table{stats.tables !== 1 ? "s" : ""}
+              <span className="text-slate-300">·</span>
+              <span>
+                <span className="font-semibold text-slate-900">{stats.tables.toLocaleString()}</span> tables
               </span>
-              <span className="text-surface-300">·</span>
-              <span className="text-sm text-surface-600">
-                <span className="font-semibold text-surface-800">{stats.attributes.toLocaleString()}</span> attribute{stats.attributes !== 1 ? "s" : ""}
+              <span className="text-slate-300">·</span>
+              <span>
+                <span className="font-semibold text-slate-900">{stats.attributes.toLocaleString()}</span> attributes
               </span>
             </div>
           )}
         </div>
       </div>
 
-      {/* Source Configuration card */}
-      <div className="bg-white rounded-xl border border-surface-200 p-5 space-y-4 mb-5">
-        <h2 className="font-semibold text-surface-800">Source Configuration</h2>
-        <div className="grid grid-cols-2 gap-4">
+      {/* Source Configuration Card */}
+      <div className="rounded-md border border-slate-200 bg-white p-4 shadow-2xs space-y-3.5">
+        <div className="flex items-center justify-between pb-2.5 border-b border-slate-100">
           <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1">Project</label>
+            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-700 font-mono">
+              Source Configuration
+            </h2>
+            <p className="text-[11px] text-slate-500">Select project and data source connector</p>
+          </div>
+          <Badge variant="default" className="text-[10px] font-mono">Ingestion Engine</Badge>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Select Governance Project
+            </label>
             <select
               value={projectId}
-              onChange={(e) => { setProjectId(e.target.value); setSelectedTables(new Set()); setProceeded(false); setProceedResult(null); }}
-              className="w-full border border-surface-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-400 text-surface-700"
+              onChange={(e) => {
+                setProjectId(e.target.value);
+                setSelectedTables(new Set());
+                setProceeded(false);
+                setProceedResult(null);
+              }}
+              className="w-full border border-slate-200 rounded-md px-2.5 py-1.5 text-xs bg-white text-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-950 font-mono"
             >
-              <option value="">Select project…</option>
-              {projects?.map((p) => <option key={p.id} value={p.id}>{p.project_code ? `${p.project_code} — ${p.project_name}` : p.project_name}</option>)}
+              <option value="">Choose a project...</option>
+              {projects?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.project_code ? `${p.project_code} — ${p.project_name}` : p.project_name}
+                </option>
+              ))}
             </select>
           </div>
+
           <div>
-            <label className="block text-sm font-medium text-surface-700 mb-1">Source Type</label>
-            <div className="flex gap-2">
-              {(["gcp", "postgresql", "excel"] as const).map((t) => (
-                <button key={t} onClick={() => { setSourceType(t); setProceeded(false); setProceedResult(null); }}
-                  className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-colors ${
-                    sourceType === t
-                      ? "border-primary-500 bg-primary-50 text-primary-700"
-                      : "border-surface-200 text-surface-600 hover:border-surface-300"
-                  }`}>
-                  {t === "gcp" ? "☁ GCP BigQuery" : t === "postgresql" ? "🐘 PostgreSQL / Supabase" : "📊 Excel"}
-                </button>
-              ))}
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Data Source Connector
+            </label>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setSourceType("gcp");
+                  setProceeded(false);
+                  setProceedResult(null);
+                }}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                  sourceType === "gcp"
+                    ? "border-slate-900 bg-slate-900 text-white font-semibold"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <Cloud className="h-3.5 w-3.5" /> BigQuery
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSourceType("postgresql");
+                  setProceeded(false);
+                  setProceedResult(null);
+                }}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                  sourceType === "postgresql"
+                    ? "border-slate-900 bg-slate-900 text-white font-semibold"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <Server className="h-3.5 w-3.5" /> Postgres
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSourceType("excel");
+                  setProceeded(false);
+                  setProceedResult(null);
+                }}
+                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md border text-xs font-medium transition-colors ${
+                  sourceType === "excel"
+                    ? "border-slate-900 bg-slate-900 text-white font-semibold"
+                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                }`}
+              >
+                <FileSpreadsheet className="h-3.5 w-3.5" /> Excel / CSV
+              </button>
             </div>
           </div>
+
           {sourceType === "gcp" && (
             <>
               <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">GCP Project</label>
-                <Input value={gcpProject} onChange={(e) => setGcpProject(e.target.value)} placeholder="my-gcp-project" />
+                <label className="block text-xs font-semibold text-slate-700 mb-1">GCP Project ID</label>
+                <Input
+                  value={gcpProject}
+                  onChange={(e) => setGcpProject(e.target.value)}
+                  placeholder="e.g. data-warehouse-prod"
+                  className="h-8 text-xs font-mono"
+                />
               </div>
               <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">BigQuery Dataset</label>
-                <Input value={bqDataset} onChange={(e) => setBqDataset(e.target.value)} placeholder="my_dataset" />
+                <label className="block text-xs font-semibold text-slate-700 mb-1">BigQuery Dataset</label>
+                <Input
+                  value={bqDataset}
+                  onChange={(e) => setBqDataset(e.target.value)}
+                  placeholder="e.g. customer_analytics"
+                  className="h-8 text-xs font-mono"
+                />
               </div>
             </>
           )}
+
           {sourceType === "postgresql" && (
             <>
-              <div className="col-span-2">
-                <label className="block text-sm font-medium text-surface-700 mb-1">Connection String</label>
+              <div className="md:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Connection String</label>
                 <Input
                   type="password"
                   value={connectionString}
                   onChange={(e) => setConnectionString(e.target.value)}
                   placeholder="postgresql://user:password@host:5432/dbname"
+                  className="h-8 text-xs font-mono"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">Schema</label>
-                <Input value={pgSchema} onChange={(e) => setPgSchema(e.target.value)} placeholder="public" />
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Schema</label>
+                <Input value={pgSchema} onChange={(e) => setPgSchema(e.target.value)} placeholder="public" className="h-8 text-xs font-mono" />
               </div>
             </>
           )}
+
           {sourceType === "excel" && (
-            <div className="col-span-2">
-              <label className="block text-sm font-medium text-surface-700 mb-1">Excel File</label>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Upload File (.xlsx, .xls, .csv)
+              </label>
               <div
-                className={`flex flex-col items-center justify-center w-full h-28 border-2 border-dashed rounded-lg cursor-pointer transition-colors ${
-                  uploading ? "border-primary-300 bg-primary-50" : "border-surface-300 bg-surface-50 hover:border-primary-400 hover:bg-primary-50"
+                className={`flex flex-col items-center justify-center w-full h-28 border border-dashed rounded-md cursor-pointer transition-colors ${
+                  uploading
+                    ? "border-slate-400 bg-slate-50"
+                    : "border-slate-200 bg-slate-50/50 hover:border-slate-300 hover:bg-slate-50"
                 }`}
                 onClick={() => document.getElementById("excel-upload-input")?.click()}
                 onDragOver={(e) => e.preventDefault()}
@@ -296,104 +403,163 @@ export default function MetadataHomePage() {
                   if (e.dataTransfer.files?.length) handleExcelUpload(e.dataTransfer.files);
                 }}
               >
-                <input id="excel-upload-input" type="file" accept=".xlsx,.xls,.csv" multiple className="hidden"
-                  onChange={(e) => { if (e.target.files?.length) handleExcelUpload(e.target.files); }} />
+                <input
+                  id="excel-upload-input"
+                  type="file"
+                  accept=".xlsx,.xls,.csv"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.length) handleExcelUpload(e.target.files);
+                  }}
+                />
+                <UploadCloud
+                  className={`h-5 w-5 mb-1.5 ${
+                    uploading ? "text-slate-700 animate-bounce" : "text-slate-400"
+                  }`}
+                />
                 {uploading ? (
-                  <p className="text-sm text-primary-600 font-medium">Uploading and reading sheets…</p>
+                  <p className="text-xs font-medium text-slate-700 font-mono">
+                    Reading sheets and parsing schema...
+                  </p>
                 ) : uploadedFileNames.length > 0 ? (
                   <div className="text-center">
-                    <p className="text-sm font-medium text-primary-700">
+                    <p className="text-xs font-semibold text-emerald-700 font-mono">
                       ✓ {uploadedFileNames.length === 1 ? uploadedFileNames[0] : `${uploadedFileNames.length} files uploaded`}
                     </p>
-                    <p className="text-xs text-surface-500 mt-0.5">
+                    <p className="text-[11px] text-slate-500 mt-0.5">
                       {excelSheets.length} sheet{excelSheets.length !== 1 ? "s" : ""} found · click to replace
                     </p>
-                    {uploadedFileNames.length > 1 && (
-                      <p className="text-xs text-surface-400 mt-0.5">{uploadedFileNames.join(", ")}</p>
-                    )}
                   </div>
                 ) : (
                   <div className="text-center">
-                    <p className="text-sm font-medium text-surface-600">Click to upload or drag & drop from File Explorer</p>
-                    <p className="text-xs text-surface-400 mt-0.5">.xlsx / .xls / .csv · select multiple files at once</p>
+                    <p className="text-xs font-medium text-slate-700">
+                      Click to upload or drag & drop spreadsheets
+                    </p>
+                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">
+                      Supports multi-sheet Excel & CSV files
+                    </p>
                   </div>
                 )}
               </div>
             </div>
           )}
         </div>
+
         {sourceType !== "excel" && (
-          <Button disabled={!projectId} onClick={() => refetchTables()} variant="outline">
-            Discover Tables
-          </Button>
+          <div className="pt-1">
+            <Button
+              disabled={!projectId || discovering}
+              loading={discovering}
+              onClick={() => refetchTables()}
+              variant="outline"
+              size="sm"
+              className="h-7.5 text-xs font-medium"
+            >
+              Discover Source Tables
+            </Button>
+          </div>
         )}
       </div>
 
-      {/* Documentation progress bar */}
+      {/* Documentation Progress */}
       {displayTables.length > 0 && (
-        <div className="bg-white rounded-xl border border-surface-200 p-4 flex items-center gap-4 mb-5">
+        <div className="rounded-md border border-slate-200 bg-white p-3.5 flex items-center gap-4 shadow-2xs">
           <div className="flex-1">
-            <div className="flex justify-between text-sm mb-1.5">
-              <span className="text-surface-600">Documentation Progress</span>
-              <span className="font-semibold text-surface-800">{documented}/{total} tables documented</span>
+            <div className="flex justify-between text-xs mb-1">
+              <span className="text-slate-500 font-medium font-mono text-[11px]">Metadata Catalog Completion</span>
+              <span className="font-semibold text-slate-900 font-mono text-[11px]">
+                {documented}/{total} tables documented
+              </span>
             </div>
-            <div className="bg-surface-100 rounded-full h-2.5">
-              <div className="bg-primary-500 h-2.5 rounded-full transition-all"
-                style={{ width: total > 0 ? `${(documented / total) * 100}%` : "0%" }} />
+            <div className="bg-slate-100 rounded-md h-2 overflow-hidden">
+              <div
+                className="bg-slate-900 h-2 rounded-md transition-all duration-200"
+                style={{ width: total > 0 ? `${(documented / total) * 100}%` : "0%" }}
+              />
             </div>
           </div>
-          <span className="text-sm font-bold text-primary-600">{total > 0 ? Math.round((documented / total) * 100) : 0}%</span>
+          <span className="text-xs font-bold text-slate-900 tabular-nums font-mono">
+            {total > 0 ? Math.round((documented / total) * 100) : 0}%
+          </span>
         </div>
       )}
 
-      {/* Source tables list */}
+      {/* Source Tables List */}
       {projectId && (
-        <div className="bg-white rounded-xl border border-surface-200 overflow-hidden">
-          <div className="flex items-center justify-between px-4 py-3 border-b border-surface-100">
+        <div className="rounded-md border border-slate-200 bg-white shadow-2xs overflow-hidden">
+          <div className="flex flex-wrap items-center justify-between gap-2.5 px-3.5 py-2.5 border-b border-slate-200 bg-slate-50/50">
             <div className="flex items-center gap-3">
-              <h2 className="font-semibold text-surface-800">Source Tables</h2>
-              {(loadingAllTables || uploading) && <span className="text-xs text-surface-400">{uploading ? "Reading sheets…" : "Loading…"}</span>}
+              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-700 font-mono">
+                Discovered Tables
+              </h2>
               <div className="flex gap-1">
                 {(["all", "undocumented", "documented"] as const).map((f) => (
-                  <button key={f} onClick={() => setStatusFilter(f)}
-                    className={`text-xs px-2.5 py-1 rounded-full font-medium transition-colors ${
+                  <button
+                    key={f}
+                    onClick={() => setStatusFilter(f)}
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded-md font-medium transition-colors ${
                       statusFilter === f
-                        ? f === "undocumented" ? "bg-amber-100 text-amber-700"
-                          : f === "documented" ? "bg-green-100 text-green-700"
-                          : "bg-primary-100 text-primary-700"
-                        : "text-surface-500 hover:bg-surface-100"
-                    }`}>
-                    {f === "all" ? `All (${total})` : f === "undocumented" ? `Not Documented (${total - documented})` : `Documented (${documented})`}
+                        ? "bg-slate-900 text-white font-semibold"
+                        : "text-slate-600 hover:bg-slate-200/60"
+                    }`}
+                  >
+                    {f === "all"
+                      ? `All (${total})`
+                      : f === "undocumented"
+                      ? `Pending (${total - documented})`
+                      : `Documented (${documented})`}
                   </button>
                 ))}
               </div>
             </div>
-            <div className="flex gap-2">
-              {statusFilter === "undocumented" && displayTables.length > 0 && (
-                <Button variant="outline" size="sm" onClick={() => setSelectedTables(new Set(displayTables.map((t) => t.table_name)))}>
-                  Select All Undocumented
-                </Button>
-              )}
-              <Button variant="outline" size="sm" onClick={toggleAll} disabled={!displayTables.length}>
-                {selectedTables.size === displayTables.length && displayTables.length > 0 ? "Deselect All" : "Select All"}
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6.5 text-[11px]"
+                onClick={toggleAll}
+                disabled={!displayTables.length}
+              >
+                {selectedTables.size === displayTables.length && displayTables.length > 0
+                  ? "Deselect All"
+                  : "Select All"}
               </Button>
               {documented > 0 && (
-                <Button variant="outline" size="sm" onClick={() => router.push(`/metadata/${projectId}`)}>
-                  Open All Tables →
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6.5 text-[11px]"
+                  onClick={() => router.push(`/metadata/${projectId}`)}
+                >
+                  Open Dictionary <ArrowRight className="h-3 w-3 ml-1" />
                 </Button>
               )}
-              <Button size="sm"
+              <Button
+                size="sm"
+                className="h-6.5 text-[11px] font-medium"
                 disabled={selectedTables.size === 0 || proceedMutation.isPending}
-                onClick={() => proceedMutation.mutate()}>
-                {proceedMutation.isPending ? "Processing…" : `Proceed Metadata (${selectedTables.size})`}
+                loading={proceedMutation.isPending}
+                onClick={() => proceedMutation.mutate()}
+              >
+                Proceed Metadata ({selectedTables.size})
               </Button>
             </div>
           </div>
 
           {proceeded && (
-            <div className="bg-primary-50 border-b border-primary-100 px-4 py-2 text-sm text-primary-700">
-              {proceedResult?.message ?? "Metadata auto-population completed."}{" "}
-              <button onClick={() => router.push(`/metadata/${projectId}`)} className="underline font-medium">Open attribute grid →</button>
+            <div className="bg-emerald-50 border-b border-emerald-200 px-3.5 py-2 text-xs text-emerald-800 flex items-center justify-between font-mono">
+              <span className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                {proceedResult?.message ?? "Metadata auto-population completed."}
+              </span>
+              <button
+                onClick={() => router.push(`/metadata/${projectId}`)}
+                className="underline font-semibold hover:text-emerald-950"
+              >
+                Open attribute grid →
+              </button>
             </div>
           )}
 
@@ -401,63 +567,84 @@ export default function MetadataHomePage() {
             <TableHeader>
               <TableRow>
                 <TableHead className="w-10">
-                  <input type="checkbox" className="rounded"
+                  <input
+                    type="checkbox"
+                    className="rounded-sm border-slate-300"
                     checked={selectedTables.size === total && total > 0}
-                    onChange={toggleAll} />
+                    onChange={toggleAll}
+                  />
                 </TableHead>
                 <TableHead>Table Name</TableHead>
-                <TableHead>Source</TableHead>
+                <TableHead>Source Connector</TableHead>
                 <TableHead>Columns</TableHead>
                 <TableHead>Rows</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead />
+                <TableHead>Catalog Status</TableHead>
+                <TableHead className="text-right w-24">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {!displayTables.length && !loadingAllTables && !uploading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center py-10 text-surface-400">
-                    {sourceType === "excel" && excelSheets.length === 0 ? "Upload an Excel file above to add new sheets, or no tables documented yet" : "No tables found"}
+                  <TableCell colSpan={7} className="text-center py-10 text-xs text-slate-400 font-mono">
+                    {sourceType === "excel" && excelSheets.length === 0
+                      ? "Upload an Excel file above to add new sheets, or no tables documented yet."
+                      : "No tables found."}
                   </TableCell>
                 </TableRow>
-              ) : displayTables.map((t) => (
-                <TableRow key={t.table_name} className={selectedTables.has(t.table_name) ? "bg-primary-50" : ""}>
-                  <TableCell>
-                    <input type="checkbox" className="rounded"
-                      checked={selectedTables.has(t.table_name)}
-                      onChange={() => toggleTable(t.table_name)} />
-                  </TableCell>
-                  <TableCell className="font-mono text-sm font-medium text-surface-800">{t.table_name}</TableCell>
-                  <TableCell>
-                    <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
-                      t.source_type === "gcp" ? "bg-blue-50 text-blue-700" :
-                      t.source_type === "postgresql" ? "bg-teal-50 text-teal-700" :
-                      t.source_type === "excel" ? "bg-green-50 text-green-700" :
-                      "bg-surface-100 text-surface-600"
-                    }`}>
-                      {t.source_type === "gcp" ? "☁ GCP" :
-                       t.source_type === "postgresql" ? "🐘 PostgreSQL" :
-                       t.source_type === "excel" ? "📊 Excel" : t.source_type}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-surface-600">{t.column_count}</TableCell>
-                  <TableCell className="text-surface-600">{t.row_count?.toLocaleString() ?? "—"}</TableCell>
-                  <TableCell>
-                    <Badge variant={t.documented ? "success" : "default"}>
-                      {t.documented ? "Documented" : "Not Documented"}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {t.documented && (
-                      <button
-                        onClick={() => router.push(`/metadata/${projectId}?table=${encodeURIComponent(t.table_name)}`)}
-                        className="text-xs text-primary-600 hover:underline">
-                        Open Grid →
-                      </button>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
+              ) : (
+                displayTables.map((t) => (
+                  <TableRow
+                    key={t.table_name}
+                    className={selectedTables.has(t.table_name) ? "bg-slate-50" : ""}
+                  >
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        className="rounded-sm border-slate-300"
+                        checked={selectedTables.has(t.table_name)}
+                        onChange={() => toggleTable(t.table_name)}
+                      />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs font-semibold text-slate-900">
+                      {t.table_name}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="default" className="text-[10px] font-mono">
+                        {t.source_type === "gcp"
+                          ? "BigQuery"
+                          : t.source_type === "postgresql"
+                          ? "Postgres"
+                          : t.source_type === "excel"
+                          ? "Excel"
+                          : t.source_type}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-slate-600 tabular-nums font-mono">{t.column_count}</TableCell>
+                    <TableCell className="text-xs text-slate-600 tabular-nums font-mono">
+                      {t.row_count?.toLocaleString() ?? "—"}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={t.documented ? "success" : "neutral"} className="text-[10px]">
+                        {t.documented ? "Documented" : "Pending"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {t.documented && (
+                        <button
+                          onClick={() =>
+                            router.push(
+                              `/metadata/${projectId}?table=${encodeURIComponent(t.table_name)}`
+                            )
+                          }
+                          className="text-xs font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                        >
+                          Grid →
+                        </button>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
             </TableBody>
           </Table>
         </div>

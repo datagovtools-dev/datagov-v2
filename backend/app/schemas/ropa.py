@@ -30,6 +30,9 @@ class ROPAUpdate(BaseModel):
 class ROPAOut(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    customer_name: Optional[str] = None
     process_name: str
     purpose: str
     data_category: str
@@ -41,6 +44,7 @@ class ROPAOut(BaseModel):
     status: str
     version: int
     created_by: uuid.UUID
+    created_by_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
@@ -48,6 +52,10 @@ class ROPAOut(BaseModel):
 
 class ROPAListItem(BaseModel):
     id: uuid.UUID
+    project_id: Optional[uuid.UUID] = None
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    customer_name: Optional[str] = None
     process_name: str
     data_category: str
     legal_basis: str

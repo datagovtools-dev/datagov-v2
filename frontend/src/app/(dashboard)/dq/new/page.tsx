@@ -42,23 +42,41 @@ const STEPS = [
   { n: 6, label: "Archive" },
 ];
 
-// ── Step indicator ─────────────────────────────────────────────────────────────
+// ── Step indicator (Design.md strict enterprise standards) ─────────────────────────────────
 function StepBar({ current }: { current: number }) {
   return (
-    <div className="flex items-center gap-0">
+    <div className="flex items-center gap-1 overflow-x-auto py-1.5 font-mono">
       {STEPS.map((s, i) => (
         <div key={s.n} className="flex items-center">
-          <div className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-            s.n === current ? "bg-blue-600 text-white" :
-            s.n < current ? "bg-blue-100 text-blue-700" : "bg-gray-100 text-gray-400"
-          }`}>
-            <span className={`w-5 h-5 rounded-full text-xs flex items-center justify-center font-bold ${
-              s.n === current ? "bg-white text-blue-600" :
-              s.n < current ? "bg-blue-500 text-white" : "bg-gray-300 text-gray-500"
-            }`}>{s.n < current ? "✓" : s.n}</span>
-            {s.label}
+          <div
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              s.n === current
+                ? "bg-slate-900 text-white font-semibold shadow-2xs"
+                : s.n < current
+                ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                : "bg-slate-50 text-slate-500 border border-slate-200"
+            }`}
+          >
+            <span
+              className={`w-4 h-4 rounded-md text-[10px] flex items-center justify-center font-bold font-mono transition-colors ${
+                s.n === current
+                  ? "bg-white text-slate-900"
+                  : s.n < current
+                  ? "bg-emerald-600 text-white"
+                  : "bg-slate-200 text-slate-600"
+              }`}
+            >
+              {s.n < current ? "✓" : s.n}
+            </span>
+            <span className="text-[11px]">{s.label}</span>
           </div>
-          {i < STEPS.length - 1 && <div className={`w-6 h-0.5 ${s.n < current ? "bg-blue-400" : "bg-gray-200"}`} />}
+          {i < STEPS.length - 1 && (
+            <div
+              className={`w-4 h-[1px] mx-1 transition-colors ${
+                s.n < current ? "bg-emerald-400" : "bg-slate-200"
+              }`}
+            />
+          )}
         </div>
       ))}
     </div>

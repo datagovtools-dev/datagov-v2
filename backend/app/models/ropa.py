@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Text, ForeignKey, DateTime, SmallInteger, func
+from sqlalchemy import String, Text, ForeignKey, DateTime, SmallInteger, func, JSON
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.dialects.postgresql import UUID, ARRAY
+from sqlalchemy.dialects.postgresql import UUID
 from app.database import Base
 
 
@@ -18,7 +18,7 @@ class ROPARecord(Base):
     legal_basis: Mapped[str] = mapped_column(Text, nullable=False)
     retention_period: Mapped[str] = mapped_column(String(100), nullable=False)
     recipient: Mapped[str | None] = mapped_column(Text, nullable=True)
-    linked_asset_ids: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    linked_asset_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft", index=True)
     version: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     created_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)

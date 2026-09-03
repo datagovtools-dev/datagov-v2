@@ -514,10 +514,13 @@ async def review_dq_run(
     event_map = {"approve": "dq_approved", "reject": "dq_rejected", "request_revision": "dq_review_requested"}
     event = event_map.get(body.action)
     if event:
-        send_workflow_notification.delay(
-            event=event, entity_id=str(run_id), recipients=[],
-            context={"run_id": str(run_id), "actor": current_user.full_name},
-        )
+        try:
+            send_workflow_notification.delay(
+                event=event, entity_id=str(run_id), recipients=[],
+                context={"run_id": str(run_id), "actor": current_user.full_name},
+            )
+        except Exception:
+            pass
 
     # Trigger GCP archive on approval
     if body.action == "approve":

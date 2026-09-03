@@ -15,6 +15,17 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     if is_redis_enabled():
         await get_redis()
+    try:
+        import app.models  # noqa: F401
+        from app.database import Base, engine, AsyncSessionLocal
+        from app.services.init_db import seed_initial_data_if_needed
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        async with AsyncSessionLocal() as session:
+            await seed_initial_data_if_needed(session)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Database auto-init skipped or failed: {e}")
     yield
     await close_redis()
 

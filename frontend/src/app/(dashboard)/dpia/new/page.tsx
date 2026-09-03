@@ -3,9 +3,13 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
+import { toast } from "@/components/ui/Toast";
 
 interface ProjectOption { id: string; project_code: string | null; project_name: string; customer_name: string; }
 interface GovItem { id: string; item: string; responsible: "Internal" | "Client"; status: string; remarks: string; }
@@ -126,12 +130,19 @@ export default function NewDPIAPage() {
 
   const mutation = useMutation({
     mutationFn: (payload: typeof form & { data_category: string; governance_json: GovernanceJson }) => {
+      toast.loading("Creating DPIA Privacy Assessment...", { id: "create-dpia" });
       const body: Record<string, unknown> = { ...payload };
       if (!body.mitigation_measures) delete body.mitigation_measures;
       if (!body.residual_risk) delete body.residual_risk;
       return api.post<{ id: string }>("/dpia", body);
     },
-    onSuccess: (data: { id: string }) => router.push(`/dpia/${data.id}`),
+    onSuccess: (data: { id: string }) => {
+      toast.success("DPIA Assessment created successfully!", { id: "create-dpia" });
+      router.push(`/dpia/${data.id}`);
+    },
+    onError: (e: any) => {
+      toast.error(e.message || "Failed to create DPIA Assessment", { id: "create-dpia" });
+    },
   });
 
   function set(field: string, value: unknown) {
@@ -166,31 +177,65 @@ export default function NewDPIAPage() {
   const selectedProject = projects?.find((p) => p.id === form.project_id);
 
   return (
-    <div className="p-6 space-y-5">
-      <div>
-        <button onClick={() => router.back()} className="text-sm text-surface-400 hover:text-surface-600 mb-2">← Back</button>
-        <h1 className="text-2xl font-bold text-surface-900">New Data Protection Impact Assessment</h1>
-        <p className="text-sm text-surface-500 mt-1">Document privacy risks and governance activities for a data processing activity</p>
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center gap-3 pb-3 border-b border-slate-200">
+        <Link
+          href="/dpia"
+          className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-200 hover:bg-slate-100 shrink-0 text-slate-600"
+        >
+          <ArrowLeft className="h-4 w-4" />
+        </Link>
+        <div>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">
+            New Privacy Impact Assessment (DPIA)
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Evaluate privacy risks, data categories, and governance activity controls
+          </p>
+        </div>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-5">
-
+      <form onSubmit={handleSubmit} className="space-y-4">
         {/* Process Information */}
         <Card>
-          <CardHeader><CardTitle>Process Information</CardTitle></CardHeader>
-          <CardContent>
-            <div>
-              <label className="block text-sm font-medium text-surface-700 mb-1">Project <span className="text-red-500">*</span></label>
-              <select value={form.project_id} onChange={(e) => { set("project_id", e.target.value); const p = projects?.find((p) => p.id === e.target.value); if (p) set("process_name", p.project_name); }}
-                className="w-full border border-surface-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500">
-                <option value="">Select project…</option>
-                {projects?.map((p) => (
-                  <option key={p.id} value={p.id}>{p.project_code ? `${p.project_code} — ` : ""}{p.project_name} ({p.customer_name})</option>
-                ))}
-              </select>
-              {errors.project_id && <p className="text-xs text-red-500 mt-1">{errors.project_id}</p>}
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Process Information
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-semibold text-slate-700">
+                Project Asset <span className="text-rose-500">*</span>
+              </label>
+              <Select
+                value={form.project_id}
+                onValueChange={(v) => {
+                  set("project_id", v);
+                  const p = projects?.find((p) => p.id === v);
+                  if (p) set("process_name", p.project_name);
+                }}
+              >
+                <SelectTrigger className="h-8 text-xs" error={!!errors.project_id}>
+                  <SelectValue placeholder="Select project asset..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects?.map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.project_code ? `${p.project_code} — ` : ""}
+                      {p.project_name} ({p.customer_name})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {errors.project_id && (
+                <p className="text-[11px] font-medium text-rose-600 font-mono">{errors.project_id}</p>
+              )}
               {selectedProject && (
-                <p className="text-xs text-surface-400 mt-1">Customer / Client: {selectedProject.customer_name}</p>
+                <p className="text-[11px] text-slate-500 font-mono mt-1">
+                  Customer / Client: <span className="font-semibold text-slate-800">{selectedProject.customer_name}</span>
+                </p>
               )}
             </div>
           </CardContent>
@@ -198,15 +243,17 @@ export default function NewDPIAPage() {
 
         {/* Data Categories — full width */}
         <Card>
-          <CardHeader>
-            <CardTitle>Data Categories Involved <span className="text-red-500 text-sm font-normal">*</span></CardTitle>
-            <p className="text-xs text-surface-500 mt-0.5">Select all categories that apply. You may choose from multiple groups.</p>
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Data Categories Involved <span className="text-rose-500 text-xs font-normal">*</span>
+            </CardTitle>
+            <p className="text-xs text-slate-500 mt-0.5">Select all categories that apply. You may choose from multiple groups.</p>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-5 gap-2">
+          <CardContent className="pt-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
               {DATA_CATEGORY_GROUPS.map(({ group, items }) => (
-                <div key={group} className="rounded-lg border border-surface-200 bg-surface-50 px-3 py-2.5">
-                  <p className="text-[10px] font-semibold text-surface-400 uppercase tracking-wide mb-1.5">{group}</p>
+                <div key={group} className="rounded-md border border-slate-200 bg-slate-50/50 p-2.5">
+                  <p className="text-[10px] font-semibold text-slate-500 uppercase font-mono tracking-wide mb-1.5">{group}</p>
                   <div className="flex flex-wrap gap-1">
                     {items.map((item) => {
                       const selected = selectedCategories.includes(item);
@@ -217,10 +264,10 @@ export default function NewDPIAPage() {
                               selected ? prev.filter((c) => c !== item) : [...prev, item]
                             )
                           }
-                          className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium border transition-all ${
+                          className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono transition-colors border ${
                             selected
-                              ? "bg-primary-600 border-primary-600 text-white"
-                              : "bg-white border-surface-200 text-surface-600 hover:border-primary-400 hover:text-primary-600"
+                              ? "bg-slate-900 border-slate-900 text-white font-medium"
+                              : "bg-white border-slate-200 text-slate-600 hover:border-slate-400"
                           }`}>
                           {selected && "✓ "}{item}
                         </button>
@@ -231,104 +278,115 @@ export default function NewDPIAPage() {
               ))}
             </div>
             {selectedCategories.length > 0 && (
-              <p className="text-xs text-primary-600 mt-2 font-medium">
+              <p className="text-xs text-slate-600 mt-2.5 font-mono">
                 {selectedCategories.length} categor{selectedCategories.length === 1 ? "y" : "ies"} selected
                 <button type="button" onClick={() => setSelectedCategories([])}
-                  className="ml-2 text-surface-400 hover:text-red-500 font-normal">Clear all</button>
+                  className="ml-2 text-slate-400 hover:text-rose-600 font-normal">Clear all</button>
               </p>
             )}
-            {errors.data_category && <p className="text-xs text-red-500 mt-1">{errors.data_category}</p>}
+            {errors.data_category && <p className="text-xs text-rose-600 font-mono mt-1">{errors.data_category}</p>}
           </CardContent>
         </Card>
 
         {/* Risk Assessment */}
         <Card>
-            <CardHeader><CardTitle>Risk Assessment</CardTitle></CardHeader>
-            <CardContent>
-              <label className="block text-sm font-medium text-surface-700 mb-1">
-                Risk Description <span className="text-red-500">*</span>
-              </label>
-              <p className="text-xs text-surface-400 mb-1.5">
-                Identify the privacy risk and potential impact on data subjects if it materialises.<br />
-                <span className="text-surface-500 italic">
-                  e.g. "Unauthorised access to customer personal data during AI model training may result in identity theft or financial harm."
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Risk Assessment
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 text-xs">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Risk Description <span className="text-rose-500">*</span>
+            </label>
+            <p className="text-[11px] text-slate-500 mb-1.5">
+              Identify the privacy risk and potential impact on data subjects if it materialises.<br />
+              <span className="text-slate-400 italic">
+                e.g. "Unauthorised access to customer personal data during AI model training may result in identity theft or financial harm."
+              </span>
+            </p>
+            <textarea value={form.risk_description} onChange={(e) => set("risk_description", e.target.value)} rows={4}
+              className="w-full border border-slate-200 rounded-md px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 resize-none"
+              placeholder="Describe the privacy risk and potential harm to data subjects…" />
+            {errors.risk_description && <p className="text-xs text-rose-600 font-mono mt-1">{errors.risk_description}</p>}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Mitigation &amp; Residual Risk
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 space-y-4 text-xs">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Mitigation Measures</label>
+              <p className="text-[11px] text-slate-500 mb-1.5">
+                Describe controls and safeguards in place to reduce the risk.<br />
+                <span className="text-slate-400 italic">
+                  e.g. "Data is pseudonymised before transfer. Access is limited to authorised team members via RBAC. All activity is logged and auditable."
                 </span>
               </p>
-              <textarea value={form.risk_description} onChange={(e) => set("risk_description", e.target.value)} rows={5}
-                className="w-full border border-surface-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                placeholder="Describe the privacy risk and potential harm to data subjects…" />
-              {errors.risk_description && <p className="text-xs text-red-500 mt-1">{errors.risk_description}</p>}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader><CardTitle>Mitigation &amp; Residual Risk</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">Mitigation Measures</label>
-                <p className="text-xs text-surface-400 mb-1.5">
-                  Describe controls and safeguards in place to reduce the risk.<br />
-                  <span className="text-surface-500 italic">
-                    e.g. "Data is pseudonymised before transfer. Access is limited to authorised team members via RBAC. All activity is logged and auditable."
-                  </span>
-                </p>
-                <textarea value={form.mitigation_measures} onChange={(e) => set("mitigation_measures", e.target.value)} rows={3}
-                  className="w-full border border-surface-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
-                  placeholder="Describe controls and safeguards in place…" />
+              <textarea value={form.mitigation_measures} onChange={(e) => set("mitigation_measures", e.target.value)} rows={3}
+                className="w-full border border-slate-200 rounded-md px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 resize-none"
+                placeholder="Describe controls and safeguards in place…" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Residual Risk Level</label>
+              <p className="text-[11px] text-slate-500 mb-2 font-mono">
+                Level of risk remaining after mitigations are applied.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  { level: "Low",      desc: "Well-controlled. Acceptable with current safeguards." },
+                  { level: "Medium",   desc: "Some risk remains. Additional monitoring may be needed." },
+                  { level: "High",     desc: "Significant risk. Escalation recommended." },
+                  { level: "Critical", desc: "Unacceptable. Executive sign-off required." },
+                ].map(({ level, desc }) => {
+                  const selected = form.residual_risk === level;
+                  return (
+                    <button key={level} type="button"
+                      onClick={() => set("residual_risk", selected ? "" : level)}
+                      className={`flex flex-col rounded-md border p-2 text-left transition-colors font-mono ${
+                        selected
+                          ? "border-slate-900 bg-slate-900 text-white"
+                          : "border-slate-200 bg-slate-50/50 hover:bg-slate-100 text-slate-700"
+                      }`}>
+                      <p className="text-xs font-bold">{level}{selected && " ✓"}</p>
+                      <p className={`text-[10px] mt-0.5 ${selected ? "text-slate-300" : "text-slate-500"}`}>{desc}</p>
+                    </button>
+                  );
+                })}
               </div>
-              <div>
-                <label className="block text-sm font-medium text-surface-700 mb-1">Residual Risk Level</label>
-                <p className="text-xs text-surface-400 mb-2">
-                  Level of risk remaining <span className="font-medium text-surface-600">after</span> mitigations are applied.
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { level: "Low",      idle: "border-green-200 bg-green-50 hover:bg-green-100",    active: "border-green-500 bg-green-100 ring-2 ring-green-400",    dot: "bg-green-500",  text: "text-green-800",  desc: "Well-controlled. Acceptable with current safeguards." },
-                    { level: "Medium",   idle: "border-amber-200 bg-amber-50 hover:bg-amber-100",    active: "border-amber-500 bg-amber-100 ring-2 ring-amber-400",    dot: "bg-amber-500",  text: "text-amber-800",  desc: "Some risk remains. Additional monitoring may be needed." },
-                    { level: "High",     idle: "border-orange-200 bg-orange-50 hover:bg-orange-100", active: "border-orange-500 bg-orange-100 ring-2 ring-orange-400", dot: "bg-orange-500", text: "text-orange-800", desc: "Significant risk. Immediate action or escalation recommended." },
-                    { level: "Critical", idle: "border-red-200 bg-red-50 hover:bg-red-100",          active: "border-red-500 bg-red-100 ring-2 ring-red-400",          dot: "bg-red-500",    text: "text-red-800",    desc: "Unacceptable. Do not proceed without executive sign-off." },
-                  ].map(({ level, idle, active, dot, text, desc }) => {
-                    const selected = form.residual_risk === level;
-                    return (
-                      <button key={level} type="button"
-                        onClick={() => set("residual_risk", selected ? "" : level)}
-                        className={`flex items-start gap-2 rounded-lg border-2 px-2.5 py-2 text-left transition-all ${selected ? active : idle}`}>
-                        <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${dot}`} />
-                        <div className={text}>
-                          <p className={`text-xs font-bold ${selected ? "" : "opacity-80"}`}>{level}{selected && " ✓"}</p>
-                          <p className="text-[11px] leading-snug opacity-75 mt-0.5">{desc}</p>
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* Governance Activities Template */}
         <Card>
-          <CardHeader>
-            <CardTitle>Governance Activities</CardTitle>
-            <p className="text-xs text-surface-500 mt-0.5">
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Governance Activities
+            </CardTitle>
+            <p className="text-xs text-slate-500 mt-0.5">
               Pre-filled from the standard template. Edit activity descriptions and responsible party as needed.
             </p>
           </CardHeader>
-          <CardContent className="space-y-6">
-            <div ref={govContainerRef} className="space-y-6">
+          <CardContent className="pt-4 space-y-4">
+            <div ref={govContainerRef} className="space-y-4">
             {GOVERNANCE_SECTIONS.map(({ key, label, code }) => {
               const items = governance[key];
               return (
                 <div key={key}>
-                  <p className="text-sm font-semibold text-surface-700 mb-2 flex items-center gap-2">
-                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-100 text-primary-700 text-xs font-bold">{code}</span>
+                  <p className="text-xs font-semibold font-mono text-slate-900 mb-2 flex items-center gap-1.5">
+                    <span className="inline-flex items-center justify-center w-4 h-4 rounded-md bg-slate-900 text-white text-[10px] font-bold">{code}</span>
                     {label}
                   </p>
-                  <div className="space-y-2">
+                  <div className="space-y-1.5">
                     {items.map((item, idx) => (
-                      <div key={item.id} className="flex items-stretch gap-2 p-2.5 rounded-lg border border-surface-200 bg-surface-50 min-w-0">
-                        <span className="text-xs text-surface-400 font-mono self-start pt-2 min-w-[20px] shrink-0">{idx + 1}.</span>
-                        <div className="flex-1 min-w-0 flex items-stretch">
+                      <div key={item.id} className="flex items-center gap-2 p-2 rounded-md border border-slate-200 bg-slate-50/30 min-w-0">
+                        <span className="text-[10px] text-slate-400 font-mono min-w-[18px] shrink-0">{idx + 1}.</span>
+                        <div className="flex-1 min-w-0 flex items-center">
                           <textarea
                             value={item.item}
                             rows={1}
@@ -338,17 +396,17 @@ export default function NewDPIAPage() {
                               e.target.style.height = e.target.scrollHeight + "px";
                             }}
                             ref={(el) => { if (el) { requestAnimationFrame(() => { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }); } }}
-                            className="w-full border border-surface-200 rounded px-2.5 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none overflow-hidden"
+                            className="w-full border border-slate-200 rounded-md px-2.5 py-1 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-slate-400 resize-none overflow-hidden"
                           />
                         </div>
-                        <div className="flex items-stretch self-stretch rounded-md border border-surface-200 overflow-hidden">
+                        <div className="flex items-stretch rounded-md border border-slate-200 overflow-hidden shrink-0">
                           <button
                             type="button"
                             onClick={() => updateItem(key, item.id, "responsible", "Internal")}
-                            className={`px-2.5 flex items-center justify-center text-xs font-medium text-center transition-colors ${
+                            className={`px-2 py-1 text-[10px] font-mono transition-colors ${
                               item.responsible === "Internal"
-                                ? "bg-blue-600 text-white"
-                                : "bg-white text-surface-500 hover:bg-surface-50"
+                                ? "bg-slate-900 text-white font-medium"
+                                : "bg-white text-slate-500 hover:bg-slate-50"
                             }`}
                           >
                             ADI-DI
@@ -356,10 +414,10 @@ export default function NewDPIAPage() {
                           <button
                             type="button"
                             onClick={() => updateItem(key, item.id, "responsible", "Client")}
-                            className={`px-2.5 flex items-center justify-center text-xs font-medium text-center transition-colors border-l border-surface-200 ${
+                            className={`px-2 py-1 text-[10px] font-mono transition-colors border-l border-slate-200 ${
                               item.responsible === "Client"
-                                ? "bg-purple-600 text-white"
-                                : "bg-white text-surface-500 hover:bg-surface-50"
+                                ? "bg-slate-700 text-white font-medium"
+                                : "bg-white text-slate-500 hover:bg-slate-50"
                             }`}
                           >
                             {selectedProject?.customer_name || "Client"}
@@ -371,7 +429,7 @@ export default function NewDPIAPage() {
                 </div>
               );
             })}
-            <p className="text-xs text-surface-400">
+            <p className="text-[11px] text-slate-400 font-mono">
               Status and remarks for each activity can be tracked on the detail page after creation.
             </p>
             </div>
@@ -379,15 +437,17 @@ export default function NewDPIAPage() {
         </Card>
 
         {mutation.isError && (
-          <p className="text-sm text-red-600 bg-red-50 px-4 py-2 rounded border border-red-200">
+          <div className="rounded-md bg-rose-50 border border-rose-200 p-3 text-xs font-mono text-rose-700">
             Failed to create DPIA. Please check all required fields.
-          </p>
+          </div>
         )}
 
-        <div className="flex justify-end gap-3">
-          <Button type="button" variant="outline" onClick={() => router.back()}>Cancel</Button>
-          <Button type="submit" disabled={mutation.isPending}>
-            {mutation.isPending ? "Creating…" : "Create DPIA"}
+        <div className="flex items-center justify-end gap-2.5 pt-1">
+          <Button type="button" variant="outline" size="sm" className="h-8 text-xs" onClick={() => router.back()}>
+            Cancel
+          </Button>
+          <Button type="submit" size="sm" loading={mutation.isPending} className="h-8 text-xs font-medium">
+            Create DPIA Assessment
           </Button>
         </div>
       </form>

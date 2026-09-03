@@ -3,12 +3,14 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, Pencil, Save, Send, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, Download, Pencil, Save, Send, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { toast } from "@/components/ui/Toast";
+import { DetailSkeleton } from "@/components/ui/LoadingState";
 import { AickDetailCards } from "@/components/details/AickDetailView";
 import { DetailModal } from "@/components/details/DetailModal";
 import { DsrDetailCards } from "@/components/details/DsrDetailView";
@@ -222,6 +224,16 @@ export default function DPIADetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
+  const currentUser = useAuthStore(s => s.user);
+  const isSuperAdmin = Boolean(
+    currentUser?.roles?.some((r: any) => (typeof r === "string" ? r : r.name) === "super_admin") ||
+    currentUser?.is_super_admin
+  );
+  const canAction = (approverId?: string | null) => {
+    if (!currentUser) return false;
+    if (isSuperAdmin) return true;
+    return Boolean(approverId && currentUser.id === approverId);
+  };
 
   const [editing, setEditing] = React.useState(false);
   const [form, setForm] = React.useState<Partial<DPIADetail>>({});
@@ -320,20 +332,41 @@ export default function DPIADetailPage() {
     },
   });
 
-
-  const currentUser = useAuthStore(s => s.user);
+  const [approvalComment, setApprovalComment] = React.useState<Record<number, string>>({});
 
   const submitMutation = useMutation({
-    mutationFn: () => api.post(`/dpia/${id}/submit`, {}),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["dpia", id] }),
-    onError: (e: any) => alert(e.message ?? "Failed to submit"),
+    mutationFn: () => {
+      toast.loading("Submitting DPIA assessment for review...", { id: "dpia-action" });
+      return api.post(`/dpia/${id}/submit`, {});
+    },
+    onSuccess: () => {
+      toast.success("DPIA submitted successfully for review!", { id: "dpia-action" });
+      qc.invalidateQueries({ queryKey: ["dpia", id] });
+      qc.invalidateQueries({ queryKey: ["dpias"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (e: any) => {
+      toast.error(e.message ?? "Failed to submit DPIA", { id: "dpia-action" });
+    },
   });
 
   const approvalMutation = useMutation({
-    mutationFn: ({ step, action, comments }: { step: number; action: string; comments?: string }) =>
-      api.post(`/dpia/${id}/approvals/${step}`, { action, comments }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["dpia", id] }),
-    onError: (e: any) => alert(e.message ?? "Failed to action approval"),
+    mutationFn: ({ step, action, comments }: { step: number; action: string; comments?: string }) => {
+      const label = action === "approve" ? "Approving" : "Rejecting";
+      toast.loading(`${label} Step ${step}...`, { id: "dpia-approval" });
+      return api.post(`/dpia/${id}/approvals/${step}`, { action, comments: comments ?? approvalComment[step] ?? "" });
+    },
+    onSuccess: (_, variables) => {
+      const msg = variables.action === "approve" ? "Step approved successfully!" : "DPIA rejected.";
+      toast.success(msg, { id: "dpia-approval" });
+      qc.invalidateQueries({ queryKey: ["dpia", id] });
+      qc.invalidateQueries({ queryKey: ["dpias"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      setApprovalComment((prev) => ({ ...prev, [variables.step]: "" }));
+    },
+    onError: (e: any) => {
+      toast.error(e.message ?? "Failed to action approval", { id: "dpia-approval" });
+    },
   });
 
   function startEdit() {
@@ -492,7 +525,7 @@ export default function DPIADetailPage() {
     printA4(`${dpia.tracking_id ?? "DPIA"} — DPIA`, body);
   }
 
-  if (isLoading) return <div className="p-6 text-surface-400">Loading…</div>;
+  if (isLoading) return <DetailSkeleton />;
   if (!dpia) return <div className="p-6 text-red-500">DPIA not found</div>;
 
   const govData = editing ? govDraft : dpia.governance_json;
@@ -518,47 +551,47 @@ export default function DPIADetailPage() {
   const dsrApprovals = (dsrForDpia?.approvals ?? []) as { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[];
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-start gap-3 mb-6">
+      <div className="flex items-start gap-3 pb-3 border-b border-slate-200">
         <button onClick={() => router.back()}
-          className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-surface-100 shrink-0 mt-0.5">
-          <ArrowLeft size={18} />
+          className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-200 hover:bg-slate-100 shrink-0 mt-0.5 text-slate-600">
+          <ArrowLeft className="h-4 w-4" />
         </button>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono font-bold text-surface-800 text-lg">{dpia.tracking_id ?? "DPIA"}</span>
-                <Badge variant={statusVariant(dpia.status)}>
+                <span className="font-mono font-bold text-slate-900 text-sm">{dpia.tracking_id ?? "DPIA"}</span>
+                <Badge variant={statusVariant(dpia.status)} className="text-[10px]">
                   {dpia.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
                 </Badge>
-                <span className="text-xs text-surface-400">v{dpia.version}</span>
+                <span className="text-[10px] font-mono text-slate-400">v{dpia.version}</span>
               </div>
-              <h1 className="mt-0.5 truncate">{dpia.process_name}</h1>
-              <p className="text-sm text-surface-500">Data Protection Impact Assessment</p>
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 mt-1 truncate">{dpia.process_name}</h1>
+              <p className="text-xs text-slate-500 font-mono mt-0.5">Data Protection Impact Assessment</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <Button variant="outline" size="sm" onClick={handleExportPDF}>
-                <Download size={14} className="mr-1.5" />Export PDF
+              <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={handleExportPDF}>
+                <Download className="h-3.5 w-3.5 mr-1" />Export PDF
               </Button>
               {dpia.status === "draft" && (
                 editing ? (
                   <>
-                    <Button variant="outline" size="sm" onClick={cancelEdit}>
-                      <X size={14} className="mr-1.5" />Cancel
+                    <Button variant="outline" size="sm" className="h-7.5 text-xs" onClick={cancelEdit}>
+                      <X className="h-3.5 w-3.5 mr-1" />Cancel
                     </Button>
-                    <Button size="sm" onClick={handleSave} disabled={saveMutation.isPending}>
-                      <Save size={14} className="mr-1.5" />{saveMutation.isPending ? "Saving…" : "Save"}
+                    <Button size="sm" className="h-7.5 text-xs font-medium" onClick={handleSave} disabled={saveMutation.isPending}>
+                      <Save className="h-3.5 w-3.5 mr-1" />{saveMutation.isPending ? "Saving…" : "Save"}
                     </Button>
                   </>
                 ) : (
                   <>
-                    <Button variant="outline" size="sm" onClick={startEdit}>
-                      <Pencil size={14} className="mr-1.5" />Edit
+                    <Button variant="outline" size="sm" className="h-7.5 text-xs" onClick={startEdit}>
+                      <Pencil className="h-3.5 w-3.5 mr-1" />Edit
                     </Button>
-                    <Button size="sm" onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending}>
-                      <Send size={14} className="mr-1.5" />{submitMutation.isPending ? "Submitting…" : "Submit"}
+                    <Button size="sm" className="h-7.5 text-xs font-medium" onClick={() => submitMutation.mutate()} disabled={submitMutation.isPending}>
+                      <Send className="h-3.5 w-3.5 mr-1" />{submitMutation.isPending ? "Submitting…" : "Submit"}
                     </Button>
                   </>
                 )
@@ -568,73 +601,121 @@ export default function DPIADetailPage() {
         </div>
       </div>
 
+      {/* Top Banner: Action Required when awaiting approval */}
+      {(() => {
+        const activeStep = (dpia.approvals ?? []).find((a) => a.status === "requested");
+        if (!activeStep) return null;
+        const STEP_LABELS: Record<number, string> = { 1: "PIC Data Compliance Approval", 2: "DM Approval" };
+        const userCanAction = canAction(activeStep.approver_id);
+        return (
+          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              <div>
+                <p className="text-xs font-semibold text-slate-900">
+                  {userCanAction ? "Action Required: " : "Pending Review: "}
+                  {STEP_LABELS[activeStep.step_order] ?? `Step ${activeStep.step_order}`} Pending Approval
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Assigned Approver: {activeStep.approver_name || "Project Approver"}
+                </p>
+              </div>
+            </div>
+            {userCanAction ? (
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
+                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "reject" })}
+                  disabled={approvalMutation.isPending}
+                >
+                  <X className="h-3 w-3 mr-1" /> Reject
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
+                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "approve" })}
+                  disabled={approvalMutation.isPending}
+                >
+                  <Check className="h-3 w-3 mr-1" /> Approve Step
+                </Button>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic shrink-0">
+                Waiting for {activeStep.approver_name || "designated approver"} to sign-off
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Amber banner when draft */}
       {dpia.status === "draft" && !editing && (
-        <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-amber-800">
+        <div className="px-3.5 py-2 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800 font-mono">
           This DPIA is in draft. Complete the details below and submit for approval when ready.
         </div>
       )}
 
       {/* Project Information */}
       <Card>
-        <CardHeader><CardTitle>Project Information</CardTitle></CardHeader>
-        <CardContent>
+        <CardHeader className="pb-3 border-b border-slate-100"><CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Project Information</CardTitle></CardHeader>
+        <CardContent className="pt-4">
           {!editing ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 text-xs">
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Project ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project ID</p>
                 <button onClick={openProjectModal}
-                  className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                  className="font-mono text-xs font-medium text-slate-900 hover:underline text-left">
                   {project?.project_code ?? dpia.project_code ?? dpia.project_id.slice(0, 8)}
                 </button>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-1">PII Flag</p>
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${piiBadgeCls}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${piiDotCls}`} />
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-1">PII Flag</p>
+                <Badge variant={hasHighPii ? "danger" : hasPii ? "warning" : "success"} className="text-[10px]">
                   {piiLabel}
-                </span>
+                </Badge>
                 {piiCats.length > 0 && (
-                  <p className="text-[11px] text-surface-400 mt-1">{piiCats.length} categor{piiCats.length === 1 ? "y" : "ies"} selected</p>
+                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">{piiCats.length} categor{piiCats.length === 1 ? "y" : "ies"} selected</p>
                 )}
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">DSR ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">DSR ID</p>
                 {dsrForDpia ? (
                   <button onClick={() => setShowDsrModal(true)}
-                    className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                    className="font-mono text-xs font-medium text-slate-900 hover:underline text-left">
                     {dsrForDpia.tracking_id}
                   </button>
                 ) : (
-                  <span className="font-mono text-surface-400">—</span>
+                  <span className="font-mono text-slate-400">—</span>
                 )}
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">AICK ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">AICK ID</p>
                 {dsrForDpia?.ai_checklist ? (
                   <button onClick={() => setShowAickModal(true)}
-                    className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                    className="font-mono text-xs font-medium text-slate-900 hover:underline text-left">
                     {dsrForDpia.tracking_id.replace("DSR", "AICK")}
                   </button>
                 ) : (
-                  <span className="font-mono text-surface-400">—</span>
+                  <span className="font-mono text-slate-400">—</span>
                 )}
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Project Name</p>
-                <p className="font-medium">{project?.project_name ?? dpia.project_name ?? "—"}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project Name</p>
+                <p className="text-xs font-medium text-slate-900">{project?.project_name ?? dpia.project_name ?? "—"}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Customer / Client</p>
-                <p className="font-medium">{project?.customer_name ?? dpia.customer_name ?? "—"}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Customer / Client</p>
+                <p className="text-xs font-medium text-slate-900">{project?.customer_name ?? dpia.customer_name ?? "—"}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Sharing Start Date</p>
-                <p className="font-medium">{dsrForDpia?.duration_start ? formatDate(dsrForDpia.duration_start) : "—"}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Sharing Start Date</p>
+                <p className="text-xs font-mono font-medium text-slate-900">{dsrForDpia?.duration_start ? formatDate(dsrForDpia.duration_start) : "—"}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Sharing End Date</p>
-                <p className="font-medium">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Sharing End Date</p>
+                <p className="text-xs font-mono font-medium text-slate-900">
                   {dsrForDpia?.project_end_date
                     ? formatDate(dsrForDpia.project_end_date)
                     : dsrForDpia?.duration_end
@@ -644,68 +725,41 @@ export default function DPIADetailPage() {
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-              {/* Row 1: Project ID | PII Flag */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 text-xs">
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Project ID</p>
-                <p className="font-mono font-medium text-surface-700">{project?.project_code ?? dpia.project_code ?? "—"}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project ID</p>
+                <p className="font-mono font-medium text-slate-700">{project?.project_code ?? dpia.project_code ?? "—"}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-1">PII Flag</p>
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${piiBadgeCls}`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${piiDotCls}`} />
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-1">PII Flag</p>
+                <Badge variant={hasHighPii ? "danger" : hasPii ? "warning" : "success"} className="text-[10px]">
                   {piiLabel}
-                </span>
+                </Badge>
                 {piiCats.length > 0 && (
-                  <p className="text-[11px] text-surface-400 mt-1">{piiCats.length} categor{piiCats.length === 1 ? "y" : "ies"} selected</p>
+                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">{piiCats.length} categor{piiCats.length === 1 ? "y" : "ies"} selected</p>
                 )}
               </div>
-              {/* Row 2: DSR ID | AICK ID */}
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">DSR ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">DSR ID</p>
                 {dsrForDpia ? (
                   <button onClick={() => setShowDsrModal(true)}
-                    className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                    className="font-mono text-xs font-medium text-slate-900 hover:underline text-left">
                     {dsrForDpia.tracking_id}
                   </button>
                 ) : (
-                  <span className="font-mono text-surface-400">—</span>
+                  <span className="font-mono text-slate-400">—</span>
                 )}
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">AICK ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">AICK ID</p>
                 {dsrForDpia?.ai_checklist ? (
                   <button onClick={() => setShowAickModal(true)}
-                    className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                    className="font-mono text-xs font-medium text-slate-900 hover:underline text-left">
                     {dsrForDpia.tracking_id.replace("DSR", "AICK")}
                   </button>
                 ) : (
-                  <span className="font-mono text-surface-400">—</span>
+                  <span className="font-mono text-slate-400">—</span>
                 )}
-              </div>
-              {/* Row 3: Project Name | Customer/Client */}
-              <div>
-                <p className="text-xs text-surface-400 mb-0.5">Project Name</p>
-                <p className="font-medium">{project?.project_name ?? dpia.project_name ?? "—"}</p>
-              </div>
-              <div>
-                <p className="text-xs text-surface-400 mb-0.5">Customer / Client</p>
-                <p className="font-medium">{project?.customer_name ?? dpia.customer_name ?? "—"}</p>
-              </div>
-              {/* Row 4: Sharing Start | Sharing End */}
-              <div>
-                <p className="text-xs text-surface-400 mb-0.5">Sharing Start Date</p>
-                <p className="font-medium">{dsrForDpia?.duration_start ? formatDate(dsrForDpia.duration_start) : "—"}</p>
-              </div>
-              <div>
-                <p className="text-xs text-surface-400 mb-0.5">Sharing End Date</p>
-                <p className="font-medium">
-                  {dsrForDpia?.project_end_date
-                    ? formatDate(dsrForDpia.project_end_date)
-                    : dsrForDpia?.duration_end
-                    ? formatDate(dsrForDpia.duration_end)
-                    : "—"}
-                </p>
               </div>
             </div>
           )}
@@ -714,31 +768,30 @@ export default function DPIADetailPage() {
 
       {/* Data Categories Involved */}
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-3 border-b border-slate-100">
           <div className="flex items-center justify-between gap-2">
-            <CardTitle>Data Categories Involved</CardTitle>
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Data Categories Involved</CardTitle>
             {!editing && piiCats.length > 0 && (
-              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold ${piiBadgeCls}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${piiDotCls}`} />
+              <Badge variant={hasHighPii ? "danger" : hasPii ? "warning" : "success"} className="text-[10px]">
                 {piiLabel} · {piiCats.length} categor{piiCats.length === 1 ? "y" : "ies"}
-              </span>
+              </Badge>
             )}
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pt-4">
           {editing ? (
             <>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 {DATA_CATEGORY_GROUPS.map(({ group, items }) => (
-                  <div key={group} className="rounded-lg border border-surface-200 bg-surface-50 px-3 py-2.5">
-                    <p className="text-[10px] font-semibold text-surface-400 uppercase tracking-wide mb-1.5">{group}</p>
+                  <div key={group} className="rounded-md border border-slate-200 bg-slate-50/50 p-2.5">
+                    <p className="text-[10px] font-semibold text-slate-500 uppercase font-mono tracking-wide mb-1.5">{group}</p>
                     <div className="flex flex-wrap gap-1">
                       {items.map((item) => {
                         const sel = selectedCategories.includes(item);
                         return (
                           <button key={item} type="button"
                             onClick={() => setSelectedCategories((prev) => sel ? prev.filter((c) => c !== item) : [...prev, item])}
-                            className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium border transition-all ${sel ? "bg-primary-600 border-primary-600 text-white" : "bg-white border-surface-200 text-surface-600 hover:border-primary-400 hover:text-primary-600"}`}>
+                            className={`px-1.5 py-0.5 rounded-md text-[10px] font-mono transition-colors border ${sel ? "bg-slate-900 border-slate-900 text-white font-medium" : "bg-white border-slate-200 text-slate-600 hover:border-slate-400"}`}>
                             {sel && "✓ "}{item}
                           </button>
                         );
@@ -748,20 +801,20 @@ export default function DPIADetailPage() {
                 ))}
               </div>
               {selectedCategories.length > 0 && (
-                <p className="text-xs text-primary-600 mt-3 font-medium">
+                <p className="text-xs text-slate-600 mt-2.5 font-mono">
                   {selectedCategories.length} categor{selectedCategories.length === 1 ? "y" : "ies"} selected
-                  <button type="button" onClick={() => setSelectedCategories([])} className="ml-2 text-surface-400 hover:text-red-500 font-normal">Clear all</button>
+                  <button type="button" onClick={() => setSelectedCategories([])} className="ml-2 text-slate-400 hover:text-rose-600 font-normal">Clear all</button>
                 </p>
               )}
             </>
           ) : piiCats.length > 0 ? (
-            <div className="grid grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
               {DATA_CATEGORY_GROUPS.filter((g) => g.items.some((i) => piiCats.includes(i))).map(({ group, items }) => (
-                <div key={group} className="rounded-lg border border-surface-200 bg-surface-50 px-3 py-2.5">
-                  <p className="text-[10px] font-semibold text-surface-400 uppercase tracking-wide mb-1.5">{group}</p>
+                <div key={group} className="rounded-md border border-slate-200 bg-slate-50/50 p-2.5">
+                  <p className="text-[10px] font-semibold text-slate-500 uppercase font-mono tracking-wide mb-1.5">{group}</p>
                   <div className="flex flex-wrap gap-1">
                     {items.filter((i) => piiCats.includes(i)).map((item) => (
-                      <span key={item} className="px-1.5 py-0.5 rounded-full text-[11px] font-medium border bg-primary-600 border-primary-600 text-white">
+                      <span key={item} className="px-1.5 py-0.5 rounded-md text-[10px] font-mono border bg-slate-900 border-slate-900 text-white font-medium">
                         {item}
                       </span>
                     ))}
@@ -770,21 +823,21 @@ export default function DPIADetailPage() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-surface-400 italic">No data categories selected.</p>
+            <p className="text-xs text-slate-400 italic font-mono">No data categories selected.</p>
           )}
         </CardContent>
       </Card>
 
       {/* Approval Timeline */}
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-3 border-b border-slate-100">
           <div className="flex items-center justify-between flex-wrap gap-2">
-            <CardTitle>Approval Timeline</CardTitle>
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
             <Badge variant={
-              dpia.status === "approved" ? "approved" :
-              dpia.status === "rejected" ? "rejected" :
-              dpia.status === "submitted" || dpia.status === "under_review" ? "warning" : "draft"
-            }>
+              dpia.status === "approved" ? "success" :
+              dpia.status === "rejected" ? "danger" :
+              dpia.status === "submitted" || dpia.status === "under_review" ? "warning" : "default"
+            } className="text-[10px]">
               {dpia.status === "approved" ? "Approved" :
                dpia.status === "rejected" ? "Rejected" :
                dpia.status === "submitted" ? "Submitted" :
@@ -792,52 +845,85 @@ export default function DPIADetailPage() {
             </Badge>
           </div>
         </CardHeader>
-        <CardContent>
-          <ol className="relative border-l border-surface-200 space-y-5 ml-3">
+        <CardContent className="pt-4">
+          <ol className="relative border-l border-slate-200 space-y-4 ml-3">
             {[...(dpia.approvals ?? [])].sort((a, b) => a.step_order - b.step_order).map((step) => {
               const STEP_LABELS: Record<number, string> = { 1: "PIC Data Compliance Approval", 2: "DM Approval" };
-              const isActive = step.status === "requested";
-              const canAction = isActive && (currentUser?.id === step.approver_id || currentUser?.is_super_admin);
+              const isRequested = step.status === "requested";
+
               return (
-                <li key={step.id} className="ml-4">
-                  <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${
-                    step.status === "approved"  ? "bg-green-500" :
-                    step.status === "rejected"  ? "bg-red-500" :
-                    step.status === "requested" ? "bg-primary-500" :
-                    "bg-surface-300"
+                <li key={step.id} className="ml-3.5">
+                  <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
+                    step.status === "approved"  ? "bg-emerald-600" :
+                    step.status === "rejected"  ? "bg-rose-600" :
+                    isRequested ? "bg-slate-900" :
+                    "bg-slate-300"
                   }`} />
-                  <p className={`text-sm font-semibold ${step.status === "pending" ? "text-surface-400" : "text-surface-800"}`}>
-                    {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-                  </p>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
+                      {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
+                    </p>
+                    <Badge
+                      variant={step.status === "approved" ? "success" : step.status === "rejected" ? "danger" : isRequested ? "warning" : "default"}
+                      className="text-[10px]">
+                      {step.status === "approved" ? "Approved" :
+                       step.status === "rejected"  ? "Rejected" :
+                       isRequested ? "Awaiting Action" :
+                       "Not Yet"}
+                    </Badge>
+                  </div>
                   {step.approver_name && (
-                    <p className={`text-xs ${step.status === "pending" ? "text-surface-400" : "text-surface-500"}`}>
+                    <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-600"}`}>
                       {step.approver_name}
                     </p>
                   )}
-                  <Badge
-                    variant={step.status === "approved" ? "approved" : step.status === "rejected" ? "rejected" : "draft"}
-                    className="mt-1 text-xs">
-                    {step.status === "approved" ? "Approved" :
-                     step.status === "rejected"  ? "Rejected" :
-                     step.status === "pending"   ? "Not Yet" : "Requested"}
-                  </Badge>
                   {step.actioned_at && (
-                    <p className="text-xs text-surface-400 mt-0.5">{new Date(step.actioned_at).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
+                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">Actioned on {new Date(step.actioned_at).toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</p>
                   )}
-                  {canAction && (
-                    <div className="flex items-center gap-2 mt-2">
-                      <Button size="sm" variant="default"
-                        onClick={() => approvalMutation.mutate({ step: step.step_order, action: "approve" })}
-                        disabled={approvalMutation.isPending}>
-                        Approve
-                      </Button>
-                      <Button size="sm" variant="outline"
-                        onClick={() => approvalMutation.mutate({ step: step.step_order, action: "reject" })}
-                        disabled={approvalMutation.isPending}
-                        className="text-red-600 border-red-300 hover:bg-red-50">
-                        Reject
-                      </Button>
-                    </div>
+                  {step.comments && (
+                    <p className="text-xs text-slate-600 italic mt-1 bg-slate-50 border border-slate-100 rounded p-1.5 font-mono">
+                      &ldquo;{step.comments}&rdquo;
+                    </p>
+                  )}
+
+                  {/* Interactive Approval Controls for Active Requested Step */}
+                  {isRequested && (
+                    canAction(step.approver_id) ? (
+                      <div className="mt-2.5 p-3 rounded-md border border-slate-200 bg-slate-50/60 space-y-2.5 font-mono">
+                        <textarea
+                          rows={2}
+                          className="input-base text-xs font-sans resize-none w-full bg-white"
+                          placeholder="Add review comments or sign-off notes (optional)…"
+                          value={approvalComment[step.step_order] ?? ""}
+                          onChange={(e) =>
+                            setApprovalComment((prev) => ({ ...prev, [step.step_order]: e.target.value }))
+                          }
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
+                            disabled={approvalMutation.isPending}
+                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "approve" })}
+                          >
+                            <Check className="h-3 w-3 mr-1" /> Approve Step
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
+                            disabled={approvalMutation.isPending}
+                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "reject" })}
+                          >
+                            <X className="h-3 w-3 mr-1" /> Reject Request
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 p-2.5 rounded bg-slate-50 border border-slate-200 text-xs text-slate-500 font-mono italic">
+                        Waiting for {step.approver_name || "designated approver"} to review and take action.
+                      </div>
+                    )
                   )}
                 </li>
               );
@@ -848,16 +934,16 @@ export default function DPIADetailPage() {
 
       {/* Regulatory References */}
       <Card>
-        <CardHeader><CardTitle>Regulatory References</CardTitle></CardHeader>
-        <CardContent>
-          <p className="text-xs text-surface-500 mb-3">
+        <CardHeader className="pb-3 border-b border-slate-100"><CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Regulatory References</CardTitle></CardHeader>
+        <CardContent className="pt-4">
+          <p className="text-xs text-slate-500 font-mono mb-2.5">
             Based on Undang-Undang Pelindungan Data Pribadi (UU PDP) No. 27/2022:
           </p>
           <ol className="space-y-2">
             {REGULATORY_REFS.map((ref, idx) => (
-              <li key={idx} className="flex gap-3 text-sm">
-                <span className="font-semibold text-primary-700 min-w-[80px]">{ref.pasal}</span>
-                <span className="text-surface-600">{ref.desc}</span>
+              <li key={idx} className="flex gap-2.5 text-xs">
+                <span className="font-semibold font-mono text-slate-900 min-w-[75px]">{ref.pasal}</span>
+                <span className="text-slate-600">{ref.desc}</span>
               </li>
             ))}
           </ol>
@@ -866,71 +952,71 @@ export default function DPIADetailPage() {
 
       {/* Governance Activities */}
       <Card>
-        <CardHeader><CardTitle>Governance Activities</CardTitle></CardHeader>
-        <CardContent className="space-y-6">
-          <div ref={govContainerRef}>
+        <CardHeader className="pb-3 border-b border-slate-100"><CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Governance Activities</CardTitle></CardHeader>
+        <CardContent className="pt-4 space-y-5">
+          <div ref={govContainerRef} className="space-y-4">
           {GOVERNANCE_SECTIONS.map(({ key, label, code }) => {
             const items = (govData?.[key] ?? []) as GovernanceItem[];
             return (
               <div key={key}>
-                <p className="text-sm font-semibold text-surface-700 mb-2 flex items-center gap-2">
-                  <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-primary-100 text-primary-700 text-xs font-bold">{code}</span>
+                <p className="text-xs font-semibold font-mono text-slate-900 mb-2 flex items-center gap-1.5">
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded-md bg-slate-900 text-white text-[10px] font-bold">{code}</span>
                   {label}
                 </p>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm border border-surface-200 rounded-lg overflow-hidden">
-                    <thead className="bg-surface-50">
+                <div className="overflow-x-auto rounded-md border border-slate-200">
+                  <table className="w-full text-xs divide-y divide-slate-100">
+                    <thead className="bg-slate-50 text-[10px] uppercase font-mono text-slate-500 border-b border-slate-200">
                       <tr>
-                        <th className="px-3 py-2 text-left text-xs font-semibold text-surface-500 w-1/2">Activity</th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold text-surface-500 w-40">Responsible</th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold text-surface-500 w-32">Status</th>
-                        <th className="px-3 py-2 text-left text-xs font-semibold text-surface-500">Remarks</th>
+                        <th className="px-3 py-2 text-left w-1/2">Activity</th>
+                        <th className="px-3 py-2 text-left w-36">Responsible</th>
+                        <th className="px-3 py-2 text-left w-28">Status</th>
+                        <th className="px-3 py-2 text-left">Remarks</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-surface-100">
+                    <tbody className="divide-y divide-slate-100">
                       {items.map((item) => (
-                        <tr key={item.id} className="hover:bg-surface-50">
-                          <td className="px-3 py-2.5 text-surface-700 leading-snug">
+                        <tr key={item.id} className="hover:bg-slate-50">
+                          <td className="px-3 py-2 text-slate-800 leading-snug">
                             {item.item}
                           </td>
-                          <td className="px-3 py-2.5">
+                          <td className="px-3 py-2">
                             {editing ? (
                               <div className={`flex items-stretch rounded-md border overflow-hidden transition-opacity ${
-                                item.status === "no" ? "opacity-40 pointer-events-none border-surface-100" : "border-surface-200"
+                                item.status === "no" ? "opacity-40 pointer-events-none border-slate-100" : "border-slate-200"
                               }`}>
                                 <button type="button"
                                   onClick={() => updateGovItem(key, item.id, "responsible", "Internal")}
-                                  className={`px-2 py-1 text-xs font-medium text-center transition-colors ${
-                                    item.responsible === "Internal" ? "bg-blue-600 text-white" : "bg-white text-surface-500 hover:bg-surface-50"
+                                  className={`px-2 py-0.5 text-[10px] font-mono transition-colors ${
+                                    item.responsible === "Internal" ? "bg-slate-900 text-white font-medium" : "bg-white text-slate-500 hover:bg-slate-50"
                                   }`}>
                                   ADI-DI
                                 </button>
                                 <button type="button"
                                   onClick={() => updateGovItem(key, item.id, "responsible", "Client")}
-                                  className={`px-2 py-1 text-xs font-medium text-center transition-colors border-l border-surface-200 ${
-                                    item.responsible === "Client" ? "bg-purple-600 text-white" : "bg-white text-surface-500 hover:bg-surface-50"
+                                  className={`px-2 py-0.5 text-[10px] font-mono transition-colors border-l border-slate-200 ${
+                                    item.responsible === "Client" ? "bg-slate-700 text-white font-medium" : "bg-white text-slate-500 hover:bg-slate-50"
                                   }`}>
                                   {project?.customer_name ?? dpia.customer_name ?? "Client"}
                                 </button>
                               </div>
                             ) : (
-                              <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono font-medium whitespace-nowrap border ${
                                 item.status === "no"
-                                  ? "opacity-40 bg-surface-100 text-surface-400"
+                                  ? "opacity-40 bg-slate-100 text-slate-400 border-slate-200"
                                   : item.responsible === "Internal"
-                                  ? "bg-blue-50 text-blue-700"
-                                  : "bg-purple-50 text-purple-700"
+                                  ? "bg-slate-100 text-slate-800 border-slate-200"
+                                  : "bg-slate-50 text-slate-700 border-slate-200"
                               }`}>
                                 {item.status === "no" ? "N/A" : item.responsible === "Internal" ? "ADI-DI" : (project?.customer_name ?? dpia.customer_name ?? "Client")}
                               </span>
                             )}
                           </td>
-                          <td className="px-3 py-2.5">
+                          <td className="px-3 py-2">
                             {editing ? (
                               <select
                                 value={item.status}
                                 onChange={(e) => updateGovItem(key, item.id, "status", e.target.value)}
-                                className="border border-surface-200 rounded px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-primary-500">
+                                className="border border-slate-200 rounded-md px-2 py-0.5 text-xs w-full font-mono focus:outline-none focus:ring-1 focus:ring-slate-400">
                                 <option value="">—</option>
                                 <option value="yes">Yes</option>
                                 <option value="no">No</option>
@@ -939,7 +1025,7 @@ export default function DPIADetailPage() {
                               <StatusBadge status={item.status} />
                             )}
                           </td>
-                          <td className="px-3 py-2.5">
+                          <td className="px-3 py-2">
                             {editing ? (
                               <textarea
                                 value={item.remarks}
@@ -951,9 +1037,9 @@ export default function DPIADetailPage() {
                                 }}
                                 ref={(el) => { if (el) { requestAnimationFrame(() => { el.style.height = "auto"; el.style.height = el.scrollHeight + "px"; }); } }}
                                 placeholder="Add remarks…"
-                                className="border border-surface-200 rounded px-2 py-1 text-xs w-full focus:outline-none focus:ring-1 focus:ring-primary-500 resize-none overflow-hidden" />
+                                className="border border-slate-200 rounded-md px-2 py-0.5 text-xs w-full focus:outline-none focus:ring-1 focus:ring-slate-400 resize-none overflow-hidden" />
                             ) : (
-                              <span className="text-surface-500 text-xs whitespace-pre-wrap">{item.remarks || "—"}</span>
+                              <span className="text-slate-500 text-xs whitespace-pre-wrap">{item.remarks || "—"}</span>
                             )}
                           </td>
                         </tr>
@@ -970,26 +1056,26 @@ export default function DPIADetailPage() {
 
       {/* Risk Assessment */}
       <Card>
-        <CardHeader><CardTitle>Risk Assessment</CardTitle></CardHeader>
-        <CardContent className="text-sm">
+        <CardHeader className="pb-3 border-b border-slate-100"><CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Risk Assessment</CardTitle></CardHeader>
+        <CardContent className="pt-4 text-xs">
           {editing ? (
             <>
-              <label className="block text-sm font-medium text-surface-700 mb-1">Risk Description</label>
-              <p className="text-xs text-surface-400 mb-1.5">
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Risk Description</label>
+              <p className="text-[11px] text-slate-500 mb-1.5">
                 Identify the privacy risk and potential impact on data subjects if it materialises.<br />
-                <span className="text-surface-500 italic">
+                <span className="text-slate-400 italic">
                   e.g. &quot;Unauthorised access to customer personal data during AI model training may result in identity theft or financial harm.&quot;
                 </span>
               </p>
-              <textarea value={form.risk_description as string} rows={5}
+              <textarea value={form.risk_description as string} rows={4}
                 onChange={(e) => setF("risk_description", e.target.value)}
-                className="w-full border border-surface-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+                className="w-full border border-slate-200 rounded-md px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 resize-none"
                 placeholder="Describe the privacy risk and potential harm to data subjects…" />
             </>
           ) : (
             <div>
-              <p className="text-xs text-surface-400 mb-1">Risk Description</p>
-              <p className="text-surface-700 leading-relaxed">{dpia.risk_description || "—"}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-1">Risk Description</p>
+              <p className="text-slate-800 leading-relaxed">{dpia.risk_description || "—"}</p>
             </div>
           )}
         </CardContent>
@@ -997,54 +1083,55 @@ export default function DPIADetailPage() {
 
       {/* Mitigation & Residual Risk */}
       <Card>
-        <CardHeader><CardTitle>Mitigation &amp; Residual Risk</CardTitle></CardHeader>
-        <CardContent className="space-y-5 text-sm">
+        <CardHeader className="pb-3 border-b border-slate-100"><CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Mitigation &amp; Residual Risk</CardTitle></CardHeader>
+        <CardContent className="pt-4 space-y-4 text-xs">
           <div>
             {editing ? (
               <>
-                <label className="block text-sm font-medium text-surface-700 mb-1">Mitigation Measures</label>
-                <p className="text-xs text-surface-400 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Mitigation Measures</label>
+                <p className="text-[11px] text-slate-500 mb-1.5">
                   Describe controls and safeguards in place to reduce the risk.<br />
-                  <span className="text-surface-500 italic">
+                  <span className="text-slate-400 italic">
                     e.g. &quot;Data is pseudonymised before transfer. Access is limited to authorised team members via RBAC. All activity is logged and auditable.&quot;
                   </span>
                 </p>
-                <textarea value={form.mitigation_measures as string} rows={4}
+                <textarea value={form.mitigation_measures as string} rows={3}
                   onChange={(e) => setF("mitigation_measures", e.target.value)}
-                  className="w-full border border-surface-200 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 resize-none"
+                  className="w-full border border-slate-200 rounded-md px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-slate-400 resize-none"
                   placeholder="Describe controls and safeguards in place…" />
               </>
             ) : (
               <>
-                <p className="text-xs text-surface-400 mb-1">Mitigation Measures</p>
-                <p className="text-surface-700 leading-relaxed">{dpia.mitigation_measures || "—"}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-1">Mitigation Measures</p>
+                <p className="text-slate-800 leading-relaxed">{dpia.mitigation_measures || "—"}</p>
               </>
             )}
           </div>
           <div>
             {editing ? (
               <>
-                <label className="block text-sm font-medium text-surface-700 mb-1">Residual Risk Level</label>
-                <p className="text-xs text-surface-400 mb-2">
-                  Level of risk remaining <span className="font-medium text-surface-600">after</span> mitigations are applied.
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Residual Risk Level</label>
+                <p className="text-[11px] text-slate-500 mb-2 font-mono">
+                  Level of risk remaining after mitigations are applied.
                 </p>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {([
-                    { level: "Low",      idle: "border-green-200 bg-green-50 hover:bg-green-100",    active: "border-green-500 bg-green-100 ring-2 ring-green-400",    dot: "bg-green-500",  text: "text-green-800",  desc: "Well-controlled. Acceptable with current safeguards." },
-                    { level: "Medium",   idle: "border-amber-200 bg-amber-50 hover:bg-amber-100",    active: "border-amber-500 bg-amber-100 ring-2 ring-amber-400",    dot: "bg-amber-500",  text: "text-amber-800",  desc: "Some risk remains. Additional monitoring may be needed." },
-                    { level: "High",     idle: "border-orange-200 bg-orange-50 hover:bg-orange-100", active: "border-orange-500 bg-orange-100 ring-2 ring-orange-400", dot: "bg-orange-500", text: "text-orange-800", desc: "Significant risk. Immediate action or escalation recommended." },
-                    { level: "Critical", idle: "border-red-200 bg-red-50 hover:bg-red-100",          active: "border-red-500 bg-red-100 ring-2 ring-red-400",          dot: "bg-red-500",    text: "text-red-800",    desc: "Unacceptable. Do not proceed without executive sign-off." },
-                  ] as { level: string; idle: string; active: string; dot: string; text: string; desc: string }[]).map(({ level, idle, active, dot, text, desc }) => {
+                    { level: "Low",      desc: "Well-controlled. Acceptable with current safeguards." },
+                    { level: "Medium",   desc: "Some risk remains. Additional monitoring may be needed." },
+                    { level: "High",     desc: "Significant risk. Escalation recommended." },
+                    { level: "Critical", desc: "Unacceptable. Executive sign-off required." },
+                  ] as { level: string; desc: string }[]).map(({ level, desc }) => {
                     const selected = (form.residual_risk as string) === level;
                     return (
                       <button key={level} type="button"
                         onClick={() => setF("residual_risk", selected ? "" : level)}
-                        className={`flex items-start gap-2 rounded-lg border-2 px-2.5 py-2 text-left transition-all ${selected ? active : idle}`}>
-                        <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${dot}`} />
-                        <div className={text}>
-                          <p className={`text-xs font-bold ${selected ? "" : "opacity-80"}`}>{level}{selected && " ✓"}</p>
-                          <p className="text-[11px] leading-snug opacity-75 mt-0.5">{desc}</p>
-                        </div>
+                        className={`flex flex-col rounded-md border p-2 text-left transition-colors font-mono ${
+                          selected
+                            ? "border-slate-900 bg-slate-900 text-white"
+                            : "border-slate-200 bg-slate-50/50 hover:bg-slate-100 text-slate-700"
+                        }`}>
+                        <p className="text-xs font-bold">{level}{selected && " ✓"}</p>
+                        <p className={`text-[10px] mt-0.5 ${selected ? "text-slate-300" : "text-slate-500"}`}>{desc}</p>
                       </button>
                     );
                   })}
@@ -1052,16 +1139,6 @@ export default function DPIADetailPage() {
               </>
             ) : (
               <>
-                <p className="text-xs text-surface-400 mb-1">Residual Risk</p>
-                {dpia.residual_risk && RESIDUAL_RISK_META[dpia.residual_risk] ? (
-                  <div className={`inline-flex items-start gap-2 rounded-lg border-2 px-2.5 py-2 ${RESIDUAL_RISK_META[dpia.residual_risk].border} ${RESIDUAL_RISK_META[dpia.residual_risk].bg}`}>
-                    <span className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${RESIDUAL_RISK_META[dpia.residual_risk].dot}`} />
-                    <div className={RESIDUAL_RISK_META[dpia.residual_risk].text}>
-                      <p className="text-xs font-bold">{dpia.residual_risk}</p>
-                      <p className="text-[11px] leading-snug opacity-75 mt-0.5">{RESIDUAL_RISK_META[dpia.residual_risk].desc}</p>
-                    </div>
-                  </div>
-                ) : <span className="text-surface-400">—</span>}
               </>
             )}
           </div>

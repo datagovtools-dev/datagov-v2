@@ -22,6 +22,7 @@ class BAPDApprovalOut(BaseModel):
     id: uuid.UUID
     bapd_id: uuid.UUID
     approver_id: uuid.UUID
+    approver_name: str = ""
     approver_role: str
     step_order: int
     status: str
@@ -52,18 +53,24 @@ class BAPDUpdate(BaseModel):
 class BAPDOut(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    customer_name: Optional[str] = None
     dataset_name: str
     dataset_location: str
     retention_policy_id: Optional[uuid.UUID] = None
+    retention_policy_name: Optional[str] = None
     expiry_date: date
     reason: str
     responsible_party_id: uuid.UUID
+    responsible_party_name: Optional[str] = None
     status: str
     pod_file_path: Optional[str] = None
     executed_at: Optional[datetime] = None
     executed_by: Optional[uuid.UUID] = None
     version: int
     created_by: uuid.UUID
+    created_by_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     approvals: list[BAPDApprovalOut] = []
@@ -72,11 +79,17 @@ class BAPDOut(BaseModel):
 
 class BAPDListItem(BaseModel):
     id: uuid.UUID
+    project_id: Optional[uuid.UUID] = None
+    project_code: Optional[str] = None
+    project_name: Optional[str] = None
+    customer_name: Optional[str] = None
     dataset_name: str
     dataset_location: str
     expiry_date: date
     status: str
     version: int
+    responsible_party_name: Optional[str] = None
+    created_by_name: Optional[str] = None
     pod_file_path: Optional[str] = None
     executed_at: Optional[datetime] = None
     created_at: datetime

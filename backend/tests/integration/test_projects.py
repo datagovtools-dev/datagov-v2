@@ -19,7 +19,7 @@ async def test_projects_list_requires_auth(client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_projects_filters_years_requires_auth(client: AsyncClient):
-    resp = await client.get("/api/v1/projects/filters/years")
+    resp = await client.get("/api/v1/projects/filters")
     assert resp.status_code == 401
 
 

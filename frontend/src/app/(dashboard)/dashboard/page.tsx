@@ -3,78 +3,128 @@
 import * as React from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { FolderOpen, Share2, ShieldCheck, Trash2, BarChart2, Plus, ArrowRight, Activity, AlertTriangle, CheckCircle2, Clock } from "lucide-react";
+import {
+  FolderOpen,
+  Share2,
+  ShieldCheck,
+  Trash2,
+  BarChart2,
+  Plus,
+  ArrowRight,
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Database,
+  ExternalLink,
+} from "lucide-react";
 import { api } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { formatDateTime } from "@/lib/utils";
 
-interface KPI { active_projects: number; open_dsrs: number; pending_dpias: number; bapd_due_soon: number; dq_runs_this_month: number }
-interface ActivityItem { module: string; action: string; entity_type: string; entity_id: string; actor: string; timestamp: string }
-interface ActionItem { module: string; entity_id: string; title: string; status: string; urgency: string; due_label: string | null }
-interface ModuleStatus { module: string; draft: number; under_review: number; approved: number; archived: number; other: number }
-interface DashboardData { kpi: KPI; recent_activity: ActivityItem[]; action_items: ActionItem[]; module_status: ModuleStatus[] }
+interface KPI {
+  active_projects: number;
+  open_dsrs: number;
+  pending_dpias: number;
+  bapd_due_soon: number;
+  dq_runs_this_month: number;
+}
+
+interface ActivityItem {
+  module: string;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  actor: string;
+  timestamp: string;
+}
+
+interface ActionItem {
+  module: string;
+  entity_id: string;
+  title: string;
+  status: string;
+  urgency: string;
+  due_label: string | null;
+}
+
+interface ModuleStatus {
+  module: string;
+  draft: number;
+  under_review: number;
+  approved: number;
+  archived: number;
+  other: number;
+}
+
+interface DashboardData {
+  kpi: KPI;
+  recent_activity: ActivityItem[];
+  action_items: ActionItem[];
+  module_status: ModuleStatus[];
+}
 
 const KPI_CARDS = [
-  { key: "active_projects",    label: "Active Projects",    icon: FolderOpen,  color: "text-primary-600", bg: "bg-primary-50", href: "/projects" },
-  { key: "open_dsrs",          label: "Open DSRs",          icon: Share2,      color: "text-amber-600",   bg: "bg-amber-50",   href: "/dsr" },
-  { key: "pending_dpias",      label: "Pending DPIAs",      icon: ShieldCheck, color: "text-blue-600",    bg: "bg-blue-50",    href: "/dpia" },
-  { key: "bapd_due_soon",      label: "BAPD Due ≤30 days",  icon: Trash2,      color: "text-red-600",     bg: "bg-red-50",     href: "/bapd" },
-  { key: "dq_runs_this_month", label: "DQ Runs This Month", icon: BarChart2,   color: "text-teal-600",    bg: "bg-teal-50",    href: "/dq" },
+  {
+    key: "active_projects",
+    label: "Governed Assets",
+    sub: "Active data projects",
+    icon: FolderOpen,
+    href: "/projects",
+  },
+  {
+    key: "open_dsrs",
+    label: "Sharing Requests",
+    sub: "Pending DSR reviews",
+    icon: Share2,
+    href: "/dsr",
+  },
+  {
+    key: "pending_dpias",
+    label: "Privacy Assessments",
+    sub: "Active DPIA evaluations",
+    icon: ShieldCheck,
+    href: "/dpia",
+  },
+  {
+    key: "dq_runs_this_month",
+    label: "Quality Checks",
+    sub: "Rule evaluations this mo",
+    icon: BarChart2,
+    href: "/dq",
+  },
+  {
+    key: "bapd_due_soon",
+    label: "Disposal Due",
+    sub: "Retention expiry ≤30d",
+    icon: Trash2,
+    href: "/bapd",
+  },
 ] as const;
 
 const QUICK_ACTIONS = [
-  { label: "New Data Sharing Request", href: "/dsr/new",      icon: Share2 },
-  { label: "Proceed Metadata",         href: "/metadata",     icon: FolderOpen },
-  { label: "Run Data Quality Check",   href: "/dq/new",       icon: BarChart2 },
-  { label: "New Project",              href: "/projects/new", icon: Plus },
+  { label: "New Data Sharing Request", href: "/dsr/new", icon: Share2 },
+  { label: "Proceed Metadata Dictionary", href: "/metadata", icon: Database },
+  { label: "Run Data Quality Check", href: "/dq/new", icon: BarChart2 },
+  { label: "Register New Data Asset", href: "/projects/new", icon: Plus },
 ];
 
-const MODULE_COLORS: Record<string, "primary" | "warning" | "info" | "danger" | "success" | "default"> = {
-  auth: "default", project: "primary", dsr: "warning", dpia: "info",
-  ropa: "info", bapd: "danger", metadata: "success", dq: "success", rbac: "default",
+const MODULE_BADGE_MAP: Record<string, "default" | "primary" | "warning" | "info" | "danger" | "success"> = {
+  auth: "default",
+  project: "default",
+  dsr: "warning",
+  dpia: "info",
+  ropa: "info",
+  bapd: "danger",
+  metadata: "success",
+  dq: "success",
+  rbac: "default",
 };
 
 const URGENCY_ICON = { high: AlertTriangle, medium: Clock, low: CheckCircle2 };
-const URGENCY_COLOR = { high: "text-red-600", medium: "text-amber-600", low: "text-green-600" };
-
-// Minimal SVG donut chart
-function DonutChart({ data }: { data: { label: string; value: number; color: string }[] }) {
-  const total = data.reduce((s, d) => s + d.value, 0);
-  if (total === 0) return <div className="text-xs text-gray-400 text-center py-2">No data</div>;
-  const r = 36, cx = 44, cy = 44, stroke = 14;
-  const circumference = 2 * Math.PI * r;
-  let offset = 0;
-  const slices = data.map((d) => {
-    const dash = (d.value / total) * circumference;
-    const slice = { ...d, dash, offset };
-    offset += dash;
-    return slice;
-  });
-  return (
-    <div className="flex items-center gap-3">
-      <svg width="88" height="88" viewBox="0 0 88 88">
-        {slices.map((s, i) => (
-          <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={s.color}
-            strokeWidth={stroke} strokeDasharray={`${s.dash} ${circumference - s.dash}`}
-            strokeDashoffset={-s.offset} style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
-        ))}
-        <text x={cx} y={cy + 5} textAnchor="middle" fontSize="13" fontWeight="bold" fill="#374151">{total}</text>
-      </svg>
-      <div className="flex flex-col gap-1">
-        {data.map((d) => (
-          <div key={d.label} className="flex items-center gap-1.5 text-xs text-gray-600">
-            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: d.color }} />
-            {d.label}: <span className="font-semibold">{d.value}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const STATUS_PALETTE = ["#3B82F6", "#F59E0B", "#10B981", "#6B7280", "#EF4444"];
+const URGENCY_COLOR = { high: "text-rose-600", medium: "text-amber-600", low: "text-emerald-600" };
 
 export default function DashboardPage() {
   const { data, isLoading } = useQuery<DashboardData>({
@@ -84,149 +134,245 @@ export default function DashboardPage() {
   });
 
   return (
-    <div className="space-y-6">
-      <div className="page-header">
+    <div className="space-y-5">
+      {/* ── Page Header & Quick Controls ── */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3.5 border-b border-slate-200">
         <div>
-          <h1>Dashboard</h1>
-          <p className="text-sm text-surface-500 mt-0.5">Overview of your governance platform</p>
+          <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">
+            Executive Overview
+          </h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Enterprise governance telemetry, active review queues, and system inventory.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Link href="/projects/new">
+            <Button size="sm" className="font-medium">
+              <Plus className="h-3.5 w-3.5 mr-1" /> New Data Asset
+            </Button>
+          </Link>
+          <Link href="/dsr/new">
+            <Button size="sm" variant="outline" className="font-medium">
+              <Share2 className="h-3.5 w-3.5 mr-1 text-slate-600" /> New DSR
+            </Button>
+          </Link>
+          <Link href="/dq/new">
+            <Button size="sm" variant="outline" className="font-medium">
+              <BarChart2 className="h-3.5 w-3.5 mr-1 text-emerald-600" /> Run DQ
+            </Button>
+          </Link>
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-        {KPI_CARDS.map(({ key, label, icon: Icon, color, bg, href }) => (
-          <Link key={key} href={href} className="block hover:no-underline">
-            <Card className="hover:shadow-card-hover transition-shadow cursor-pointer">
-              <CardContent className="pt-4">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <p className="text-xs font-medium text-surface-500 uppercase tracking-wide">{label}</p>
-                    <p className={`mt-2 text-3xl font-bold ${color}`}>
-                      {isLoading ? "—" : (data?.kpi[key] ?? "—")}
-                    </p>
-                  </div>
-                  <div className={`${bg} p-2 rounded-lg`}>
-                    <Icon className={`h-5 w-5 ${color}`} />
-                  </div>
+      {/* ── 1. Telemetry Metric Grid (Strict 4px grid / compact rounded-md) ── */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
+        {KPI_CARDS.map(({ key, label, sub, icon: Icon, href }) => (
+          <Link key={key} href={href} className="block group">
+            <Card className="hover:border-slate-300 p-3.5 flex flex-col justify-between h-full transition-colors">
+              <div className="flex items-start justify-between">
+                <div>
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono block">
+                    {label}
+                  </span>
+                  <span className="text-2xl font-bold text-slate-900 font-mono tabular-nums mt-0.5 block">
+                    {isLoading ? "—" : data?.kpi[key] ?? 0}
+                  </span>
                 </div>
-                <div className="flex items-center gap-1 mt-3 text-xs text-surface-400">
-                  <ArrowRight className="h-3 w-3" /> View all
+                <div className="p-1.5 rounded-md bg-slate-100 text-slate-600">
+                  <Icon className="h-4 w-4" />
                 </div>
-              </CardContent>
+              </div>
+              <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+                <span className="truncate">{sub}</span>
+                <ArrowRight className="h-3 w-3 text-slate-400 group-hover:text-slate-900 transition-colors shrink-0 ml-1" />
+              </div>
             </Card>
           </Link>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Quick Actions */}
-        <Card>
-          <CardHeader><CardTitle>Quick Actions</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-2">
-            {QUICK_ACTIONS.map(({ label, href, icon: Icon }) => (
-              <Link key={href} href={href} className="w-full">
-                <Button variant="outline" className="justify-start gap-3 h-auto min-h-10 w-full text-left items-start py-2">
-                  <Icon className="h-4 w-4 text-primary-500 mt-0.5 shrink-0" />{label}
-                </Button>
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
+      {/* ── 2. Primary Operations Grid ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Left Column: Action Required Queue & Governance Workflows (7 cols) */}
+        <div className="lg:col-span-7 space-y-4">
+          {/* Action Required Queue */}
+          <Card className="p-4">
+            <CardHeader className="mb-2.5 pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                <CardTitle>Action Items & Approvals</CardTitle>
+              </div>
+              <Badge variant="warning" className="text-[10px]">
+                {data?.action_items?.length || 0} Pending
+              </Badge>
+            </CardHeader>
 
-        {/* My Action Items */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-4 w-4 text-amber-500" /> My Action Items
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <p className="text-sm text-surface-400 text-center py-4">Loading…</p>
-            ) : !data?.action_items?.length ? (
-              <p className="text-sm text-surface-400 text-center py-4">No pending actions</p>
-            ) : (
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                {data.action_items.map((item, i) => {
-                  const UrgIcon = URGENCY_ICON[item.urgency as keyof typeof URGENCY_ICON] ?? Clock;
-                  return (
-                    <Link key={i} href={`/${item.module}/${item.entity_id}`}
-                      className="flex items-start gap-2 p-2 rounded-lg border border-gray-100 hover:bg-gray-50 transition-colors">
-                      <UrgIcon className={`h-4 w-4 mt-0.5 shrink-0 ${URGENCY_COLOR[item.urgency as keyof typeof URGENCY_COLOR] ?? "text-gray-500"}`} />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-gray-800 truncate">{item.title}</p>
-                        {item.due_label && <p className="text-xs text-red-500">{item.due_label}</p>}
+            <CardContent>
+              {isLoading ? (
+                <p className="text-xs text-slate-400 text-center py-6">Loading action items...</p>
+              ) : !data?.action_items?.length ? (
+                <div className="text-center py-8">
+                  <CheckCircle2 className="h-6 w-6 text-emerald-500 mx-auto mb-1.5 opacity-80" />
+                  <p className="text-xs font-semibold text-slate-800">All Approvals Clear</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">No pending review tasks require your attention.</p>
+                </div>
+              ) : (
+                <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                  {data.action_items.map((item, i) => {
+                    const UrgIcon = URGENCY_ICON[item.urgency as keyof typeof URGENCY_ICON] ?? Clock;
+                    return (
+                      <Link
+                        key={i}
+                        href={`/${item.module}/${item.entity_id}`}
+                        className="flex items-center justify-between py-2.5 px-1.5 hover:bg-slate-50 rounded-md transition-colors group"
+                      >
+                        <div className="flex items-start gap-2.5 min-w-0 pr-2">
+                          <UrgIcon
+                            className={`h-4 w-4 mt-0.5 shrink-0 ${
+                              URGENCY_COLOR[item.urgency as keyof typeof URGENCY_COLOR] ?? "text-slate-400"
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <p className="text-xs font-medium text-slate-900 truncate group-hover:text-slate-700">
+                              {item.title}
+                            </p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[10px] font-mono text-slate-400 uppercase">
+                                {item.module}
+                              </span>
+                              {item.due_label && (
+                                <span className="text-[10px] font-medium text-rose-600">
+                                  • {item.due_label}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        <span className="text-xs font-medium text-slate-700 group-hover:text-slate-900 inline-flex items-center gap-1 shrink-0">
+                          Review <ArrowRight className="h-3 w-3" />
+                        </span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Workflow Status Distribution */}
+          {data?.module_status && data.module_status.length > 0 && (
+            <Card className="p-4">
+              <CardHeader className="mb-2.5 pb-2 border-b border-slate-100">
+                <CardTitle>Governance Workflow Distribution</CardTitle>
+                <CardDescription>Active lifecycle breakdown per governance module</CardDescription>
+              </CardHeader>
+
+              <CardContent>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {data.module_status.map((ms) => {
+                    const total = ms.draft + ms.under_review + ms.approved + ms.archived + ms.other;
+                    return (
+                      <div key={ms.module} className="p-2.5 rounded-md border border-slate-200 bg-slate-50/50">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-xs font-semibold text-slate-900 uppercase font-mono">
+                            {ms.module}
+                          </span>
+                          <span className="text-xs font-bold font-mono text-slate-700 tabular-nums">
+                            {total} total
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1 text-[10px] text-center pt-1 border-t border-slate-200/60 font-mono">
+                          <div>
+                            <span className="text-slate-400 block">Draft</span>
+                            <span className="font-semibold text-slate-700">{ms.draft}</span>
+                          </div>
+                          <div>
+                            <span className="text-blue-600 block">Review</span>
+                            <span className="font-semibold text-blue-700">{ms.under_review}</span>
+                          </div>
+                          <div>
+                            <span className="text-emerald-600 block">Approved</span>
+                            <span className="font-semibold text-emerald-700">{ms.approved}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-400 block">Archived</span>
+                            <span className="font-semibold text-slate-600">{ms.archived}</span>
+                          </div>
+                        </div>
                       </div>
-                      <Badge variant={item.urgency === "high" ? "danger" : "warning"} className="text-xs shrink-0">
-                        {item.module.toUpperCase()}
-                      </Badge>
-                    </Link>
-                  );
-                })}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Recent Activity */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Activity className="h-4 w-4 text-surface-400" /> Recent Activity
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <p className="text-sm text-surface-400 py-4 text-center">Loading…</p>
-            ) : !data?.recent_activity.length ? (
-              <p className="text-sm text-surface-400 py-4 text-center">No recent activity</p>
-            ) : (
-              <div className="space-y-3 max-h-64 overflow-y-auto">
-                {data.recent_activity.map((a, i) => (
-                  <div key={i} className="flex items-start gap-3">
-                    <Badge variant={MODULE_COLORS[a.module] ?? "default"} className="mt-0.5 shrink-0 capitalize">
-                      {a.module}
-                    </Badge>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-surface-800">
-                        <span className="font-medium">{a.actor}</span>
-                        {" "}<span className="text-surface-500">{a.action.replace(/_/g, " ")}</span>
-                        {a.entity_id && <span className="ml-1 font-mono text-xs text-surface-400">{a.entity_id.slice(0, 8)}…</span>}
-                      </p>
-                      <p className="text-xs text-surface-400 mt-0.5">{formatDateTime(a.timestamp)}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Module Status Breakdown */}
-      {data?.module_status && data.module_status.length > 0 && (
-        <div>
-          <h2 className="text-base font-semibold text-gray-800 mb-3">Module Status</h2>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {data.module_status.map((ms) => (
-              <Card key={ms.module}>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm capitalize">{ms.module.toUpperCase()}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <DonutChart data={[
-                    { label: "Draft",       value: ms.draft,        color: STATUS_PALETTE[1] },
-                    { label: "In Review",   value: ms.under_review, color: STATUS_PALETTE[0] },
-                    { label: "Approved",    value: ms.approved,     color: STATUS_PALETTE[2] },
-                    { label: "Archived",    value: ms.archived,     color: STATUS_PALETTE[3] },
-                    { label: "Other",       value: ms.other,        color: STATUS_PALETTE[4] },
-                  ].filter(d => d.value > 0)} />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+                    );
+                  })}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
-      )}
+
+        {/* Right Column: Live Audit Telemetry & Quick Navigation (5 cols) */}
+        <div className="lg:col-span-5 space-y-4">
+          {/* Live Audit Telemetry */}
+          <Card className="p-4">
+            <CardHeader className="mb-2.5 pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-slate-700" />
+                <CardTitle>Audit Telemetry</CardTitle>
+              </div>
+              <span className="text-[10px] font-mono text-slate-400">REALTIME</span>
+            </CardHeader>
+
+            <CardContent>
+              {isLoading ? (
+                <p className="text-xs text-slate-400 py-6 text-center">Loading audit events...</p>
+              ) : !data?.recent_activity.length ? (
+                <p className="text-xs text-slate-400 py-6 text-center">No recorded activity yet</p>
+              ) : (
+                <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                  {data.recent_activity.map((a, i) => (
+                    <div key={i} className="py-2 flex items-start gap-2.5">
+                      <Badge variant={MODULE_BADGE_MAP[a.module] ?? "default"} className="mt-0.5 text-[10px] font-mono uppercase shrink-0">
+                        {a.module}
+                      </Badge>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs text-slate-800 leading-snug truncate">
+                          <span className="font-semibold text-slate-900">{a.actor}</span>{" "}
+                          <span className="text-slate-500">{a.action.replace(/_/g, " ")}</span>
+                        </p>
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-0.5">
+                          {a.entity_id && <span>#{a.entity_id.slice(0, 8)}</span>}
+                          <span>•</span>
+                          <span>{formatDateTime(a.timestamp)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Direct Workflow Shortcuts */}
+          <Card className="p-4">
+            <CardHeader className="mb-2 pb-2 border-b border-slate-100">
+              <CardTitle>Direct Operations</CardTitle>
+              <CardDescription>Shortcuts to primary governance tools</CardDescription>
+            </CardHeader>
+
+            <CardContent className="space-y-1.5">
+              {QUICK_ACTIONS.map(({ label, href, icon: Icon }) => (
+                <Link key={href} href={href} className="block">
+                  <div className="flex items-center justify-between p-2 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-800 transition-colors">
+                    <div className="flex items-center gap-2">
+                      <Icon className="h-3.5 w-3.5 text-slate-500" />
+                      <span>{label}</span>
+                    </div>
+                    <ExternalLink className="h-3 w-3 text-slate-400" />
+                  </div>
+                </Link>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }

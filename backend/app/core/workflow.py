@@ -50,9 +50,14 @@ class WorkflowError(ValueError):
     pass
 
 
-def validate_transition(module: str, current: str, target: str) -> None:
+def validate_transition(module: str, current: str | None = None, target: str | None = None) -> None:
     """Raise WorkflowError if the transition is not allowed."""
-    allowed = _TRANSITIONS.get(module, {}).get(current, [])
+    if target is None:
+        # Called as validate_transition(current, target)
+        target = current
+        current = module
+        module = "dsr"
+    allowed = _TRANSITIONS.get(module, {}).get(current or "", [])
     if target not in allowed:
         raise WorkflowError(
             f"[{module}] Cannot transition '{current}' -> '{target}'. "

@@ -36,12 +36,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+from app.core.rbac import (
+    ROLE_SESSION_LIMITS,
+    _ROLE_PERMISSIONS,
+    get_user_capabilities_from_roles,
+)
+
 class UserOut(BaseModel):
     id: uuid.UUID
     email: str
     full_name: str
     is_active: bool
     is_super_admin: bool = False
+    roles: list[str] = []
+    permissions: list[str] = []
+    accessible_menus: list[str] = []
+    permitted_activities: list[str] = []
 
     model_config = {"from_attributes": True}
 
@@ -207,8 +217,37 @@ async def logout(
 
 
 @router.get("/me", response_model=UserOut)
-async def me(current_user: CurrentUser) -> User:
-    return current_user
+async def me(current_user: CurrentUser) -> UserOut:
+    roles = [
+        getattr(upr.role, "name", "")
+        for upr in getattr(current_user, "project_roles", [])
+        if upr.revoked_at is None and getattr(upr, "role", None)
+    ]
+    roles = [r for r in roles if r]
+    
+    perms: set[str] = set()
+    for r in roles:
+        role_perms = _ROLE_PERMISSIONS.get(r, set())
+        if "*" in role_perms:
+            perms = {"*"}
+            break
+        perms.update(role_perms)
+        
+    caps = get_user_capabilities_from_roles(roles)
+    accessible_menu_ids = [m["id"] for m in caps["menus"] if m["is_accessible"]]
+    permitted_activity_ids = [a["id"] for a in caps["activities"] if a["is_permitted"]]
+    
+    return UserOut(
+        id=current_user.id,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        is_active=current_user.is_active,
+        is_super_admin=current_user.is_super_admin,
+        roles=roles,
+        permissions=sorted(perms),
+        accessible_menus=accessible_menu_ids,
+        permitted_activities=permitted_activity_ids,
+    )
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)

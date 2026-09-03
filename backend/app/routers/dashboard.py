@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select, case
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentUser, get_db
 from app.models.bapd import BAPDRecord
@@ -80,59 +81,89 @@ async def get_dashboard(db: DB, current_user: CurrentUser) -> DashboardResponse:
     # My Action Items — pending approvals for current user
     action_items: list[ActionItem] = []
 
+    _DSR_STEP_NAMES = {1: "PIC Compliance Review", 2: "DM Approval", 3: "SME Sign-Off", 4: "Client Sign-Off"}
+    _DPIA_STEP_NAMES = {1: "PIC Compliance Review", 2: "DM/PM Approval"}
+    _BAPD_STEP_NAMES = {1: "Data Owner Sign-Off", 2: "DGO Compliance Review"}
+
     # DSRs submitted/under_review
-    dsrs = (await db.execute(
+    dsrs_res = await db.execute(
         select(DataSharingRequest)
+        .options(selectinload(DataSharingRequest.approvals))
         .where(DataSharingRequest.status.in_(["submitted", "under_review"]))
         .order_by(DataSharingRequest.created_at.asc())
         .limit(20)
-    )).scalars().all()
-    for dsr in dsrs:
+    )
+    for dsr in dsrs_res.scalars().all():
+        active_step = next((a for a in sorted(dsr.approvals, key=lambda x: x.step_order) if a.status == "requested"), None)
+        step_label = _DSR_STEP_NAMES.get(active_step.step_order, f"Step {active_step.step_order}") if active_step else "Review"
         expires_in = (dsr.duration_end - today).days if getattr(dsr, "duration_end", None) else None
-        urgency = "high" if expires_in is not None and expires_in <= 7 else "medium"
+        urgency = "high" if (expires_in is not None and expires_in <= 7) or dsr.status == "submitted" else "medium"
         action_items.append(ActionItem(
             module="dsr",
             entity_id=str(dsr.id),
-            title=f"DSR {dsr.tracking_id} — {dsr.status}",
+            title=f"DSR {dsr.tracking_id} — {step_label} Required",
             status=dsr.status,
             urgency=urgency,
             due_label=f"Expires in {expires_in}d" if expires_in is not None else None,
         ))
 
     # DPIAs under review
-    dpias = (await db.execute(
+    dpias_res = await db.execute(
         select(DPIARecord)
-        .where(DPIARecord.status == "under_review")
+        .options(selectinload(DPIARecord.approvals))
+        .where(DPIARecord.status.in_(["submitted", "under_review"]))
         .order_by(DPIARecord.created_at.asc())
         .limit(10)
-    )).scalars().all()
-    for dpia in dpias:
+    )
+    for dpia in dpias_res.scalars().all():
+        active_step = next((a for a in sorted(dpia.approvals, key=lambda x: x.step_order) if a.status == "requested"), None)
+        step_label = _DPIA_STEP_NAMES.get(active_step.step_order, f"Step {active_step.step_order}") if active_step else "Under Review"
         action_items.append(ActionItem(
             module="dpia",
             entity_id=str(dpia.id),
-            title=f"DPIA {dpia.tracking_id or dpia.id} — under review",
+            title=f"DPIA {dpia.tracking_id or str(dpia.id)[:8]} — {step_label}",
             status=dpia.status,
             urgency="medium",
             due_label=None,
         ))
 
     # BAPDs needing approval
-    bapds = (await db.execute(
+    bapds_res = await db.execute(
         select(BAPDRecord)
-        .where(BAPDRecord.status.in_(["submitted", "under_review"]))
+        .options(selectinload(BAPDRecord.approvals))
+        .where(BAPDRecord.status.in_(["submitted", "under_review", "pending_approval"]))
         .order_by(BAPDRecord.expiry_date.asc())
         .limit(10)
-    )).scalars().all()
-    for bapd in bapds:
+    )
+    for bapd in bapds_res.scalars().all():
+        active_step = next((a for a in sorted(bapd.approvals, key=lambda x: x.step_order) if a.status == "requested"), None)
+        step_label = _BAPD_STEP_NAMES.get(active_step.step_order, f"Step {active_step.step_order}") if active_step else "Dual Approval"
         days_left = (bapd.expiry_date - today).days if bapd.expiry_date else None
         urgency = "high" if days_left is not None and days_left <= 7 else "medium"
         action_items.append(ActionItem(
             module="bapd",
             entity_id=str(bapd.id),
-            title=f"BAPD {str(bapd.id)[:8]} — {bapd.status}",
+            title=f"BAPD {str(bapd.id)[:8]} — {step_label}",
             status=bapd.status,
             urgency=urgency,
             due_label=f"Expires in {days_left}d" if days_left is not None else None,
+        ))
+
+    # DQ Runs under review
+    dq_runs_res = await db.execute(
+        select(DQRun)
+        .where(DQRun.status == "under_review")
+        .order_by(DQRun.created_at.desc())
+        .limit(5)
+    )
+    for dq_run in dq_runs_res.scalars().all():
+        action_items.append(ActionItem(
+            module="dq",
+            entity_id=str(dq_run.id),
+            title=f"DQ Run #{str(dq_run.id)[:8]} — Inspection Sign-Off Required",
+            status="under_review",
+            urgency="medium",
+            due_label="Inspection Review",
         ))
 
     # Sort by urgency

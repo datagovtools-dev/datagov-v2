@@ -3,12 +3,14 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, Lock, Pencil, Save, X, Send } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, Download, Lock, Pencil, Save, X, Send } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { toast } from "@/components/ui/Toast";
+import { DetailSkeleton } from "@/components/ui/LoadingState";
 import { DetailModal } from "@/components/details/DetailModal";
 import { DsrDetailCards } from "@/components/details/DsrDetailView";
 import { ProjectDetailCards } from "@/components/details/ProjectDetailView";
@@ -133,10 +135,12 @@ interface AIDraft {
 
 interface AIChecklistApproval {
   id: string;
+  approver_id?: string | null;
   step_order: number;
   approver_role: string;
   approver_name: string;
   status: string;
+  comments?: string | null;
   actioned_at: string | null;
 }
 
@@ -150,8 +154,8 @@ interface AIChecklist {
 }
 
 interface DSRApproval {
-  id: string; step_order: number; approver_role: string; approver_name: string;
-  status: string; actioned_at: string | null;
+  id: string; approver_id?: string | null; step_order: number; approver_role: string; approver_name: string;
+  status: string; comments?: string | null; actioned_at: string | null;
 }
 
 interface DSRDetail {
@@ -544,6 +548,15 @@ export default function AIChecklistDetailPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const currentUser = useAuthStore(s => s.user);
+  const isSuperAdmin = Boolean(
+    currentUser?.roles?.some((r: any) => (typeof r === "string" ? r : r.name) === "super_admin") ||
+    currentUser?.is_super_admin
+  );
+  const canAction = (approverId?: string | null) => {
+    if (!currentUser) return false;
+    if (isSuperAdmin) return true;
+    return Boolean(approverId && currentUser.id === approverId);
+  };
 
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<AIDraft | null>(null);
@@ -666,6 +679,30 @@ export default function AIChecklistDetailPage() {
       qc.invalidateQueries({ queryKey: ["ai-checklist"] });
       setEditing(false);
       setShowErrors(false);
+    },
+  });
+
+  const [approvalComment, setApprovalComment] = React.useState<Record<number, string>>({});
+
+  const approvalMutation = useMutation({
+    mutationFn: ({ step, action }: { step: number; action: "approve" | "reject" }) => {
+      const label = action === "approve" ? "Approving" : "Rejecting";
+      toast.loading(`${label} Step ${step}...`, { id: "aick-approval" });
+      return api.post(`/dsr/${id}/checklist/approvals/${step}`, {
+        action,
+        comments: approvalComment[step] ?? "",
+      });
+    },
+    onSuccess: (_, variables) => {
+      const msg = variables.action === "approve" ? "Step approved successfully!" : "Checklist rejected.";
+      toast.success(msg, { id: "aick-approval" });
+      qc.invalidateQueries({ queryKey: ["dsr", id] });
+      qc.invalidateQueries({ queryKey: ["ai-checklist"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      setApprovalComment((prev) => ({ ...prev, [variables.step]: "" }));
+    },
+    onError: (e: any) => {
+      toast.error(e.message || "Failed to action approval", { id: "aick-approval" });
     },
   });
 
@@ -807,7 +844,7 @@ export default function AIChecklistDetailPage() {
     printA4(`${dsr.tracking_id} — AI Assessment Checklist`, body);
   }
 
-  if (isLoading) return <div className="py-20 text-center text-surface-400">Loading…</div>;
+  if (isLoading) return <DetailSkeleton />;
   if (!dsr) return <div className="py-20 text-center text-surface-500">Request not found.</div>;
   if (!dsr.is_ai_use) return <div className="py-20 text-center text-surface-500">This DSR is not marked as AI use.</div>;
 
@@ -836,58 +873,62 @@ export default function AIChecklistDetailPage() {
     "In Progress";
 
   return (
-    <div>
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-start gap-3 mb-6">
+      <div className="flex items-start gap-3 pb-3 border-b border-slate-200">
         <button onClick={() => router.back()}
-          className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-surface-100 shrink-0 mt-0.5">
+          className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-200 hover:bg-slate-100 shrink-0 text-slate-600">
           <ArrowLeft className="h-4 w-4" />
         </button>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono font-bold text-surface-800 text-lg">{docNumber}</span>
-                <Badge variant={statusBadgeVariant}>{statusBadgeLabel}</Badge>
-                <Badge variant="warning">AI Use</Badge>
+                <span className="font-mono font-bold text-slate-900 text-base">{docNumber}</span>
+                <Badge variant={statusBadgeVariant} className="text-[10px]">{statusBadgeLabel}</Badge>
+                <Badge variant="warning" className="text-[10px]">AI Use</Badge>
               </div>
-              <h1 className="mt-0.5 truncate">{dsr.project_name}</h1>
-              <p className="text-sm text-surface-500">GEN AI Usage Assessment Checklist</p>
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 mt-1 truncate">{dsr.project_name}</h1>
+              <p className="text-xs text-slate-500 font-mono">GEN AI Usage Assessment Checklist</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-          <Button variant="outline" size="sm" onClick={handleExportPDF}>
-            <Download className="h-4 w-4 mr-1" /> Export PDF
+          <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={handleExportPDF}>
+            <Download className="h-3.5 w-3.5 mr-1" /> Export PDF
           </Button>
           {isDraft && (
             editing ? (
               <>
-                <Button variant="secondary" onClick={handleCancel} disabled={saveMutation.isPending || submitMutation.isPending}>
-                  <X className="h-4 w-4 mr-1" /> Cancel
+                <Button variant="secondary" size="sm" className="h-7.5 text-xs font-medium" onClick={handleCancel} disabled={saveMutation.isPending || submitMutation.isPending}>
+                  <X className="h-3.5 w-3.5 mr-1" /> Cancel
                 </Button>
-                <Button variant="outline" onClick={handleSaveAsDraft} loading={saveMutation.isPending}>
-                  <Save className="h-4 w-4 mr-1" /> Save as Draft
+                <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={handleSaveAsDraft} loading={saveMutation.isPending}>
+                  <Save className="h-3.5 w-3.5 mr-1" /> Save as Draft
                 </Button>
                 <Button
+                  size="sm"
+                  className="h-7.5 text-xs font-medium"
                   onClick={handleSubmit}
                   loading={submitMutation.isPending}
                   disabled={!complete}
                   title={!complete ? "Complete all assessment items and sign-off fields before submitting" : "Submit for approval"}
                 >
-                  <Send className="h-4 w-4 mr-1" /> Submit
+                  <Send className="h-3.5 w-3.5 mr-1" /> Submit
                 </Button>
               </>
             ) : (
               <>
-                <Button variant="outline" onClick={() => setEditing(true)}>
-                  <Pencil className="h-4 w-4 mr-1" /> Edit
+                <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={() => setEditing(true)}>
+                  <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
                 </Button>
                 <Button
+                  size="sm"
+                  className="h-7.5 text-xs font-medium"
                   onClick={handleSubmit}
                   loading={submitMutation.isPending}
                   disabled={!complete}
                   title={!complete ? "Complete all assessment items and sign-off fields before submitting" : "Submit for approval"}
                 >
-                  <Send className="h-4 w-4 mr-1" /> Submit
+                  <Send className="h-3.5 w-3.5 mr-1" /> Submit
                 </Button>
               </>
             )
@@ -897,48 +938,98 @@ export default function AIChecklistDetailPage() {
         </div>
       </div>
 
+      {/* Top Banner: Action Required when awaiting approval */}
+      {(() => {
+        const activeStep = aickApprovals.find((a) => a.status === "requested");
+        if (!activeStep) return null;
+        const userCanAction = canAction(activeStep.approver_id);
+        return (
+          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              <div>
+                <p className="text-xs font-semibold text-slate-900">
+                  {userCanAction ? "Action Required: " : "Pending Review: "}
+                  {AICK_STEP_LABELS[activeStep.step_order] ?? `Step ${activeStep.step_order}`} Pending Approval
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Assigned Approver: {activeStep.approver_name || "Project Approver"}
+                </p>
+              </div>
+            </div>
+            {userCanAction ? (
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
+                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "reject" })}
+                  disabled={approvalMutation.isPending}
+                >
+                  <X className="h-3 w-3 mr-1" /> Reject
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
+                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "approve" })}
+                  disabled={approvalMutation.isPending}
+                >
+                  <Check className="h-3 w-3 mr-1" /> Approve Step
+                </Button>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic shrink-0">
+                Waiting for {activeStep.approver_name || "designated approver"} to sign-off
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Amber banner when draft and incomplete */}
       {isDraft && !complete && (
-        <div className="mb-4 px-4 py-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-amber-800">
+        <div className="px-3.5 py-2.5 rounded-md bg-amber-50 border border-amber-200 text-xs text-amber-800 font-mono">
           Complete all assessment items and sign-off fields (excluding e-signatures) before submitting. Only &ldquo;Save as Draft&rdquo; is available until then.
         </div>
       )}
 
-      <div className="space-y-5">
+      <div className="space-y-4">
         {/* Assessment Info */}
         <Card>
-          <CardHeader><CardTitle>Assessment Information</CardTitle></CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Assessment Information</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 text-xs">
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Project ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project ID</p>
                 <button onClick={openProjectModal}
-                  className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                  className="font-mono font-medium text-slate-900 hover:text-slate-700 hover:underline text-left">
                   {dsr.project_code ?? dsr.project_id}
                 </button>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">DSR ID</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">DSR ID</p>
                 <button onClick={openDSRModal}
-                  className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left">
+                  className="font-mono font-medium text-slate-900 hover:text-slate-700 hover:underline text-left">
                   {dsr.tracking_id}
                 </button>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Project Name</p>
-                <p className="font-medium">{dsr.project_name}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project Name</p>
+                <p className="font-medium text-slate-900">{dsr.project_name}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Customer / Client</p>
-                <p className="font-medium">{dsr.recipient}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Customer / Client</p>
+                <p className="font-medium text-slate-900">{dsr.recipient}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Sharing Start Date</p>
-                <p className="font-medium">{formatDate(dsr.duration_start)}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Sharing Start Date</p>
+                <p className="font-mono font-medium text-slate-900">{formatDate(dsr.duration_start)}</p>
               </div>
               <div>
-                <p className="text-xs text-surface-400 mb-0.5">Sharing End Date</p>
-                <p className="font-medium">{formatDate(dsr.duration_end)}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Sharing End Date</p>
+                <p className="font-mono font-medium text-slate-900">{formatDate(dsr.duration_end)}</p>
               </div>
             </div>
           </CardContent>
@@ -946,40 +1037,92 @@ export default function AIChecklistDetailPage() {
 
         {/* Approval Timeline */}
         <Card>
-          <CardHeader><CardTitle>Approval Timeline</CardTitle></CardHeader>
-          <CardContent>
-            <ol className="relative border-l border-surface-200 space-y-5 ml-3">
-              {aickApprovals.map((step) => (
-                <li key={step.id} className="ml-4">
-                  <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${
-                    step.status === "approved"  ? "bg-green-500" :
-                    step.status === "rejected"  ? "bg-red-500" :
-                    step.status === "requested" ? "bg-primary-500" :
-                    "bg-surface-300"
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <ol className="relative border-l border-slate-200 space-y-4 ml-3">
+              {aickApprovals.map((step) => {
+                const isRequested = step.status === "requested";
+                return (
+                <li key={step.id} className="ml-3.5">
+                  <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
+                    step.status === "approved"  ? "bg-emerald-600" :
+                    step.status === "rejected"  ? "bg-rose-600" :
+                    isRequested ? "bg-slate-900" :
+                    "bg-slate-300"
                   }`} />
-                  <p className={`text-sm font-semibold ${step.status === "pending" ? "text-surface-400" : "text-surface-800"}`}>
-                    {AICK_STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-                  </p>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
+                      {AICK_STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
+                    </p>
+                    <Badge
+                      variant={step.status === "approved" ? "success" : step.status === "rejected" ? "danger" : isRequested ? "warning" : "default"}
+                      className="text-[10px]">
+                      {step.status === "approved" ? "Approved" :
+                       step.status === "rejected"  ? "Rejected" :
+                       isRequested ? "Awaiting Action" :
+                       "Not Yet"}
+                    </Badge>
+                  </div>
                   {step.approver_name && (
-                    <p className={`text-xs ${step.status === "pending" ? "text-surface-400" : "text-surface-500"}`}>
+                    <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-600"}`}>
                       {step.approver_name}
                     </p>
                   )}
-                  <Badge
-                    variant={step.status === "approved" ? "approved" : step.status === "rejected" ? "rejected" : "draft"}
-                    className="mt-1 text-xs">
-                    {step.status === "approved" ? "Approved" :
-                     step.status === "rejected"  ? "Rejected" :
-                     step.status === "pending"   ? "Not Yet" :
-                     "Requested"}
-                  </Badge>
                   {step.actioned_at && (
-                    <p className="text-xs text-surface-400 mt-0.5">{formatDateTime(step.actioned_at)}</p>
+                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">Actioned on {formatDateTime(step.actioned_at)}</p>
+                  )}
+                  {step.comments && (
+                    <p className="text-xs text-slate-600 italic mt-1 bg-slate-50 border border-slate-100 rounded p-1.5 font-mono">
+                      &ldquo;{step.comments}&rdquo;
+                    </p>
+                  )}
+
+                  {/* Interactive Approval Controls for Active Requested Step */}
+                  {isRequested && (
+                    canAction(step.approver_id) ? (
+                      <div className="mt-2.5 p-3 rounded-md border border-slate-200 bg-slate-50/60 space-y-2.5 font-mono">
+                        <textarea
+                          rows={2}
+                          className="input-base text-xs font-sans resize-none w-full bg-white"
+                          placeholder="Add review comments or sign-off notes (optional)…"
+                          value={approvalComment[step.step_order] ?? ""}
+                          onChange={(e) =>
+                            setApprovalComment((prev) => ({ ...prev, [step.step_order]: e.target.value }))
+                          }
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
+                            disabled={approvalMutation.isPending}
+                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "approve" })}
+                          >
+                            <Check className="h-3 w-3 mr-1" /> Approve Step
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
+                            disabled={approvalMutation.isPending}
+                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "reject" })}
+                          >
+                            <X className="h-3 w-3 mr-1" /> Reject Request
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 p-2.5 rounded bg-slate-50 border border-slate-200 text-xs text-slate-500 font-mono italic">
+                        Waiting for {step.approver_name || "designated approver"} to review and take action.
+                      </div>
+                    )
                   )}
                 </li>
-              ))}
+              );
+              })}
               {aickApprovals.length === 0 && (
-                <li className="ml-4 text-sm text-surface-400 italic">No approval steps configured yet.</li>
+                <li className="ml-3.5 text-xs text-slate-400 italic font-mono">No approval steps configured yet.</li>
               )}
             </ol>
           </CardContent>
@@ -987,31 +1130,31 @@ export default function AIChecklistDetailPage() {
 
         {/* Checklist Table */}
         <Card>
-          <CardHeader>
+          <CardHeader className="pb-3 border-b border-slate-100 flex items-center justify-between">
             <div>
-              <CardTitle>GEN AI Protection Checklist</CardTitle>
-              <p className="text-xs text-surface-400 mt-0.5 italic">
-                Instructions: Please fill the checkbox with "Yes/No" based on assessment condition and leave any remarks if criteria are not met. This assessment checklist form only be used for this project.
+              <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">GEN AI Protection Checklist</CardTitle>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Instructions: Fill the status with "Yes/No" based on assessment condition and record remarks if criteria are not met.
               </p>
             </div>
             {isApproved && (
-              <Badge variant="approved">Approved</Badge>
+              <Badge variant="success" className="text-[10px]">Approved</Badge>
             )}
           </CardHeader>
           <CardContent className="p-0">
             {/* Table header */}
-            <div className="hidden lg:grid grid-cols-[3fr_80px_2fr_96px_1.5fr] gap-3 bg-surface-50 border-b border-surface-200 px-4 py-2">
-              <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Assessment</p>
-              <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide text-center">Risk Level</p>
-              <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Risk Mitigation</p>
-              <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide text-center">Status</p>
-              <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">Remarks</p>
+            <div className="hidden lg:grid grid-cols-[3fr_80px_2fr_96px_1.5fr] gap-3 bg-slate-50 border-b border-slate-200 px-4 py-2">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-mono">Assessment</p>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-mono text-center">Risk Level</p>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-mono">Risk Mitigation</p>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-mono text-center">Status</p>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider font-mono">Remarks</p>
             </div>
 
             {AI_ASSESSMENT_TEMPLATE.map((area) => (
               <div key={area.area}>
-                <div className="bg-surface-100 px-4 py-2 border-b border-surface-200">
-                  <span className="text-sm font-semibold text-surface-700">{area.area}</span>
+                <div className="bg-slate-100/60 px-4 py-1.5 border-b border-slate-200">
+                  <span className="text-xs font-semibold font-mono text-slate-800">{area.area}</span>
                 </div>
                 {area.items.map((item, idx) => {
                   const val = activeDraft.items[item.id] ?? { status: null, remarks: "" };
@@ -1019,16 +1162,16 @@ export default function AIChecklistDetailPage() {
                   return (
                     <div
                       key={item.id}
-                      className={`px-4 py-3 border-b border-surface-100 ${idx === area.items.length - 1 ? "border-surface-200" : ""}`}
+                      className={`px-4 py-2.5 border-b border-slate-100 ${idx === area.items.length - 1 ? "border-slate-200" : ""}`}
                     >
                       <div className="lg:hidden space-y-2">
-                        <p className="text-sm text-surface-700">{item.assessment}</p>
+                        <p className="text-xs text-slate-800">{item.assessment}</p>
                         <div className="flex items-center gap-2">
-                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${riskBadgeClass(item.risk_level)}`}>
+                          <span className={`inline-block px-1.5 py-0.5 rounded-md text-[10px] font-mono font-semibold ${riskBadgeClass(item.risk_level)}`}>
                             {item.risk_level}
                           </span>
                         </div>
-                        <p className="text-xs text-surface-500 leading-relaxed"><span className="font-medium text-surface-600">Mitigation: </span>{item.mitigation}</p>
+                        <p className="text-[11px] text-slate-500 leading-relaxed"><span className="font-medium text-slate-600">Mitigation: </span>{item.mitigation}</p>
                         <div className="flex items-start gap-2">
                           <StatusSelect value={val.status} onChange={(v) => setItem(item.id, "status", v)}
                             disabled={!editing} hasError={hasError} />
@@ -1037,13 +1180,13 @@ export default function AIChecklistDetailPage() {
                       </div>
 
                       <div className="hidden lg:grid grid-cols-[3fr_80px_2fr_96px_1.5fr] gap-3 items-start">
-                        <p className="text-sm text-surface-700 leading-snug">{item.assessment}</p>
+                        <p className="text-xs text-slate-800 leading-snug">{item.assessment}</p>
                         <div className="flex justify-center pt-0.5">
-                          <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${riskBadgeClass(item.risk_level)}`}>
+                          <span className={`inline-block px-1.5 py-0.5 rounded-md text-[10px] font-mono font-semibold ${riskBadgeClass(item.risk_level)}`}>
                             {item.risk_level}
                           </span>
                         </div>
-                        <p className="text-xs text-surface-500 leading-relaxed">{item.mitigation}</p>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">{item.mitigation}</p>
                         <div className="flex justify-center pt-0.5">
                           <StatusSelect value={val.status} onChange={(v) => setItem(item.id, "status", v)}
                             disabled={!editing} hasError={hasError} />
@@ -1060,13 +1203,13 @@ export default function AIChecklistDetailPage() {
 
         {/* Sign Off */}
         <Card>
-          <CardHeader>
+          <CardHeader className="pb-3 border-b border-slate-100">
             <div>
-              <CardTitle>Sign Off</CardTitle>
-              <p className="text-xs text-surface-400 mt-0.5">Complete all fields and draw signatures to finalise the assessment</p>
+              <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Sign Off</CardTitle>
+              <p className="text-xs text-slate-500 mt-0.5">Complete all fields and draw signatures to finalise the assessment</p>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="pt-4">
             <SignOffSection
               value={activeDraft.sign_off}
               onChange={setSignOff}
@@ -1080,7 +1223,7 @@ export default function AIChecklistDetailPage() {
 
         {/* Error summary */}
         {showErrors && !complete && (
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+          <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2 font-mono">
             Some required fields are still incomplete. All implementation status fields and sign-off details are required before submitting.
           </p>
         )}

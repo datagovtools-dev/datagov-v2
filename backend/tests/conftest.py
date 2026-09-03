@@ -8,6 +8,26 @@ import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
+
+@compiles(JSONB, "sqlite")
+def compile_jsonb_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+@compiles(UUID, "sqlite")
+def compile_uuid_sqlite(type_, compiler, **kw):
+    return "VARCHAR(36)"
+
+@compiles(ARRAY, "sqlite")
+def compile_array_sqlite(type_, compiler, **kw):
+    return "JSON"
+
+@compiles(INET, "sqlite")
+def compile_inet_sqlite(type_, compiler, **kw):
+    return "VARCHAR(45)"
+
 # Use an in-memory SQLite for unit tests; override with TEST_DATABASE_URL for integration
 TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
@@ -20,7 +40,13 @@ def event_loop():
 
 @pytest_asyncio.fixture(scope="session")
 async def engine():
-    eng = create_async_engine(TEST_DB_URL, echo=False)
+    eng = create_async_engine(
+        TEST_DB_URL,
+        echo=False,
+        connect_args={"check_same_thread": False} if "sqlite" in TEST_DB_URL else {},
+        poolclass=StaticPool if "sqlite" in TEST_DB_URL else None,
+    )
+    import app.models  # noqa: F401 - ensure all tables are registered
     from app.database import Base
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -37,6 +63,13 @@ async def db(engine) -> AsyncGenerator[AsyncSession, None]:
         yield session
         await session.rollback()
 
+
+from unittest.mock import patch
+
+@pytest.fixture(autouse=True)
+def mock_notifications():
+    with patch("app.worker.tasks.notifications.send_workflow_notification.delay") as mock_delay:
+        yield mock_delay
 
 @pytest_asyncio.fixture
 async def client(engine) -> AsyncGenerator[AsyncClient, None]:
@@ -56,3 +89,78 @@ async def client(engine) -> AsyncGenerator[AsyncClient, None]:
         yield ac
 
     app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def auth_user(db: AsyncSession):
+    import uuid
+    from sqlalchemy import select
+    from app.models.user import User, Role, UserProjectRole
+    from app.core.security import hash_password
+
+    res = await db.execute(select(Role).where(Role.name == "super_admin"))
+    role = res.scalar_one_or_none()
+    if not role:
+        role = Role(id=1, name="super_admin", description="Super Admin", permissions=["*"])
+        db.add(role)
+        await db.flush()
+
+    user_id = uuid.uuid4()
+    user = User(
+        id=user_id,
+        full_name="Admin Test",
+        email=f"admin_{user_id.hex[:6]}@vibecode.id",
+        password_hash=hash_password("adminpassword"),
+        position="Lead Architect",
+        is_active=True,
+    )
+    db.add(user)
+    await db.flush()
+
+    upr = UserProjectRole(
+        user_id=user.id,
+        role_id=role.id,
+        assigned_by=user.id,
+    )
+    db.add(upr)
+    await db.commit()
+    return user
+
+
+@pytest_asyncio.fixture
+async def auth_headers(auth_user) -> dict[str, str]:
+    from app.core.security import create_access_token
+    token = create_access_token(str(auth_user.id), roles=["superadmin"])
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture
+async def test_project(db: AsyncSession, auth_user):
+    import uuid
+    from datetime import date, timedelta
+    from app.models.project import Project
+
+    proj = Project(
+        project_code=f"PRJ-{uuid.uuid4().hex[:6].upper()}",
+        customer_name="Test Customer PT",
+        line_of_business="Enterprise Digital",
+        project_name="AI Governance Suite Project",
+        use_case="Data Governance & AI Compliance Testing",
+        project_year=2026,
+        project_category="Internal",
+        is_monetized=False,
+        start_date=date.today(),
+        end_date=date.today() + timedelta(days=365),
+        sme_id=auth_user.id,
+        delivery_manager_id=auth_user.id,
+        project_manager_id=auth_user.id,
+        dgo_id=auth_user.id,
+        metadata_officer_id=auth_user.id,
+        dq_officer_id=auth_user.id,
+        pic_data_compliance_id=auth_user.id,
+        created_by=auth_user.id,
+    )
+    db.add(proj)
+    await db.commit()
+    await db.refresh(proj)
+    return proj

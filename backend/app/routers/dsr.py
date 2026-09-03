@@ -25,6 +25,7 @@ from app.schemas.dsr import (
     PaginatedDSR, TransitionRequest,
 )
 from app.worker.tasks.notifications import send_workflow_notification
+from app.services.notification_service import notify_approval_requested, notify_approval_completed
 
 router = APIRouter(prefix="/dsr", tags=["dsr"])
 DB = Annotated[AsyncSession, Depends(get_db)]
@@ -67,6 +68,10 @@ _DSR_OPTS = [
         AIComplianceChecklist.approvals
     ).selectinload(AIChecklistApproval.approver),
     selectinload(DataSharingRequest.project),
+]
+
+_CHECKLIST_OPTS = [
+    selectinload(AIComplianceChecklist.approvals).selectinload(AIChecklistApproval.approver),
 ]
 
 
@@ -139,19 +144,17 @@ async def _get_user(db: AsyncSession, user_id: uuid.UUID) -> User | None:
     return (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
 
 
-def _notify_approver(user: User, step: int, dsr_id: str, tracking_id: str, actor_name: str) -> None:
+async def _notify_approver(db: AsyncSession, user: User, step: int, dsr_id: str, tracking_id: str, actor_name: str) -> None:
     step_label = _STEP_LABELS.get(step, f"Step {step}")
-    event = "dsr_sign_off_requested" if step in _SIGN_OFF_STEPS else "dsr_review_requested"
-    send_workflow_notification.delay(
-        event=event,
+    await notify_approval_requested(
+        db=db,
+        approver=user,
+        module="dsr",
+        tracking_id=tracking_id,
         entity_id=dsr_id,
-        recipients=[user.email],
-        context={
-            "tracking_id": tracking_id,
-            "actor": actor_name,
-            "step": step,
-            "step_label": step_label,
-        },
+        step=step,
+        step_label=step_label,
+        actor_name=actor_name,
     )
 
 
@@ -210,6 +213,7 @@ async def list_dsrs(
             Project.end_date.label("project_end_date"),
             (AIComplianceChecklist.validated_at.isnot(None)).label("is_signed"),
             AIComplianceChecklist.validated_at.label("signed_at"),
+            AIComplianceChecklist.status.label("checklist_status"),
         )
         .join(Project, DataSharingRequest.project_id == Project.id)
         .outerjoin(AIComplianceChecklist, DataSharingRequest.id == AIComplianceChecklist.dsr_id)
@@ -229,6 +233,11 @@ async def list_dsrs(
         q = q.where(extract("year", DataSharingRequest.created_at) == year)
     if checklist_status == "signed":
         q = q.where(AIComplianceChecklist.validated_at.isnot(None))
+    elif checklist_status == "pending_approval":
+        q = q.where(
+            AIComplianceChecklist.status.in_(["submitted", "under_review"])
+            | DataSharingRequest.status.in_(["submitted", "under_review"])
+        )
     elif checklist_status == "pending_signoff":
         q = q.where(
             AIComplianceChecklist.validated_at.is_(None),
@@ -237,7 +246,7 @@ async def list_dsrs(
     elif checklist_status == "in_progress":
         q = q.where(
             AIComplianceChecklist.validated_at.is_(None),
-            DataSharingRequest.status.notin_(["approved", "executed"]),
+            DataSharingRequest.status.notin_(["approved", "executed", "submitted", "under_review"]),
         )
 
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
@@ -257,6 +266,7 @@ async def list_dsrs(
             status=r.DataSharingRequest.status,
             is_signed=bool(r.is_signed),
             signed_at=r.signed_at,
+            checklist_status=r.checklist_status,
             is_ai_use=r.DataSharingRequest.is_ai_use,
             duration_end=r.DataSharingRequest.duration_end,
             project_end_date=r.project_end_date,
@@ -458,7 +468,8 @@ async def submit_dsr(
     if step1_approver_id:
         step1_user = await _get_user(db, step1_approver_id)
         if step1_user:
-            _notify_approver(step1_user, 1, str(dsr_id), dsr.tracking_id, current_user.full_name)
+            await _notify_approver(db, step1_user, 1, str(dsr_id), dsr.tracking_id, current_user.full_name)
+            await db.commit()
 
     return await _get_dsr_or_404(dsr_id, db)
 
@@ -518,6 +529,13 @@ async def action_approval(
     if approval.status not in ("pending", "requested"):
         raise HTTPException(status_code=400, detail="Approval step already actioned")
 
+    if approval.approver_id and current_user.id != approval.approver_id and not current_user.is_super_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the designated approver or a Super Admin can approve/reject this step.",
+        )
+
+    approval.approver_id = current_user.id
     approval.status = "approved" if body.action == "approve" else "rejected"
     approval.comments = body.comments
     approval.actioned_at = datetime.now(timezone.utc)
@@ -554,40 +572,63 @@ async def action_approval(
         if next_approval:
             next_user = await _get_user(db, next_approval.approver_id)
             if next_user:
-                _notify_approver(next_user, step + 1, str(dsr_id), dsr.tracking_id, current_user.full_name)
+                await _notify_approver(db, next_user, step + 1, str(dsr_id), dsr.tracking_id, current_user.full_name)
+                await db.commit()
+        else:
+            # Fully approved: notify requester
+            requester = await _get_user(db, dsr.requester_id)
+            if requester:
+                await notify_approval_completed(
+                    db=db,
+                    requester_id=requester.id,
+                    requester_email=requester.email,
+                    module="dsr",
+                    tracking_id=dsr.tracking_id,
+                    entity_id=str(dsr_id),
+                    status="approved",
+                    actor_name=current_user.full_name,
+                )
+                await db.commit()
     else:
         # Notify the requester of the rejection
         requester = await _get_user(db, dsr.requester_id)
         if requester:
-            send_workflow_notification.delay(
-                event="dsr_step_rejected",
+            await notify_approval_completed(
+                db=db,
+                requester_id=requester.id,
+                requester_email=requester.email,
+                module="dsr",
+                tracking_id=dsr.tracking_id,
                 entity_id=str(dsr_id),
-                recipients=[requester.email],
-                context={
-                    "tracking_id": dsr.tracking_id,
-                    "actor": current_user.full_name,
-                    "step": step,
-                    "step_label": step_label,
-                },
+                status="rejected",
+                actor_name=current_user.full_name,
+                comments=body.comments,
             )
+            await db.commit()
 
     return await _get_dsr_or_404(dsr_id, db)
 
 
 # ── AI Compliance Checklist ────────────────────────────────────────────────────
 
-@router.get("/{dsr_id}/checklist", response_model=AIChecklistOut)
-async def get_checklist(
-    dsr_id: uuid.UUID, db: DB,
-    _: Annotated[User, Depends(require_permission("dsr:read"))],
-) -> AIComplianceChecklist:
+async def _get_checklist_or_404(dsr_id: uuid.UUID, db: AsyncSession) -> AIComplianceChecklist:
     result = await db.execute(
-        select(AIComplianceChecklist).where(AIComplianceChecklist.dsr_id == dsr_id)
+        select(AIComplianceChecklist)
+        .options(selectinload(AIComplianceChecklist.approvals).selectinload(AIChecklistApproval.approver))
+        .where(AIComplianceChecklist.dsr_id == dsr_id)
     )
     checklist = result.scalar_one_or_none()
     if not checklist:
         raise HTTPException(status_code=404, detail="No AI checklist for this DSR")
     return checklist
+
+
+@router.get("/{dsr_id}/checklist", response_model=AIChecklistOut)
+async def get_checklist(
+    dsr_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dsr:read"))],
+) -> AIComplianceChecklist:
+    return await _get_checklist_or_404(dsr_id, db)
 
 
 @router.put("/{dsr_id}/checklist", response_model=AIChecklistOut)
@@ -595,21 +636,16 @@ async def update_checklist(
     dsr_id: uuid.UUID, body: AIChecklistUpdate, db: DB,
     current_user: Annotated[User, Depends(require_permission("dsr:update"))],
 ) -> AIComplianceChecklist:
-    result = await db.execute(
-        select(AIComplianceChecklist).where(AIComplianceChecklist.dsr_id == dsr_id)
-    )
-    checklist = result.scalar_one_or_none()
-    if not checklist:
-        raise HTTPException(status_code=404, detail="No AI checklist for this DSR")
+    checklist = await _get_checklist_or_404(dsr_id, db)
     if body.checklist_json is not None:
         checklist.checklist_json = body.checklist_json
-    # Sign-off is complete only when both physical signatures are present
+    # If the user completed the sign-off block in ai_assessment, record validation
     cj = checklist.checklist_json or {}
-    main_so = cj.get("sign_off", {})
-    both_signed = bool(main_so.get("prepared_signature")) and bool(main_so.get("acknowledged_signature"))
-    if both_signed:
+    ai = cj.get("ai_assessment", {})
+    so = ai.get("sign_off", {})
+    if (so.get("approved") or "").lower() == "yes":
         if not checklist.validated_at:
-            checklist.validated_by = str(current_user.id)
+            checklist.validated_by = current_user.id
             checklist.validated_at = datetime.now(timezone.utc)
     else:
         checklist.validated_by = None
@@ -617,8 +653,7 @@ async def update_checklist(
     db.add(AuditLog(user_id=current_user.id, module="dsr", action="update_checklist",
                     entity_type="ai_checklist", entity_id=str(dsr_id)))
     await db.commit()
-    await db.refresh(checklist)
-    return checklist
+    return await _get_checklist_or_404(dsr_id, db)
 
 
 # ── AI Checklist Submit ────────────────────────────────────────────────────────
@@ -691,13 +726,17 @@ async def submit_ai_checklist(
     if step1_approver_id:
         step1_user = await _get_user(db, step1_approver_id)
         if step1_user:
-            send_workflow_notification.delay(
-                event="dsr_review_requested",
+            await notify_approval_requested(
+                db=db,
+                approver=step1_user,
+                module="ai_checklist",
+                tracking_id=dsr.tracking_id,
                 entity_id=str(dsr_id),
-                recipients=[step1_user.email],
-                context={"tracking_id": dsr.tracking_id, "actor": current_user.full_name,
-                         "step": 1, "step_label": _AI_STEP_LABELS[1]},
+                step=1,
+                step_label=_AI_STEP_LABELS[1],
+                actor_name=current_user.full_name,
             )
+            await db.commit()
 
     return await _get_dsr_or_404(dsr_id, db)
 
@@ -730,6 +769,13 @@ async def action_ai_checklist_approval(
     if approval.status not in ("pending", "requested"):
         raise HTTPException(status_code=400, detail="Approval step already actioned")
 
+    if approval.approver_id and current_user.id != approval.approver_id and not current_user.is_super_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the designated approver or a Super Admin can approve/reject this step.",
+        )
+
+    approval.approver_id = current_user.id
     approval.status = "approved" if body.action == "approve" else "rejected"
     approval.comments = body.comments
     approval.actioned_at = datetime.now(timezone.utc)
@@ -761,12 +807,45 @@ async def action_ai_checklist_approval(
     if body.action == "approve" and next_approval:
         next_user = await _get_user(db, next_approval.approver_id)
         if next_user:
-            send_workflow_notification.delay(
-                event="dsr_sign_off_requested" if step + 1 in _AI_SIGN_OFF_STEPS else "dsr_review_requested",
+            await notify_approval_requested(
+                db=db,
+                approver=next_user,
+                module="ai_checklist",
+                tracking_id=dsr.tracking_id,
                 entity_id=str(dsr_id),
-                recipients=[next_user.email],
-                context={"tracking_id": dsr.tracking_id, "actor": current_user.full_name,
-                         "step": step + 1, "step_label": _AI_STEP_LABELS.get(step + 1, f"Step {step + 1}")},
+                step=step + 1,
+                step_label=_AI_STEP_LABELS.get(step + 1, f"Step {step + 1}"),
+                actor_name=current_user.full_name,
             )
+            await db.commit()
+    elif body.action == "approve" and not next_approval:
+        requester = await _get_user(db, dsr.requester_id)
+        if requester:
+            await notify_approval_completed(
+                db=db,
+                requester_id=requester.id,
+                requester_email=requester.email,
+                module="ai_checklist",
+                tracking_id=dsr.tracking_id,
+                entity_id=str(dsr_id),
+                status="approved",
+                actor_name=current_user.full_name,
+            )
+            await db.commit()
+    elif body.action == "reject":
+        requester = await _get_user(db, dsr.requester_id)
+        if requester:
+            await notify_approval_completed(
+                db=db,
+                requester_id=requester.id,
+                requester_email=requester.email,
+                module="ai_checklist",
+                tracking_id=dsr.tracking_id,
+                entity_id=str(dsr_id),
+                status="rejected",
+                actor_name=current_user.full_name,
+                comments=body.comments,
+            )
+            await db.commit()
 
     return await _get_dsr_or_404(dsr_id, db)

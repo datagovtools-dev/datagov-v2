@@ -19,7 +19,9 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy import select
 import uuid
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+from app.config import get_settings
+
+DATABASE_URL = os.getenv("DATABASE_URL", "") or get_settings().database_url
 if not DATABASE_URL:
     print("ERROR: DATABASE_URL not set")
     sys.exit(1)
@@ -71,7 +73,7 @@ async def main():
                 db.add(Role(name=role_name, description=desc))
                 print(f"  + role: {role_name}")
             else:
-                print(f"  ✓ role exists: {role_name}")
+                print(f"  [OK] role exists: {role_name}")
         await db.commit()
 
         # 2. Create super admin user
@@ -81,7 +83,7 @@ async def main():
         )).scalar_one_or_none()
 
         if existing_user:
-            print(f"  ✓ User already exists: {ADMIN_EMAIL}")
+            print(f"  [OK] User already exists: {ADMIN_EMAIL}")
             user = existing_user
         else:
             user = User(
@@ -120,14 +122,14 @@ async def main():
                 await db.commit()
                 print(f"  + Assigned super_admin role to {ADMIN_EMAIL}")
             else:
-                print(f"  ✓ super_admin role already assigned")
+                print(f"  [OK] super_admin role already assigned")
 
     await engine.dispose()
-    print("\n✅ Seed complete!")
+    print("\n[OK] Seed complete!")
     print(f"\n   Login URL : http://localhost:3000/login")
     print(f"   Email     : {ADMIN_EMAIL}")
     print(f"   Password  : {ADMIN_PASSWORD}")
-    print("\n   ⚠  Change the password after first login!")
+    print("\n   [!] Change the password after first login!")
 
 
 if __name__ == "__main__":

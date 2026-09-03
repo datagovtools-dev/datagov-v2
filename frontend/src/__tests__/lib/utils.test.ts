@@ -26,7 +26,7 @@ describe("formatDateTime", () => {
     expect(result.length).toBeGreaterThan(0);
   });
 
-  it("returns empty string for empty input", () => {
-    expect(formatDateTime("")).toBe("");
+  it("returns dash placeholder for empty input", () => {
+    expect(formatDateTime("")).toBe("—");
   });
 });

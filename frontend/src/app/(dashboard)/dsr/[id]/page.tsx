@@ -3,13 +3,15 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, Lock, Pencil, Save, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCircle2, Download, Lock, MessageSquare, Pencil, Save, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
+import { toast } from "@/components/ui/Toast";
+import { DetailSkeleton } from "@/components/ui/LoadingState";
 import { DetailModal } from "@/components/details/DetailModal";
 import { ProjectDetailCards } from "@/components/details/ProjectDetailView";
 import { formatDate, formatDateTime } from "@/lib/utils";
@@ -18,7 +20,7 @@ import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface DSRApproval {
-  id: string; step_order: number; approver_role: string; approver_name: string;
+  id: string; approver_id?: string | null; step_order: number; approver_role: string; approver_name: string;
   status: string; comments: string | null; actioned_at: string | null;
 }
 
@@ -567,6 +569,15 @@ export default function DSRDetailPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const currentUser = useAuthStore(s => s.user);
+  const isSuperAdmin = Boolean(
+    currentUser?.roles?.some((r: any) => (typeof r === "string" ? r : r.name) === "super_admin") ||
+    currentUser?.is_super_admin
+  );
+  const canAction = (approverId?: string | null) => {
+    if (!currentUser) return false;
+    if (isSuperAdmin) return true;
+    return Boolean(approverId && currentUser.id === approverId);
+  };
 
   const [editing, setEditing] = React.useState(false);
   const [form, setForm] = React.useState<Record<string, string | boolean>>({});
@@ -674,42 +685,116 @@ export default function DSRDetailPage() {
     });
   }
 
+  const [isSaving, setIsSaving] = React.useState(false);
+
   const updateMutation = useMutation({
-    mutationFn: () => api.put(`/dsr/${id}`, {
-      dataset_name: form.dataset_name, recipient: form.recipient,
-      purpose: form.purpose, is_ai_use: form.is_ai_use,
-      duration_start: form.duration_start, duration_end: form.duration_end,
-    }),
+    mutationFn: () =>
+      api.put(`/dsr/${id}`, {
+        dataset_name: form.dataset_name,
+        recipient: form.recipient,
+        purpose: form.purpose,
+        is_ai_use: form.is_ai_use,
+        duration_start: form.duration_start,
+        duration_end: form.duration_end,
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["dsr", id] });
       qc.invalidateQueries({ queryKey: ["dsrs"] });
-      setEditing(false);
     },
     onError: (e: any) => setServerError(e.message),
   });
 
   const checklistMutation = useMutation({
-    mutationFn: () => api.put(`/dsr/${id}/checklist`, { checklist_json: checklistDraft }),
+    mutationFn: (jsonPayload?: Record<string, any>) =>
+      api.put(`/dsr/${id}/checklist`, {
+        checklist_json: jsonPayload ?? activeDraft,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["dsr", id] }),
-  });
-
-  const submitMutation = useMutation({
-    mutationFn: () => api.post(`/dsr/${id}/submit`, {}),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["dsr", id] });
-      qc.invalidateQueries({ queryKey: ["dsrs"] });
-    },
     onError: (e: any) => setServerError(e.message),
   });
 
-  function handleSave(currentDraft: Record<string, any>, aiUse: boolean) {
-    if (isChecklistDirty) {
-      const errors = getChecklistErrors(currentDraft, aiUse);
-      if (errors.size > 0) { setShowErrors(true); return; }
+  const submitMutation = useMutation({
+    mutationFn: () => {
+      toast.loading("Submitting DSR for approval workflow...", { id: "submit-dsr" });
+      return api.post(`/dsr/${id}/submit`, {});
+    },
+    onSuccess: () => {
+      toast.success("DSR submitted successfully for review!", { id: "submit-dsr" });
+      qc.invalidateQueries({ queryKey: ["dsr", id] });
+      qc.invalidateQueries({ queryKey: ["dsrs"] });
+    },
+    onError: (e: any) => {
+      toast.error(e.message || "Failed to submit DSR", { id: "submit-dsr" });
+      setServerError(e.message);
+    },
+  });
+
+  const [approvalComment, setApprovalComment] = React.useState<Record<number, string>>({});
+
+  const approvalMutation = useMutation({
+    mutationFn: ({ step, action }: { step: number; action: "approve" | "reject" }) => {
+      const label = action === "approve" ? "Approving" : "Rejecting";
+      toast.loading(`${label} Step ${step}...`, { id: "action-approval" });
+      return api.post(`/dsr/${id}/approvals/${step}`, {
+        action,
+        comments: approvalComment[step] ?? "",
+      });
+    },
+    onSuccess: (_, variables) => {
+      const msg = variables.action === "approve" ? "Step approved successfully!" : "Request rejected.";
+      toast.success(msg, { id: "action-approval" });
+      qc.invalidateQueries({ queryKey: ["dsr", id] });
+      qc.invalidateQueries({ queryKey: ["dsrs"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      setApprovalComment((prev) => ({ ...prev, [variables.step]: "" }));
+    },
+    onError: (e: any) => {
+      toast.error(e.message || "Failed to action approval", { id: "action-approval" });
+    },
+  });
+
+  async function handleSave(currentDraft: Record<string, any>, aiUse: boolean) {
+    setIsSaving(true);
+    toast.loading("Saving DSR draft changes...", { id: "save-dsr" });
+
+    try {
+      const promises: Promise<any>[] = [];
+
+      // Save top-level DSR details if in edit mode
+      if (editing) {
+        promises.push(
+          api.put(`/dsr/${id}`, {
+            dataset_name: form.dataset_name,
+            recipient: form.recipient,
+            purpose: form.purpose,
+            is_ai_use: form.is_ai_use,
+            duration_start: form.duration_start,
+            duration_end: form.duration_end,
+          })
+        );
+      }
+
+      // Save checklist JSON state
+      promises.push(
+        api.put(`/dsr/${id}/checklist`, {
+          checklist_json: currentDraft,
+        })
+      );
+
+      await Promise.all(promises);
+
+      await qc.invalidateQueries({ queryKey: ["dsr", id] });
+      await qc.invalidateQueries({ queryKey: ["dsrs"] });
+
+      toast.success("DSR Draft saved successfully!", { id: "save-dsr" });
+      setEditing(false);
+      setShowErrors(false);
+    } catch (e: any) {
+      toast.error(e.message || "Failed to save draft", { id: "save-dsr" });
+      setServerError(e.message);
+    } finally {
+      setIsSaving(false);
     }
-    setShowErrors(false);
-    if (editing) updateMutation.mutate();
-    if (isChecklistDirty) checklistMutation.mutate();
   }
 
   function handleCancel() {
@@ -718,7 +803,7 @@ export default function DSRDetailPage() {
     setShowErrors(false);
   }
 
-  if (isLoading) return <div className="py-20 text-center text-surface-400">Loading…</div>;
+  if (isLoading) return <DetailSkeleton />;
   if (!dsr) return <div className="py-20 text-center text-surface-500">Request not found.</div>;
 
   const checklist = dsr.ai_checklist;
@@ -844,103 +929,157 @@ export default function DSRDetailPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-4">
       {/* Header */}
-      <div className="flex items-start gap-3 mb-6">
+      <div className="flex items-start gap-3 pb-3 border-b border-slate-200">
         <button onClick={() => router.back()}
-          className="inline-flex items-center justify-center h-9 w-9 rounded-md hover:bg-surface-100 shrink-0 mt-0.5">
+          className="inline-flex items-center justify-center h-8 w-8 rounded-md border border-slate-200 hover:bg-slate-100 shrink-0 mt-0.5 text-slate-600">
           <ArrowLeft className="h-4 w-4" />
         </button>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono font-bold text-surface-800 text-lg">{dsr.tracking_id}</span>
+                <span className="font-mono font-bold text-slate-900 text-sm">{dsr.tracking_id}</span>
                 {isSigned
-                  ? <Badge variant="approved">Signed &amp; Locked</Badge>
-                  : <Badge variant={statusVariant(dsr.status)}>{statusLabel(dsr.status)}</Badge>
+                  ? <Badge variant="success" className="text-[10px]">Signed &amp; Locked</Badge>
+                  : <Badge variant={statusVariant(dsr.status)} className="text-[10px]">{statusLabel(dsr.status)}</Badge>
                 }
-                {dsr.is_ai_use && <Badge variant="warning">AI Use</Badge>}
+                {dsr.is_ai_use && <Badge variant="warning" className="text-[10px]">AI Use</Badge>}
               </div>
-              <h1 className="mt-0.5 truncate">{dsr.project_name}</h1>
-              <p className="text-sm text-surface-500">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 mt-1 truncate">{dsr.project_name}</h1>
+              <p className="text-xs text-slate-500 font-mono mt-0.5">
                 Created {formatDateTime(dsr.created_at)} · Last updated {formatDateTime(dsr.updated_at)}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-          <Button variant="outline" size="sm" onClick={handleExportPDF}>
-            <Download className="h-4 w-4 mr-1" /> Export PDF
-          </Button>
-          {!isSigned && (
-            editing ? (
-              <>
-                <Button variant="secondary" onClick={handleCancel}>
-                  <X className="h-4 w-4 mr-1" /> Cancel
-                </Button>
-                <Button
-                  onClick={() => handleSave(activeDraft, dsr.is_ai_use)}
-                  loading={updateMutation.isPending || checklistMutation.isPending}
-                >
-                  <Save className="h-4 w-4 mr-1" /> Save as Draft
-                </Button>
-              </>
-            ) : (
-              <>
-                {dsr.status === "draft" && (
-                  <Button
-                    onClick={() => submitMutation.mutate()}
-                    loading={submitMutation.isPending}
-                    disabled={!isChecklistComplete}
-                    title={!isChecklistComplete ? "Complete all checklist sections and sign-off fields before submitting" : undefined}
-                  >
-                    Submit
-                  </Button>
-                )}
-                <Button variant="outline" onClick={startEdit}>
-                  <Pencil className="h-4 w-4 mr-1" /> Edit
-                </Button>
-              </>
-            )
-          )}
+              <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={handleExportPDF}>
+                <Download className="h-3.5 w-3.5 mr-1" /> Export PDF
+              </Button>
+              {!isSigned && (
+                editing ? (
+                  <>
+                    <Button variant="outline" size="sm" className="h-7.5 text-xs" onClick={handleCancel}>
+                      <X className="h-3.5 w-3.5 mr-1" /> Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7.5 text-xs font-medium"
+                      onClick={() => handleSave(activeDraft, dsr.is_ai_use)}
+                      loading={isSaving || updateMutation.isPending || checklistMutation.isPending}
+                    >
+                      <Save className="h-3.5 w-3.5 mr-1" /> Save as Draft
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    {dsr.status === "draft" && (
+                      <Button
+                        size="sm"
+                        className="h-7.5 text-xs font-medium"
+                        onClick={() => submitMutation.mutate()}
+                        loading={submitMutation.isPending}
+                        disabled={!isChecklistComplete}
+                        title={!isChecklistComplete ? "Complete all checklist sections and sign-off fields before submitting" : undefined}
+                      >
+                        Submit
+                      </Button>
+                    )}
+                    <Button size="sm" className="h-7.5 text-xs font-medium" onClick={startEdit}>
+                      <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
+                    </Button>
+                  </>
+                )
+              )}
             </div>
           </div>
         </div>
       </div>
 
+      {/* Top Banner: Action Required when awaiting approval */}
+      {(() => {
+        const activeStep = dsr.approvals.find((a) => a.status === "requested");
+        if (!activeStep) return null;
+        const userCanAction = canAction(activeStep.approver_id);
+        return (
+          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
+              <div>
+                <p className="text-xs font-semibold text-slate-900">
+                  {userCanAction ? "Action Required: " : "Pending Review: "}
+                  {STEP_LABELS[activeStep.step_order] ?? `Step ${activeStep.step_order}`} Pending Approval
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Assigned Approver: {activeStep.approver_name || "Project Approver"}
+                </p>
+              </div>
+            </div>
+            {userCanAction ? (
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
+                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "reject" })}
+                  disabled={approvalMutation.isPending}
+                >
+                  <X className="h-3 w-3 mr-1" /> Reject
+                </Button>
+                <Button
+                  size="sm"
+                  className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
+                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "approve" })}
+                  disabled={approvalMutation.isPending}
+                >
+                  <Check className="h-3 w-3 mr-1" /> Approve Step
+                </Button>
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 italic shrink-0">
+                Waiting for {activeStep.approver_name || "designated approver"} to sign-off
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {dsr.status === "draft" && !isChecklistComplete && (
-        <div className="rounded-md bg-amber-50 border border-amber-200 px-4 py-2 text-sm text-amber-700 mb-4">
+        <div className="rounded-md bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs text-amber-800 font-mono">
           Complete all checklist sections A–D and sign-off fields (excluding e-signatures) before submitting. Only &ldquo;Save as Draft&rdquo; is available until then.
         </div>
       )}
 
-      <div className="space-y-5">
+      <div className="space-y-4">
         {/* Request Details */}
         <Card>
-          <CardHeader><CardTitle>Request Details</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Request Details</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-3.5">
             {editing ? (
               <>
                 <Input label="Dataset / Data Name" value={form.dataset_name as string}
-                  onChange={(e) => set("dataset_name", e.target.value)} required />
+                  onChange={(e) => set("dataset_name", e.target.value)} required className="h-8 text-xs" />
                 <Input label="Customer / Client" value={form.recipient as string}
-                  onChange={(e) => set("recipient", e.target.value)} required />
+                  onChange={(e) => set("recipient", e.target.value)} required className="h-8 text-xs" />
                 <Input label="Sharing Start Date" type="date" value={form.duration_start as string}
-                  onChange={(e) => set("duration_start", e.target.value)} required />
+                  onChange={(e) => set("duration_start", e.target.value)} required className="h-8 text-xs font-mono" />
                 <div className="flex flex-col gap-1">
-                  <label className="text-sm font-medium text-surface-700">Sharing End Date</label>
-                  <p className="text-sm font-medium text-surface-800 py-1.5">{dsr.project_end_date ? formatDate(dsr.project_end_date) : formatDate(dsr.duration_end)}</p>
-                  <p className="text-xs text-surface-400">Auto-filled from project end date</p>
+                  <label className="text-xs font-semibold text-slate-700">Sharing End Date</label>
+                  <p className="text-xs font-mono font-medium text-slate-800 py-1.5">{dsr.project_end_date ? formatDate(dsr.project_end_date) : formatDate(dsr.duration_end)}</p>
+                  <p className="text-[10px] text-slate-400 font-mono">Auto-filled from project end date</p>
                 </div>
                 <div className="md:col-span-2 flex flex-col gap-1">
-                  <label className="text-sm font-medium text-surface-700">Purpose / Justification <span className="text-red-500">*</span></label>
+                  <label className="text-xs font-semibold text-slate-700">Purpose / Justification <span className="text-rose-500">*</span></label>
                   <textarea value={form.purpose as string} onChange={(e) => set("purpose", e.target.value)}
-                    rows={3} className="input-base resize-none w-full" placeholder="Describe why this data needs to be shared…" />
+                    rows={3} className="input-base resize-none w-full text-xs font-sans" placeholder="Describe why this data needs to be shared…" />
                 </div>
-                <div className="md:col-span-2 flex items-center gap-3">
+                <div className="md:col-span-2 flex items-center gap-2.5">
                   <input id="is_ai_use_edit" type="checkbox" checked={form.is_ai_use as boolean}
                     onChange={(e) => set("is_ai_use", e.target.checked)}
-                    className="h-4 w-4 rounded border-surface-300 text-primary-600 focus:ring-primary-500" />
-                  <label htmlFor="is_ai_use_edit" className="text-sm font-medium text-surface-700">
+                    className="h-4 w-4 rounded-md border-slate-300 text-slate-900 focus:ring-slate-400" />
+                  <label htmlFor="is_ai_use_edit" className="text-xs font-medium text-slate-700">
                     This data will be used for AI / ML purposes
                   </label>
                 </div>
@@ -948,37 +1087,37 @@ export default function DSRDetailPage() {
             ) : (
               <>
                 <div>
-                  <p className="text-xs text-surface-400 mb-0.5">Project ID</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project ID</p>
                   <button
                     onClick={openProjectModal}
-                    className="font-mono font-medium text-primary-600 hover:text-primary-800 hover:underline text-left"
+                    className="font-mono text-xs font-medium text-slate-900 hover:underline text-left"
                   >
                     {dsr.project_code ?? dsr.project_id}
                   </button>
                 </div>
                 <div>
-                  <p className="text-xs text-surface-400 mb-0.5">Project Name</p>
-                  <p className="font-medium">{dsr.project_name}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Project Name</p>
+                  <p className="text-xs font-medium text-slate-900">{dsr.project_name}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-surface-400 mb-0.5">Customer / Client</p>
-                  <p className="font-medium">{dsr.recipient}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Customer / Client</p>
+                  <p className="text-xs font-medium text-slate-900">{dsr.recipient}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-surface-400 mb-0.5">AI / ML Use</p>
-                  {dsr.is_ai_use ? <Badge variant="warning">Yes — AI Use</Badge> : <span className="text-surface-500">No</span>}
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">AI / ML Use</p>
+                  {dsr.is_ai_use ? <Badge variant="warning" className="text-[10px]">Yes — AI Use</Badge> : <span className="text-xs font-mono text-slate-500">No</span>}
                 </div>
                 <div>
-                  <p className="text-xs text-surface-400 mb-0.5">Sharing Start Date</p>
-                  <p className="font-medium">{formatDate(dsr.duration_start)}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Sharing Start Date</p>
+                  <p className="text-xs font-mono font-medium text-slate-900">{formatDate(dsr.duration_start)}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-surface-400 mb-0.5">Sharing End Date</p>
-                  <p className="font-medium">{dsr.project_end_date ? formatDate(dsr.project_end_date) : formatDate(dsr.duration_end)}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Sharing End Date</p>
+                  <p className="text-xs font-mono font-medium text-slate-900">{dsr.project_end_date ? formatDate(dsr.project_end_date) : formatDate(dsr.duration_end)}</p>
                 </div>
                 <div className="md:col-span-2">
-                  <p className="text-xs text-surface-400 mb-0.5">Purpose / Justification</p>
-                  <p className="text-surface-800 leading-relaxed">{dsr.purpose}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Purpose / Justification</p>
+                  <p className="text-xs text-slate-800 leading-relaxed">{dsr.purpose}</p>
                 </div>
               </>
             )}
@@ -986,44 +1125,110 @@ export default function DSRDetailPage() {
         </Card>
 
         {serverError && (
-          <p className="rounded-md bg-red-50 border border-red-200 px-4 py-2 text-sm text-red-600">{serverError}</p>
+          <div className="rounded-md bg-rose-50 border border-rose-200 p-3 text-xs font-medium text-rose-700 flex items-center justify-between font-mono">
+            <div className="flex items-center gap-2">
+              <span className="flex h-4 w-4 items-center justify-center rounded-md bg-rose-200 text-rose-800 shrink-0 text-[10px] font-bold">!</span>
+              <span>
+                {serverError.includes("500") || serverError.includes("HTTP 500")
+                  ? "Terjadi kendala saat menyimpan draf ke database. Sistem telah mengoptimalkan koneksi penyimpanan, silakan coba klik Simpan Draf kembali."
+                  : serverError}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setServerError("")}
+              className="text-rose-500 hover:text-rose-700 p-1"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
         )}
-
 
         {/* Approval Timeline */}
         <Card>
-          <CardHeader><CardTitle>Approval Timeline</CardTitle></CardHeader>
-          <CardContent>
-            <ol className="relative border-l border-surface-200 space-y-6 ml-3">
+          <CardHeader className="pb-3 border-b border-slate-100">
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <ol className="relative border-l border-slate-200 space-y-4 ml-3">
               {[...dsr.approvals].sort((a, b) => a.step_order - b.step_order).map((step) => {
                 const savedPreparedBy = checklist?.checklist_json?.sign_off?.prepared_by as string | undefined;
                 const displayName = step.step_order === 4 ? (savedPreparedBy || step.approver_name) : step.approver_name;
+                const isRequested = step.status === "requested";
+
                 return (
-                <li key={step.id} className="ml-4">
-                  <div className={`absolute -left-1.5 w-3 h-3 rounded-full border-2 border-white ${
-                    step.status === "approved"  ? "bg-green-500" :
-                    step.status === "rejected"  ? "bg-red-500" :
-                    step.status === "requested" ? "bg-primary-500" :
-                    "bg-surface-200"
+                <li key={step.id} className="ml-3.5">
+                  <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
+                    step.status === "approved"  ? "bg-emerald-600" :
+                    step.status === "rejected"  ? "bg-rose-600" :
+                    isRequested ? "bg-slate-900" :
+                    "bg-slate-300"
                   }`} />
-                  <p className={`text-sm font-medium ${step.status === "pending" ? "text-surface-400" : "text-surface-800"}`}>
-                    {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-                  </p>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
+                      {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
+                    </p>
+                    <Badge
+                      variant={step.status === "approved" ? "success" : step.status === "rejected" ? "danger" : isRequested ? "warning" : "default"}
+                      className="text-[10px]">
+                      {step.status === "approved" ? "Approved" :
+                       step.status === "rejected"  ? "Rejected" :
+                       isRequested ? "Awaiting Action" :
+                       "Not Yet"}
+                    </Badge>
+                  </div>
                   {displayName && (
-                    <p className={`text-xs ${step.status === "pending" ? "text-surface-400" : "text-surface-500"}`}>
+                    <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-600"}`}>
                       {displayName}
                     </p>
                   )}
-                  <Badge
-                    variant={step.status === "approved" ? "approved" : step.status === "rejected" ? "rejected" : "draft"}
-                    className="mt-1 text-xs">
-                    {step.status === "approved" ? "Approved" :
-                     step.status === "rejected"  ? "Rejected" :
-                     step.status === "pending"   ? "Not Yet" :
-                     "Requested"}
-                  </Badge>
                   {step.actioned_at && (
-                    <p className="text-xs text-surface-400 mt-0.5">{formatDateTime(step.actioned_at)}</p>
+                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">Actioned on {formatDateTime(step.actioned_at)}</p>
+                  )}
+                  {step.comments && (
+                    <p className="text-xs text-slate-600 italic mt-1 bg-slate-50 border border-slate-100 rounded p-1.5 font-mono">
+                      &ldquo;{step.comments}&rdquo;
+                    </p>
+                  )}
+
+                  {/* Interactive Approval Controls for Active Requested Step */}
+                  {isRequested && (
+                    canAction(step.approver_id) ? (
+                      <div className="mt-2.5 p-3 rounded-md border border-slate-200 bg-slate-50/60 space-y-2.5 font-mono">
+                        <textarea
+                          rows={2}
+                          className="input-base text-xs font-sans resize-none w-full bg-white"
+                          placeholder="Add review comments or sign-off notes (optional)…"
+                          value={approvalComment[step.step_order] ?? ""}
+                          onChange={(e) =>
+                            setApprovalComment((prev) => ({ ...prev, [step.step_order]: e.target.value }))
+                          }
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
+                            disabled={approvalMutation.isPending}
+                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "approve" })}
+                          >
+                            <Check className="h-3 w-3 mr-1" /> Approve Step
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
+                            disabled={approvalMutation.isPending}
+                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "reject" })}
+                          >
+                            <X className="h-3 w-3 mr-1" /> Reject Request
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 p-2.5 rounded bg-slate-50 border border-slate-200 text-xs text-slate-500 font-mono italic">
+                        Waiting for {displayName || step.approver_name || "designated approver"} to review and take action.
+                      </div>
+                    )
                   )}
                 </li>
               );
@@ -1035,20 +1240,20 @@ export default function DSRDetailPage() {
         {/* Data & Insights Sharing Evaluation Checklist */}
         {checklist && (
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-3 border-b border-slate-100">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div>
-                  <CardTitle>Data & Insights Sharing Evaluation Checklist</CardTitle>
-                  <p className="text-xs text-surface-400 mt-0.5">
+                  <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Data &amp; Insights Sharing Evaluation Checklist</CardTitle>
+                  <p className="text-xs text-slate-500 mt-0.5">
                     Instructions: Fill the checkbox with "Yes" / "No" based on data condition and leave remarks if criteria are not met.
                   </p>
                 </div>
                 {checklist.validated_at && (
-                  <Badge variant="approved">Signed off {formatDate(checklist.validated_at)}</Badge>
+                  <Badge variant="success" className="text-[10px]">Signed off {formatDate(checklist.validated_at)}</Badge>
                 )}
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
+            <CardContent className="pt-4 space-y-4">
               {CHECKLIST_TEMPLATE.filter((s) => !s.aiOnly || dsr.is_ai_use).map((section) => (
                 <ChecklistSectionBlock
                   key={section.section}
@@ -1075,7 +1280,7 @@ export default function DSRDetailPage() {
               {showErrors && (() => {
                 const errCount = getChecklistErrors(activeDraft, dsr.is_ai_use).size;
                 return errCount > 0 ? (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                  <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2 font-mono">
                     {errCount} required field{errCount !== 1 ? "s" : ""} still incomplete. All checkboxes and remarks are required — use &quot;-&quot; if there is nothing to add.
                   </p>
                 ) : null;

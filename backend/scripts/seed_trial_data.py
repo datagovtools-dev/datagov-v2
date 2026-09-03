@@ -17,7 +17,9 @@ from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select
 
-DATABASE_URL = os.getenv("DATABASE_URL", "")
+from app.config import get_settings
+
+DATABASE_URL = os.getenv("DATABASE_URL", "") or get_settings().database_url
 if not DATABASE_URL:
     print("ERROR: DATABASE_URL not set")
     sys.exit(1)
@@ -56,7 +58,7 @@ async def main():
                 select(User).where(User.email == u["email"])
             )).scalar_one_or_none()
             if existing:
-                print(f"  ✓ exists: {u['full_name']}")
+                print(f"  [OK] exists: {u['full_name']}")
                 user_map[u["full_name"]] = existing
             else:
                 new_user = User(
@@ -106,7 +108,7 @@ async def main():
         )).scalar_one_or_none()
 
         if proj:
-            print("  ✓ project exists")
+            print("  [OK] project exists")
             # Update sme_id if missing
             if proj.sme_id is None:
                 proj.sme_id = sme.id
@@ -146,7 +148,7 @@ async def main():
         )).scalar_one_or_none()
 
         if dsr:
-            print("  ✓ DSR exists")
+            print("  [OK] DSR exists")
         else:
             dsr = DataSharingRequest(
                 id=uuid.uuid4(),
@@ -173,7 +175,7 @@ async def main():
         )).scalars().all()
 
         if existing_approvals:
-            print("  ✓ approvals exist")
+            print("  [OK] approvals exist")
         else:
             approval_steps = [
                 (dm.id,  "Delivery Manager",            1, "approved", "Reviewed and approved. Data usage aligns with project scope."),
@@ -201,7 +203,7 @@ async def main():
         )).scalar_one_or_none()
 
         if checklist:
-            print("  ✓ checklist exists")
+            print("  [OK] checklist exists")
         else:
             checklist = AIComplianceChecklist(
                 id=uuid.uuid4(),
@@ -213,7 +215,7 @@ async def main():
             print("  + created (empty — fill via UI)")
 
     await engine.dispose()
-    print("\n✅ Trial data seed complete!")
+    print("\n[OK] Trial data seed complete!")
     print(f"\n   Project  : PRJ-2026-001")
     print(f"   DSR      : DSR-2026-0001 (is_ai_use=True)")
     print(f"   SME      : {sme.full_name} ({sme.email})")
