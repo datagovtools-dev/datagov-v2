@@ -1,6 +1,6 @@
 #!/bin/bash
 # Scheduled Tasks Verification — P6-014
-# Verifies all 4 Celery Beat tasks are registered and firing correctly.
+# Verifies all 5 Celery Beat tasks are registered and firing correctly.
 set -euo pipefail
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
@@ -12,6 +12,7 @@ EXPECTED_TASKS=(
   "dsr_expiry_check"
   "cleanup_temp_files"
   "gcp_sa_key_purge"
+  "source_file_expiry_check"
 )
 
 echo ""
@@ -58,3 +59,5 @@ echo "  retention_eligibility_scan : daily at 02:00 WIB (UTC+7)"
 echo "  dsr_expiry_check           : daily at 08:00 WIB (UTC+7)"
 echo "  cleanup_temp_files         : daily at 03:00 WIB (UTC+7)"
 echo "  gcp_sa_key_purge           : every 30 minutes"
+echo "  source_file_expiry_check   : daily at 07:00 WIB (UTC+7); deletes uploads at end date + 30 days,"
+echo "                               or end date + the approved ROPA retention period"

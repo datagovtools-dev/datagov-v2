@@ -29,15 +29,8 @@ if (Test-Path $ENV_FILE) {
     exit 1
 }
 
-# Check DATABASE_URL is filled in
-$dbUrl = [System.Environment]::GetEnvironmentVariable("DATABASE_URL", "Process")
-if ($dbUrl -like "*YOUR-PASSWORD*" -or $dbUrl -like "*XXXX*") {
-    Write-Host ""
-    Write-Host "[ERROR] Replace [YOUR-PASSWORD] in .env.local with your Supabase password first." -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit 1
-}
-Write-Host "[OK] Database URL configured" -ForegroundColor Green
+# Database: SQLite file backend/datagov.db (config default when DATABASE_URL is not set)
+Write-Host "[OK] Using SQLite database backend\datagov.db" -ForegroundColor Green
 
 # ── Write temp batch files (avoids PowerShell quoting issues with spaces in paths) ──
 
@@ -77,27 +70,10 @@ npm run dev
 pause
 "@ | Set-Content -Path $frontendBat -Encoding ASCII
 
-# Run migrations
-Write-Host ""
-Write-Host "[1/3] Running database migrations..." -ForegroundColor Yellow
-$env:PYTHONPATH = $BACKEND
-Set-Location $BACKEND
-py -m alembic upgrade head
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[WARNING] Migration may already be applied -- continuing." -ForegroundColor Yellow
-} else {
-    Write-Host "[OK] Migrations applied" -ForegroundColor Green
-}
-
-# Seed admin user
-Write-Host ""
-Write-Host "[2/3] Creating admin user..." -ForegroundColor Yellow
-py scripts/seed_admin.py
-Write-Host "[OK] Admin user ready" -ForegroundColor Green
-
 # Launch backend and frontend in separate windows
+# (the backend creates missing tables and the default users on startup)
 Write-Host ""
-Write-Host "[3/3] Launching backend and frontend..." -ForegroundColor Yellow
+Write-Host "[1/1] Launching backend and frontend..." -ForegroundColor Yellow
 Start-Process powershell -ArgumentList "-NoExit", "-ExecutionPolicy", "Bypass", "-File", $backendPs1
 Start-Sleep -Seconds 4
 Start-Process cmd -ArgumentList "/k", $frontendBat

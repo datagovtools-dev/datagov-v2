@@ -5,7 +5,6 @@ import pytest
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("DATABASE_URL_SYNC", "sqlite:///:memory:")
-os.environ.setdefault("DATABASE_NULL_POOL", "true")
 
 from app.models.metadata import MetadataRecord
 from app.services import ai_generation

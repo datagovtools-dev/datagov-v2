@@ -1,52 +1,55 @@
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase, MappedColumn
-from sqlalchemy import MetaData
-from sqlalchemy.pool import NullPool, StaticPool
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
+from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, sessionmaker
+from sqlalchemy import MetaData, create_engine, event, inspect
+from sqlalchemy.pool import StaticPool
 from app.config import get_settings
 
-@compiles(JSONB, "sqlite")
-def compile_jsonb_sqlite(type_, compiler, **kw):
-    return "JSON"
-
-@compiles(UUID, "sqlite")
-def compile_uuid_sqlite(type_, compiler, **kw):
-    return "VARCHAR(36)"
-
-@compiles(ARRAY, "sqlite")
-def compile_array_sqlite(type_, compiler, **kw):
-    return "JSON"
-
-@compiles(INET, "sqlite")
-def compile_inet_sqlite(type_, compiler, **kw):
-    return "VARCHAR(45)"
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
+
+def _set_sqlite_pragmas(dbapi_conn, _record) -> None:
+    # WAL + busy timeout let the API and the Celery worker share one SQLite file
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.close()
+
+
+db_url = settings.database_url
 engine_options = {
     "echo": settings.debug,
+    "connect_args": {"check_same_thread": False, "timeout": 30},
 }
-
-db_url = settings.database_url.replace("@localhost:", "@127.0.0.1:")
-
-if "sqlite" in db_url:
-    engine_options["connect_args"] = {"check_same_thread": False}
-    if ":memory:" in db_url:
-        engine_options["poolclass"] = StaticPool
-else:
-    engine_options["pool_pre_ping"] = True
-    if settings.database_null_pool:
-        engine_options["poolclass"] = NullPool
-    else:
-        engine_options["pool_size"] = 10
-        engine_options["max_overflow"] = 20
+if ":memory:" in db_url:
+    engine_options["poolclass"] = StaticPool
 
 engine = create_async_engine(db_url, **engine_options)
+if ":memory:" not in db_url:
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
 
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
+
+_sync_sessionmaker: sessionmaker[Session] | None = None
+
+
+def get_sync_session() -> Session:
+    """Synchronous ORM session for Celery tasks and maintenance scripts."""
+    global _sync_sessionmaker
+    if _sync_sessionmaker is None:
+        import app.models  # noqa: F401  (register all mappers)
+
+        sync_engine = create_engine(
+            settings.database_url_sync, connect_args={"check_same_thread": False, "timeout": 30}
+        )
+        event.listen(sync_engine, "connect", _set_sqlite_pragmas)
+        _sync_sessionmaker = sessionmaker(sync_engine, expire_on_commit=False)
+    return _sync_sessionmaker()
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -59,6 +62,41 @@ NAMING_CONVENTION = {
 
 class Base(DeclarativeBase):
     metadata = MetaData(naming_convention=NAMING_CONVENTION)
+
+
+_AUDIT_LOG_TRIGGERS = (
+    (
+        "CREATE TRIGGER IF NOT EXISTS tg_audit_logs_no_update BEFORE UPDATE ON audit_logs "
+        "BEGIN SELECT RAISE(ABORT, 'audit_logs rows are immutable'); END"
+    ),
+    (
+        "CREATE TRIGGER IF NOT EXISTS tg_audit_logs_no_delete BEFORE DELETE ON audit_logs "
+        "BEGIN SELECT RAISE(ABORT, 'audit_logs rows are immutable'); END"
+    ),
+)
+
+
+def sync_schema(conn) -> None:
+    """Bring an existing SQLite database up to the current models (run after create_all).
+
+    create_all only creates missing tables, so model columns added later are
+    added here with ALTER TABLE ADD COLUMN. SQLite cannot add a NOT NULL column
+    without a default, so new columns are added as nullable; type changes,
+    renames and drops still need a manual script.
+    """
+    inspector = inspect(conn)
+    for table in Base.metadata.sorted_tables:
+        if not inspector.has_table(table.name):
+            continue
+        existing = {column["name"] for column in inspector.get_columns(table.name)}
+        for column in table.columns:
+            if column.name in existing:
+                continue
+            column_type = column.type.compile(dialect=conn.dialect)
+            conn.exec_driver_sql(f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}')
+            logger.warning("Schema sync: added column %s.%s (%s)", table.name, column.name, column_type)
+    for ddl in _AUDIT_LOG_TRIGGERS:
+        conn.exec_driver_sql(ddl)
 
 
 async def get_db() -> AsyncSession:

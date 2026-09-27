@@ -5,6 +5,8 @@ import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronDown, Search, Download, Info } from "lucide-react";
 import { api } from "@/lib/api";
+import { ProjectInfoStrip } from "@/components/details/ProjectInfoStrip";
+import { ExpandableText } from "@/components/dq/DQReportParts";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
@@ -38,6 +40,30 @@ interface MetadataRecord {
   updated_by: string | null;
   remarks: string;
   created_at: string;
+}
+
+// Seconds per definition before the first batch is measured (llama3.2:3b on CPU took ~25 s; cloud ~5 s)
+const REGEN_PRIOR_SECONDS = { local: 25, cloud: 5 };
+
+interface RegenProgress {
+  total: number;
+  done: number;
+  startedAt: number;      // ms
+  updatedAt: number;      // ms, when `done` last changed
+  secondsPerItem: number; // measured once a batch has finished, else the prior
+}
+
+function formatDuration(totalSeconds: number): string {
+  const s = Math.max(Math.round(totalSeconds), 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}` : `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+// Estimated seconds left, counted down locally between batch answers
+function regenSecondsLeft(p: RegenProgress, now: number): number {
+  return Math.max((p.total - p.done) * p.secondsPerItem - (now - p.updatedAt) / 1000, 0);
 }
 
 interface AISettingsStatus {
@@ -229,6 +255,15 @@ function MetadataGridContent() {
   const [regenQueued, setRegenQueued] = useState<Set<string>>(new Set());
   const [regenAllRunning, setRegenAllRunning] = useState(false);
   const [regenError, setRegenError] = useState("");
+  // Generate AI Definitions progress: countdown like the DQ Generate step
+  const [regenProgress, setRegenProgress] = useState<RegenProgress | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const regenActive = regenProgress !== null; // cleared only when the whole run ends
+  useEffect(() => {
+    if (!regenActive) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [regenActive]);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { data: project } = useQuery<{ id: string; project_code: string | null; project_name: string; project_year: number; customer_name: string; line_of_business: string | null }>({
@@ -339,8 +374,12 @@ function MetadataGridContent() {
     setRegenError("");
     setRegenAllRunning(true);
     setRegenQueued(new Set(targets.map((r) => r.id)));
+    const startedAt = Date.now();
+    const prior = aiStatus?.mode === "local" ? REGEN_PRIOR_SECONDS.local : REGEN_PRIOR_SECONDS.cloud;
+    setRegenProgress({ total: targets.length, done: 0, startedAt, updatedAt: startedAt, secondsPerItem: prior });
     try {
       let remaining = targets.length;
+      let processedSoFar = 0;
       const batchSize = Math.min(Math.max(aiStatus?.batch_size ?? 5, 1), 25);
       while (remaining > 0) {
         const result = await api.post<{ processed: number; failed: number; remaining: number; failures?: { error: string }[] }>(
@@ -348,6 +387,17 @@ function MetadataGridContent() {
           {},
         );
         remaining = result.remaining;
+        processedSoFar += result.processed;
+        // The server works through the whole project (the page may show one table), so count from its answer
+        const now = Date.now();
+        const done = processedSoFar;
+        setRegenProgress((p) => p && {
+          ...p,
+          done,
+          total: done + result.remaining,
+          updatedAt: now,
+          secondsPerItem: done > 0 ? (now - p.startedAt) / 1000 / done : p.secondsPerItem,
+        });
         await qc.invalidateQueries({ queryKey: ["metadata", projectId] });
         if (result.processed === 0 && result.failed > 0) {
           setRegenError(result.failures?.[0]?.error || "AI generation stopped after an error.");
@@ -358,6 +408,7 @@ function MetadataGridContent() {
       setRegenError(e.message || "Could not generate AI definitions.");
     } finally {
       setRegenAllRunning(false);
+      setRegenProgress(null);
       setRegenQueued(new Set());
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     }
@@ -608,7 +659,7 @@ function MetadataGridContent() {
             size="sm"
             onClick={handleRegenAll}
             className="h-7.5 text-xs font-medium"
-            disabled={regenAllRunning || records.length === 0 || !aiReady || (records.length > 0 && records.every((r) => r.business_definition && r.definition_status === "ai_generated"))}
+            disabled={regenAllRunning || regenActive || records.length === 0 || !aiReady || (records.length > 0 && records.every((r) => r.business_definition && r.definition_status === "ai_generated"))}
             title={aiReady ? `Using ${aiStatus?.provider ?? "AI"} ${aiStatus?.model_name ?? ""}` : "Configure Ollama Cloud in Settings > AI Setup"}
           >
             {regenAllRunning
@@ -638,6 +689,41 @@ function MetadataGridContent() {
         </div>
       </div>
 
+      {regenProgress && (() => {
+        const left = regenSecondsLeft(regenProgress, nowTick);
+        const pct = regenProgress.total ? Math.round((regenProgress.done / regenProgress.total) * 100) : 0;
+        const measured = regenProgress.done > 0;
+        return (
+          <div className="rounded-lg border border-blue-100 bg-blue-50/40 px-4 py-3 space-y-2">
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-4 h-4 flex-shrink-0 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-800">Generating AI definitions…</p>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    {regenProgress.done} / {regenProgress.total} definitions generated · {aiStatus?.model_name ?? "AI model"}, {aiStatus?.batch_size ?? 5} per batch
+                    {" · "}elapsed {formatDuration((nowTick - regenProgress.startedAt) / 1000)}
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    {measured
+                      ? `Estimate from the speed so far (≈ ${Math.round(regenProgress.secondsPerItem)} s per definition).`
+                      : `First estimate (≈ ${regenProgress.secondsPerItem} s per definition); it is corrected after the first batch.`}
+                    {" "}Keep this page open until it finishes.
+                  </p>
+                </div>
+              </div>
+              <div className="text-right flex-shrink-0" title="Estimated time until all definitions are generated">
+                <p className="text-[10px] uppercase tracking-wider text-slate-400 font-mono">Time left</p>
+                <p className="text-lg font-bold font-mono text-slate-800">≈ {formatDuration(left)}</p>
+              </div>
+            </div>
+            <div className="h-1.5 rounded-full bg-blue-100 overflow-hidden">
+              <div className="h-full bg-blue-600 transition-all duration-500" style={{ width: `${pct}%` }} />
+            </div>
+          </div>
+        );
+      })()}
+
       {regenError && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 font-mono">
           {regenError}
@@ -645,40 +731,7 @@ function MetadataGridContent() {
       )}
 
       {/* Project info strip */}
-      {project && (
-        <div className="bg-white border border-slate-200 rounded-md shadow-2xs px-4 py-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-x-3 gap-y-2">
-          {[
-            { label: "Project ID",       value: project.project_code ?? "—", mono: true,  bold: true },
-            { label: "Project Name",     value: project.project_name,                      bold: true },
-            { label: "Project Year",     value: String(project.project_year ?? "—"),       bold: false },
-            { label: "Business Users",   value: project.customer_name || "—",              bold: false },
-            { label: "Line of Business", value: project.line_of_business || "—",           bold: false },
-          ].map(({ label, value, mono, bold }) => (
-            <div key={label} className="min-w-0">
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono truncate">{label}</div>
-              <div className={`text-xs mt-0.5 truncate text-slate-800 ${bold ? "font-semibold" : "font-normal"} ${mono ? "font-mono" : ""}`} title={value}>{value}</div>
-            </div>
-          ))}
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono">Data Steward</div>
-            {dataSteward ? (
-              <>
-                <div className="text-xs font-normal text-slate-800 mt-0.5 truncate" title={dataSteward.full_name}>{dataSteward.full_name}</div>
-                <div className="text-[10px] text-slate-400 font-mono truncate" title={dataSteward.email}>{dataSteward.email}</div>
-              </>
-            ) : <div className="text-xs text-slate-300 mt-0.5 font-mono">—</div>}
-          </div>
-          <div className="min-w-0">
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono">Data Owner</div>
-            {dataOwner ? (
-              <>
-                <div className="text-xs font-normal text-slate-800 mt-0.5 truncate" title={dataOwner.full_name}>{dataOwner.full_name}</div>
-                <div className="text-[10px] text-slate-400 font-mono truncate" title={dataOwner.email}>{dataOwner.email}</div>
-              </>
-            ) : <div className="text-xs text-slate-300 mt-0.5 font-mono">—</div>}
-          </div>
-        </div>
-      )}
+      <ProjectInfoStrip projectId={projectId} />
 
       {/* Filters toolbar */}
       <div className="flex flex-wrap items-center gap-2 mb-0.5">
@@ -788,7 +841,7 @@ function MetadataGridContent() {
                     <td className="px-2.5 py-1.5 text-slate-400 font-mono text-[11px]">{idx + 1}</td>
 
                     {/* Table */}
-                    <td className="px-2.5 py-1.5 font-mono text-[11px] text-slate-600 max-w-[160px] truncate" title={r.data_domain_table}>{r.data_domain_table}</td>
+                    <td className="px-2.5 py-1.5 font-mono text-[11px] text-slate-600 min-w-[140px] max-w-[180px] whitespace-normal break-all">{r.data_domain_table}</td>
 
                     {/* Table Type */}
                     <td className="px-2.5 py-1.5">
@@ -864,10 +917,12 @@ function MetadataGridContent() {
                           rows={2} className="w-full text-xs border border-slate-200 rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-slate-950 resize-none font-sans" />
                       ) : (
                         <div className="flex items-start gap-1">
-                          <span className="text-slate-700 text-xs leading-relaxed line-clamp-2">
+                          <span className="text-slate-700 text-xs leading-relaxed">
                             {(regenQueued.has(r.id) || (regenAllRunning && r.definition_status === "pending" && !r.business_definition))
                               ? <span className="text-slate-400 italic font-mono">Generating…</span>
-                              : (r.business_definition ?? <span className="text-slate-300 italic font-mono">—</span>)}
+                              : r.business_definition
+                                ? <ExpandableText text={r.business_definition} maxLen={80} />
+                                : <span className="text-slate-300 italic font-mono">—</span>}
                           </span>
                           <AiBadge status={r.definition_status} />
                         </div>
@@ -882,7 +937,9 @@ function MetadataGridContent() {
                           onChange={(v) => setDraft(r.id, "standard_format", v)}
                           distinctValues={r.distinct_values}
                         />
-                      ) : <span className="text-xs text-slate-600 font-mono line-clamp-2">{r.standard_format ?? "—"}</span>}
+                      ) : <span className="text-xs text-slate-600 font-mono break-words">
+                        {r.standard_format ? <ExpandableText text={r.standard_format} maxLen={40} /> : "—"}
+                      </span>}
                     </td>
 
                     {/* PK */}
@@ -899,7 +956,9 @@ function MetadataGridContent() {
                     </td>
 
                     {/* Sample */}
-                    <td className="px-2.5 py-1.5 text-xs font-mono text-slate-500 max-w-[110px] truncate" title={r.sample_data ?? ""}>{r.sample_data ?? "—"}</td>
+                    <td className="px-2.5 py-1.5 text-xs font-mono text-slate-500 min-w-[140px] max-w-[200px] break-all">
+                      {r.sample_data ? <ExpandableText text={r.sample_data} maxLen={30} /> : "—"}
+                    </td>
 
                     {/* Updated Date */}
                     <td className="px-2.5 py-1.5 text-xs font-mono text-slate-400">

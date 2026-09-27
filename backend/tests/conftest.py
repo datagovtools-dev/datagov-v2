@@ -1,5 +1,6 @@
 """Shared pytest fixtures for unit and integration tests."""
 import asyncio
+import itertools
 import os
 from typing import AsyncGenerator
 
@@ -9,26 +10,8 @@ from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from sqlalchemy.pool import StaticPool
-from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.dialects.postgresql import JSONB, UUID, ARRAY, INET
 
-@compiles(JSONB, "sqlite")
-def compile_jsonb_sqlite(type_, compiler, **kw):
-    return "JSON"
-
-@compiles(UUID, "sqlite")
-def compile_uuid_sqlite(type_, compiler, **kw):
-    return "VARCHAR(36)"
-
-@compiles(ARRAY, "sqlite")
-def compile_array_sqlite(type_, compiler, **kw):
-    return "JSON"
-
-@compiles(INET, "sqlite")
-def compile_inet_sqlite(type_, compiler, **kw):
-    return "VARCHAR(45)"
-
-# Use an in-memory SQLite for unit tests; override with TEST_DATABASE_URL for integration
+# In-memory SQLite for tests; override with TEST_DATABASE_URL (e.g. a SQLite file)
 TEST_DB_URL = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 @pytest.fixture(scope="session")
@@ -43,8 +26,8 @@ async def engine():
     eng = create_async_engine(
         TEST_DB_URL,
         echo=False,
-        connect_args={"check_same_thread": False} if "sqlite" in TEST_DB_URL else {},
-        poolclass=StaticPool if "sqlite" in TEST_DB_URL else None,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
     )
     import app.models  # noqa: F401 - ensure all tables are registered
     from app.database import Base
@@ -134,14 +117,16 @@ async def auth_headers(auth_user) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+_project_seq = itertools.count(1)
+
+
 @pytest_asyncio.fixture
 async def test_project(db: AsyncSession, auth_user):
-    import uuid
     from datetime import date, timedelta
     from app.models.project import Project
 
     proj = Project(
-        project_code=f"PRJ-{uuid.uuid4().hex[:6].upper()}",
+        project_code=f"PRJ-2026-{next(_project_seq):03d}",  # valid PRJ-YYYY-NNN, unique per test
         customer_name="Test Customer PT",
         line_of_business="Enterprise Digital",
         project_name="AI Governance Suite Project",

@@ -7,14 +7,13 @@ import {
   Database,
   Cloud,
   FileSpreadsheet,
-  Server,
   UploadCloud,
   CheckCircle2,
   Sparkles,
   ArrowRight,
   Filter,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, errorDetail } from "@/lib/api";
 import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -53,11 +52,9 @@ export default function MetadataHomePage() {
   const qc = useQueryClient();
 
   const [projectId, setProjectId] = useState("");
-  const [sourceType, setSourceType] = useState<"gcp" | "postgresql" | "excel">("gcp");
+  const [sourceType, setSourceType] = useState<"gcp" | "excel">("gcp");
   const [gcpProject, setGcpProject] = useState("");
   const [bqDataset, setBqDataset] = useState("");
-  const [connectionString, setConnectionString] = useState("");
-  const [pgSchema, setPgSchema] = useState("public");
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [proceeded, setProceeded] = useState(false);
   const [proceedResult, setProceedResult] = useState<ProceedResponse | null>(null);
@@ -77,15 +74,13 @@ export default function MetadataHomePage() {
     queryFn: () => api.get("/metadata/stats"),
   });
 
-  // Live discovery query — only used when Discover Tables is clicked (GCP/PG)
+  // Live discovery query — only used when Discover Tables is clicked (GCP)
   const { refetch: refetchTables, isFetching: discovering } = useQuery<SourceTableInfo[]>({
-    queryKey: ["meta-tables-discover", projectId, sourceType, gcpProject, bqDataset, connectionString, pgSchema],
+    queryKey: ["meta-tables-discover", projectId, sourceType, gcpProject, bqDataset],
     queryFn: () => {
       const p = new URLSearchParams({ source_type: sourceType });
       if (gcpProject) p.set("gcp_project", gcpProject);
       if (bqDataset) p.set("bq_dataset", bqDataset);
-      if (connectionString) p.set("connection_string", connectionString);
-      if (pgSchema) p.set("pg_schema", pgSchema);
       return api.get<SourceTableInfo[]>(`/metadata/tables/${projectId}?${p}`);
     },
     enabled: false,
@@ -106,8 +101,6 @@ export default function MetadataHomePage() {
         gcp_project: gcpProject || undefined,
         bq_dataset: bqDataset || undefined,
         table_names: selectedTables.size > 0 ? [...selectedTables] : undefined,
-        connection_string: connectionString || undefined,
-        pg_schema: pgSchema || undefined,
         temp_file_keys: tempFileKeys.length > 0 ? tempFileKeys : undefined,
         file_names: uploadedFileNames.length > 0 ? uploadedFileNames : undefined,
         uploaded_tables:
@@ -158,8 +151,7 @@ export default function MetadataHomePage() {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
         if (!res.ok) {
-          const err = await res.json();
-          throw new Error(`${file.name}: ${err.detail ?? "Upload failed"}`);
+          throw new Error(`${file.name}: ${await errorDetail(res)}`);
         }
         const data = await res.json();
         keys.push(data.temp_key);
@@ -294,7 +286,7 @@ export default function MetadataHomePage() {
             <label className="block text-xs font-semibold text-slate-700 mb-1">
               Data Source Connector
             </label>
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
               <button
                 type="button"
                 onClick={() => {
@@ -309,21 +301,6 @@ export default function MetadataHomePage() {
                 }`}
               >
                 <Cloud className="h-3.5 w-3.5" /> BigQuery
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setSourceType("postgresql");
-                  setProceeded(false);
-                  setProceedResult(null);
-                }}
-                className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md border text-xs font-medium transition-colors ${
-                  sourceType === "postgresql"
-                    ? "border-slate-900 bg-slate-900 text-white font-semibold"
-                    : "border-slate-200 text-slate-600 hover:bg-slate-50"
-                }`}
-              >
-                <Server className="h-3.5 w-3.5" /> Postgres
               </button>
               <button
                 type="button"
@@ -362,25 +339,6 @@ export default function MetadataHomePage() {
                   placeholder="e.g. customer_analytics"
                   className="h-8 text-xs font-mono"
                 />
-              </div>
-            </>
-          )}
-
-          {sourceType === "postgresql" && (
-            <>
-              <div className="md:col-span-2">
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Connection String</label>
-                <Input
-                  type="password"
-                  value={connectionString}
-                  onChange={(e) => setConnectionString(e.target.value)}
-                  placeholder="postgresql://user:password@host:5432/dbname"
-                  className="h-8 text-xs font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Schema</label>
-                <Input value={pgSchema} onChange={(e) => setPgSchema(e.target.value)} placeholder="public" className="h-8 text-xs font-mono" />
               </div>
             </>
           )}

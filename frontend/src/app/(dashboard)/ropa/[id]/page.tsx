@@ -440,6 +440,7 @@ export default function ROPADetailPage() {
                 <Input
                   value={editForm.retention_period ?? ""}
                   onChange={(e) => setEditForm((f) => ({ ...f, retention_period: e.target.value }))}
+                  hint="Start with a duration (e.g. 5 Years, 18 Months). Once approved, the project's uploaded files are kept until the project end date + this period instead of 30 days."
                   className="h-8 text-xs font-mono"
                 />
               </div>

@@ -5,7 +5,7 @@ networks:
     driver: bridge
 
 volumes:
-  postgres_data:
+  sqlite_data:
   redis_data:
   ollama_data:
   tmp_data:
@@ -65,18 +65,23 @@ services:
     env_file: .env
     environment:
       - APP_ENV=production
+      - DATABASE_URL=sqlite+aiosqlite:////data/datagov.db
+      - DATABASE_URL_SYNC=sqlite:////data/datagov.db
     volumes:
       - ./backend:/app
       - tmp_data:/tmp
       - uploads_data:/app/uploads
+      - sqlite_data:/data
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks: [internal]
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    # Seed the SQLite volume from the repo file on first start, then run a single
+    # uvicorn process (SQLite allows one writer at a time)
+    command: >
+      sh -c "[ -f /data/datagov.db ] || cp /app/datagov.db /data/datagov.db;
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -90,12 +95,16 @@ services:
       dockerfile: Dockerfile
     container_name: ag_worker
     env_file: .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/datagov.db
+      - DATABASE_URL_SYNC=sqlite:////data/datagov.db
     volumes:
       - ./backend:/app
       - tmp_data:/tmp
       - uploads_data:/app/uploads
+      - sqlite_data:/data
     depends_on:
-      db:
+      api:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -110,6 +119,9 @@ services:
       dockerfile: Dockerfile
     container_name: ag_beat
     env_file: .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/datagov.db
+      - DATABASE_URL_SYNC=sqlite:////data/datagov.db
     volumes:
       - ./backend:/app
     depends_on:
@@ -117,27 +129,6 @@ services:
     networks: [internal]
     restart: unless-stopped
     command: celery -A app.celery_app beat --loglevel=info
-
-  # ── PostgreSQL ────────────────────────────────────────────
-  db:
-    image: postgres:15-alpine
-    container_name: ag_db
-    expose: ["5432"]
-    env_file: .env
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-ag_db}
-      - POSTGRES_USER=${POSTGRES_USER:-ag_user}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/alembic/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [internal]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ag_user} -d ${POSTGRES_DB:-ag_db}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # ── Redis ─────────────────────────────────────────────────
   redis:

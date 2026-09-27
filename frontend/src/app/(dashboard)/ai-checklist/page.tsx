@@ -35,24 +35,25 @@ interface PaginatedDSR {
 }
 
 const CHECKLIST_STATUS_OPTIONS = [
-  { value: "pending_approval", label: "Pending Approval" },
   { value: "in_progress",      label: "In Progress / Draft" },
-  { value: "pending_signoff",  label: "Approved (Pending Sign-Off)" },
+  { value: "submitted",        label: "Submitted (awaiting PIC Data Compliance)" },
+  { value: "under_review",     label: "Under Review" },
+  { value: "pending_signoff",  label: "Approved (Ready for Sign-Off)" },
   { value: "signed",           label: "Completed & Signed" },
+  { value: "rejected",         label: "Rejected" },
 ];
 
+// AICK status from the checklist's own approval flow (same meaning as the DSR status):
+// Submitted until PIC Data Compliance approves step 1, then Under Review until the last step.
 function checklistStatus(dsr: DSRListItem): { label: string; variant: "success" | "warning" | "neutral" | "info" | "danger" } {
   if (dsr.is_signed) return { label: "Completed & Signed", variant: "success" };
-  if (dsr.checklist_status === "submitted" || dsr.checklist_status === "under_review" || dsr.status === "submitted" || dsr.status === "under_review") {
-    return { label: "Pending Approval", variant: "warning" };
+  switch (dsr.checklist_status) {
+    case "rejected":     return { label: "Rejected", variant: "danger" };
+    case "approved":     return { label: "Approved (Ready for Sign-Off)", variant: "info" };
+    case "under_review": return { label: "Under Review", variant: "warning" };
+    case "submitted":    return { label: "Submitted", variant: "info" };
+    default:             return { label: "In Progress", variant: "neutral" };
   }
-  if (dsr.status === "approved" || dsr.status === "executed" || dsr.checklist_status === "approved") {
-    return { label: "Approved (Ready for Sign-Off)", variant: "info" };
-  }
-  if (dsr.status === "rejected") {
-    return { label: "Rejected", variant: "danger" };
-  }
-  return { label: "In Progress", variant: "neutral" };
 }
 
 export default function AIChecklistPage() {

@@ -30,21 +30,7 @@ _PII_KEYWORDS = {
     "biometric", "race", "ethnicity", "nationality", "income", "tax_id",
 }
 
-# ── Business term abbreviation map (FR-META-013) ──────────────────────────────
-_ABBREV_MAP = {
-    "id": "Identifier", "nm": "Name", "cd": "Code", "dt": "Date",
-    "dttm": "Date Time", "no": "Number", "num": "Number", "qty": "Quantity",
-    "amt": "Amount", "val": "Value", "desc": "Description", "flg": "Flag",
-    "ind": "Indicator", "sts": "Status", "typ": "Type", "cat": "Category",
-    "grp": "Group", "seq": "Sequence", "ref": "Reference", "src": "Source",
-    "tgt": "Target", "tot": "Total", "avg": "Average", "max": "Maximum",
-    "min": "Minimum", "cnt": "Count", "pct": "Percentage", "ts": "Timestamp",
-    "upd": "Updated", "cre": "Created", "del": "Deleted", "usr": "User",
-    "org": "Organisation", "dept": "Department", "div": "Division",
-    "loc": "Location", "addr": "Address", "tel": "Telephone", "fax": "Fax",
-    "url": "URL", "img": "Image", "doc": "Document", "file": "File",
-    "txt": "Text", "msg": "Message", "err": "Error", "log": "Log",
-}
+# Business term abbreviation map and acronym list (FR-META-013): app/services/metadata_population.py
 
 
 def _classify_sensitivity(attribute: str) -> str:
@@ -62,18 +48,10 @@ def _classify_sensitivity(attribute: str) -> str:
 
 
 def _expand_business_term(attribute: str) -> str:
-    """FR-META-013: expand abbreviated column name to full business term."""
-    # Strip table prefix patterns (tbl_, fk_, idx_, etc.)
-    clean = re.sub(r"^(tbl_|fk_|idx_|pk_|f_|t_)", "", attribute, flags=re.IGNORECASE)
-    parts = re.split(r"[_\s\-]", clean)
-    expanded = []
-    for part in parts:
-        lower = part.lower()
-        if lower in _ABBREV_MAP:
-            expanded.append(_ABBREV_MAP[lower])
-        else:
-            expanded.append(part.capitalize())
-    return " ".join(expanded)
+    """FR-META-013: same rule as the API upload (acronyms such as NIK in UPPERCASE)."""
+    from app.services.metadata_population import expand_business_term
+
+    return expand_business_term(attribute)
 
 
 def _detect_data_type(values: list[Any]) -> str:
@@ -270,8 +248,6 @@ def retrieve_metadata(
     temp_file_key: str | None = None,   # legacy single-key param
     temp_file_keys: list[str] | None = None,
     file_names: list[str] | None = None,
-    connection_string: str | None = None,
-    pg_schema: str = "public",
     project_name: str = "",
     project_year: int = 0,
     customer_name: str = "",
@@ -283,14 +259,12 @@ def retrieve_metadata(
     Auto-populate MetadataRecord rows for the selected tables.
     Covers FR-META-002 to FR-META-020.
     """
-    import psycopg2
-    import json
+    from sqlalchemy import select
 
-    db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
-    if not db_url:
-        return {"error": "no DATABASE_URL"}
+    from app.database import get_sync_session
+    from app.models.metadata import MetadataRecord
 
-    proj_uuid = str(UUID(project_id))  # psycopg2 needs str, not UUID object
+    proj_uuid = UUID(project_id)
 
     # ── Load source data ──────────────────────────────────────
     tables_data: dict[str, dict[str, list[Any]]] = {}
@@ -313,42 +287,6 @@ def retrieve_metadata(
                 tables_data[tbl] = data
         except Exception as exc:
             logger.error("GCP read failed: %s", exc)
-            raise self.retry(exc=exc)
-
-    elif source_type == "postgresql" and connection_string:
-        try:
-            src_conn = psycopg2.connect(connection_string)
-            src_cur = src_conn.cursor()
-            target_tables = table_names
-            if not target_tables:
-                src_cur.execute(
-                    "SELECT table_name FROM information_schema.tables "
-                    "WHERE table_schema = %s AND table_type = 'BASE TABLE' ORDER BY table_name",
-                    (pg_schema,),
-                )
-                target_tables = [r[0] for r in src_cur.fetchall()]
-            for tbl in target_tables:
-                src_cur.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
-                    (pg_schema, tbl),
-                )
-                cols = [r[0] for r in src_cur.fetchall()]
-                if not cols:
-                    continue
-                try:
-                    src_cur.execute(f'SELECT * FROM "{pg_schema}"."{tbl}" LIMIT 100')
-                    rows = src_cur.fetchall()
-                except Exception:
-                    rows = []
-                data: dict[str, list[Any]] = {c: [] for c in cols}
-                for row in rows:
-                    for i, col in enumerate(cols):
-                        data[col].append(row[i] if i < len(row) else None)
-                tables_data[tbl] = data
-            src_conn.close()
-        except Exception as exc:
-            logger.error("PostgreSQL read failed: %s", exc)
             raise self.retry(exc=exc)
 
     elif source_type == "excel":
@@ -403,15 +341,12 @@ def retrieve_metadata(
                 raise self.retry(exc=exc)
 
     # ── Persist MetadataRecord rows ───────────────────────────
-    conn = psycopg2.connect(db_url)
-    cur = conn.cursor()
+    db = get_sync_session()
 
     created = updated = 0
     global_seq = 0
     for table_name, columns in tables_data.items():
-        domain_table = (f"{bq_dataset}.{table_name}" if bq_dataset
-                        else f"{pg_schema}.{table_name}" if source_type == "postgresql"
-                        else table_name)
+        domain_table = f"{bq_dataset}.{table_name}" if bq_dataset else table_name
         row_count = max((len(v) for v in columns.values()), default=0)
         for col, values in columns.items():
             global_seq += 1
@@ -436,46 +371,44 @@ def retrieve_metadata(
             today = datetime.now(timezone.utc).date()
 
             # Upsert: match by (project_id, data_domain_table, data_attribute)
-            cur.execute(
-                "SELECT id FROM metadata_records WHERE project_id=%s AND data_domain_table=%s AND data_attribute=%s",
-                (proj_uuid, domain_table, col),
-            )
-            existing = cur.fetchone()
+            existing = db.scalars(
+                select(MetadataRecord).where(
+                    MetadataRecord.project_id == proj_uuid,
+                    MetadataRecord.data_domain_table == domain_table,
+                    MetadataRecord.data_attribute == col,
+                )
+            ).first()
 
             if existing:
-                cur.execute(
-                    """UPDATE metadata_records SET
-                       data_sensitivity=%s, business_term=%s, sample_data=%s,
-                       data_type=%s, is_primary_key=%s, is_nullable=%s, source_row_count=%s,
-                       standard_format=%s, distinct_values=%s
-                       WHERE id=%s""",
-                    (sensitivity, business_term, sample, data_type, pk, nullable, row_count,
-                     standard_format, distinct_vals, existing[0]),
-                )
+                existing.data_sensitivity = sensitivity
+                existing.business_term = business_term
+                existing.sample_data = sample
+                existing.data_type = data_type
+                existing.is_primary_key = pk
+                existing.is_nullable = nullable
+                existing.source_row_count = row_count
+                existing.standard_format = standard_format
+                existing.distinct_values = distinct_vals
                 updated += 1
             else:
-                cur.execute(
-                    """INSERT INTO metadata_records
-                       (id, project_id, seq_no, business_users, data_domain_table,
-                        line_of_business, table_type, project_name, project_year, data_steward, data_owner,
-                        data_attribute, data_year, data_sensitivity, business_term, definition_status,
-                        sample_data, data_type, is_primary_key, is_nullable,
-                        data_level, standard_format, distinct_values, remarks, source_type, source_row_count,
-                        updated_date, updated_by)
-                       VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, 'Source', %s, %s,
-                               %s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s,
-                               'Raw', %s, %s, '-', %s, %s, %s, %s)""",
-                    (proj_uuid, seq, customer_name, domain_table, line_of_business,
-                     project_name, project_year, steward_str, owner_str, col,
-                     current_year, sensitivity, business_term,
-                     sample, data_type, pk, nullable, standard_format, distinct_vals,
-                     source_type, row_count, today, initiated_by),
-                )
+                db.add(MetadataRecord(
+                    project_id=proj_uuid, seq_no=seq, business_users=customer_name,
+                    data_domain_table=domain_table, line_of_business=line_of_business,
+                    table_type="Source", project_name=project_name, project_year=project_year,
+                    data_steward=steward_str, data_owner=owner_str, data_attribute=col,
+                    data_year=current_year, data_sensitivity=sensitivity, business_term=business_term,
+                    definition_status="pending", sample_data=sample, data_type=data_type,
+                    is_primary_key=pk, is_nullable=nullable, data_level="Raw",
+                    standard_format=standard_format, distinct_values=distinct_vals, remarks="-",
+                    source_type=source_type, source_row_count=row_count,
+                    updated_date=today, updated_by=initiated_by,
+                ))
                 created += 1
 
-    conn.commit()
-    cur.close()
-    conn.close()
+    try:
+        db.commit()
+    finally:
+        db.close()
 
     logger.info("retrieve_metadata: project=%s created=%d updated=%d", project_id, created, updated)
     return {"project_id": project_id, "created": created, "updated": updated,
@@ -588,50 +521,43 @@ def generate_ai_definition(self, record_id: str) -> dict:
     No data leaves the internal Docker network.
     Model and base URL are read from ai_provider_configs table (falls back to env vars).
     """
-    import psycopg2
-    import psycopg2.extras
     import httpx
+    from sqlalchemy import select
 
-    db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
-    if not db_url:
-        return {"error": "no DATABASE_URL"}
+    from app.database import get_sync_session
+    from app.models.ai_config import AIProviderConfig
+    from app.models.metadata import MetadataRecord
 
-    rec_uuid = str(UUID(record_id))
-    conn = psycopg2.connect(db_url)
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    db = get_sync_session()
 
     # Read model + URL from DB config; fall back to env vars
-    cur.execute(
-        """SELECT base_url, model_name, encrypted_api_key
-           FROM ai_provider_configs
-           WHERE provider = 'ollama' AND enabled = TRUE
-           ORDER BY updated_at DESC LIMIT 1"""
-    )
-    cfg = cur.fetchone()
+    cfg = db.scalars(
+        select(AIProviderConfig)
+        .where(AIProviderConfig.provider == "ollama", AIProviderConfig.enabled.is_(True))
+        .order_by(AIProviderConfig.updated_at.desc())
+        .limit(1)
+    ).first()
     if cfg:
-        ollama_base = (cfg["base_url"] or "http://ollama:11434").rstrip("/")
-        model = cfg["model_name"] or "llama3.2:3b"
-        api_key = cfg["encrypted_api_key"] or ""
+        ollama_base = (cfg.base_url or "http://ollama:11434").rstrip("/")
+        model = cfg.model_name or "llama3.2:3b"
+        api_key = cfg.encrypted_api_key or ""
     else:
         ollama_base = (os.getenv("OLLAMA_URL") or os.getenv("OLLAMA_HOST", "http://ollama:11434")).rstrip("/")
         model = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
         api_key = os.getenv("OLLAMA_API_KEY", "")
 
-    cur.execute(
-        """SELECT data_domain_table, data_attribute, business_term, data_type,
-                  data_grouping, line_of_business, distinct_values,
-                  standard_format, sample_data, data_sensitivity,
-                  is_primary_key, is_nullable
-           FROM metadata_records WHERE id=%s""",
-        (rec_uuid,),
-    )
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
+    record = db.get(MetadataRecord, UUID(record_id))
+    if not record:
+        db.close()
         return {"error": "record not found"}
 
-    prompt = _worker_build_prompt(dict(row))
+    prompt = _worker_build_prompt({
+        field: getattr(record, field)
+        for field in ("data_domain_table", "data_attribute", "business_term", "data_type",
+                      "data_grouping", "line_of_business", "distinct_values",
+                      "standard_format", "sample_data", "data_sensitivity",
+                      "is_primary_key", "is_nullable")
+    })
 
     definition = None
     status = "pending"
@@ -656,14 +582,12 @@ def generate_ai_definition(self, record_id: str) -> dict:
         logger.error("Ollama error for record %s: %s", record_id, exc)
         status = "pending"
 
-    cur.execute(
-        """UPDATE metadata_records
-           SET business_definition=%s, definition_status=%s, updated_date=%s
-           WHERE id=%s""",
-        (definition, status, date.today(), rec_uuid),
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
+    record.business_definition = definition
+    record.definition_status = status
+    record.updated_date = date.today()
+    try:
+        db.commit()
+    finally:
+        db.close()
 
     return {"record_id": record_id, "status": status, "definition": definition}

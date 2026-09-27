@@ -49,6 +49,21 @@ class TestExpandBusinessTerm:
         assert "Invoice" in result
         assert "Number" in result
 
+    @pytest.mark.parametrize("column, expected", [
+        ("nik", "NIK"),
+        ("amount_idr", "Amount IDR"),
+        ("no_ktp", "Number KTP"),
+        ("npwp_pelanggan", "NPWP Pelanggan"),
+        ("bpjs_kesehatan_no", "BPJS Kesehatan Number"),
+        ("sku_cd", "SKU Code"),
+        ("crm_segment", "CRM Segment"),
+        ("customer_id", "Customer Identifier"),
+        ("visits_last_30d", "Visits Last 30d"),
+        ("status", "Status"),
+    ])
+    def test_acronyms_are_uppercase(self, column, expected):
+        assert _expand_business_term(column) == expected
+
 
 class TestDetectDataType:
     def test_integer_detection(self):

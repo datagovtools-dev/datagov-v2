@@ -17,10 +17,11 @@ import sys
 from typing import Any
 
 import openpyxl
-import psycopg2
-import psycopg2.extras
+from sqlalchemy import select
 
-DB_URL = os.environ["DATABASE_URL"].replace("postgresql+asyncpg://", "postgresql://")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.database import get_sync_session  # noqa: E402
+from app.models.metadata import MetadataRecord, ProjectSourceFile  # noqa: E402
 
 # ── Inline copies of the updated helpers (no import path issues) ──────────────
 
@@ -171,18 +172,13 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
-    conn = psycopg2.connect(DB_URL)
-    cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    upd  = conn.cursor()
+    db = get_sync_session()
 
-    # Latest distinct file per (project_id, original_filename)
-    cur.execute("""
-        SELECT DISTINCT ON (project_id, original_filename)
-               project_id, original_filename, stored_path
-        FROM   project_source_files
-        ORDER  BY project_id, original_filename, uploaded_at DESC
-    """)
-    files = cur.fetchall()
+    # Latest file per (project_id, original_filename)
+    latest: dict[tuple, ProjectSourceFile] = {}
+    for f in db.scalars(select(ProjectSourceFile).order_by(ProjectSourceFile.uploaded_at.desc())):
+        latest.setdefault((f.project_id, f.original_filename), f)
+    files = list(latest.values())
 
     if not files:
         print("No persisted source files found — upload via the Metadata menu first.")
@@ -193,9 +189,9 @@ def main() -> None:
     total_updated = total_skipped = total_no_change = 0
 
     for f in files:
-        proj_id = str(f["project_id"])
-        orig_name = f["original_filename"]
-        path = f["stored_path"]
+        proj_id = f.project_id
+        orig_name = f.original_filename
+        path = f.stored_path
 
         if not os.path.exists(path):
             print(f"  [MISSING] {path}")
@@ -219,21 +215,18 @@ def main() -> None:
                         new_fmt = "Phone number"
                 new_dv  = _get_distinct_values(values, new_fmt)
 
-                cur.execute("""
-                    SELECT id, standard_format, distinct_values
-                    FROM   metadata_records
-                    WHERE  project_id = %s
-                      AND  data_domain_table = %s
-                      AND  data_attribute = %s
-                """, (proj_id, domain_table, col))
-                row = cur.fetchone()
+                row = db.scalars(select(MetadataRecord).where(
+                    MetadataRecord.project_id == proj_id,
+                    MetadataRecord.data_domain_table == domain_table,
+                    MetadataRecord.data_attribute == col,
+                )).first()
 
                 if not row:
                     total_skipped += 1
                     continue
 
-                old_fmt = row["standard_format"]
-                old_dv  = row["distinct_values"]
+                old_fmt = row.standard_format
+                old_dv  = row.distinct_values
 
                 changed = (new_fmt != old_fmt) or (new_dv != old_dv)
                 tag = f"{old_fmt!r}  →  {new_fmt!r}" if changed else "(no change)"
@@ -241,27 +234,21 @@ def main() -> None:
 
                 if changed:
                     if not args.dry_run:
-                        upd.execute("""
-                            UPDATE metadata_records
-                            SET    standard_format = %s,
-                                   distinct_values = %s
-                            WHERE  id = %s
-                        """, (new_fmt, new_dv, row["id"]))
+                        row.standard_format = new_fmt
+                        row.distinct_values = new_dv
                     total_updated += 1
                 else:
                     total_no_change += 1
 
     if not args.dry_run:
-        conn.commit()
+        db.commit()
 
     print(f"\n{'DRY RUN — ' if args.dry_run else ''}Done.")
     print(f"  Updated   : {total_updated}")
     print(f"  No change : {total_no_change}")
     print(f"  Skipped   : {total_skipped} (column not found in metadata_records)")
 
-    cur.close()
-    upd.close()
-    conn.close()
+    db.close()
 
 
 if __name__ == "__main__":

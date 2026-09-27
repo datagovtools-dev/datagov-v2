@@ -23,10 +23,9 @@ class Settings(BaseSettings):
     bcrypt_rounds: int = 12
     allowed_origins: str = "http://localhost:3000"
 
-    # Database
-    database_url: str
-    database_url_sync: str
-    database_null_pool: bool = False
+    # Database (SQLite; relative paths resolve from the backend working directory)
+    database_url: str = "sqlite+aiosqlite:///./datagov.db"
+    database_url_sync: str = "sqlite:///./datagov.db"
 
     # Redis
     redis_url: str = ""

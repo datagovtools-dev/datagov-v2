@@ -9,6 +9,7 @@ if not DATABASE_URL:
 VIEWER_EMAIL    = os.getenv("VIEWER_EMAIL",    "viewer@governance.local")
 VIEWER_PASSWORD = os.getenv("VIEWER_PASSWORD", "Viewer1234!")
 VIEWER_NAME     = os.getenv("VIEWER_NAME",     "Read-Only Viewer")
+VIEWER_POSITION = os.getenv("VIEWER_POSITION", "Internal Auditor")  # job title in the company
 
 async def main():
     from passlib.context import CryptContext
@@ -39,6 +40,7 @@ async def main():
                 id=uuid.uuid4(),
                 full_name=VIEWER_NAME,
                 email=VIEWER_EMAIL,
+                position=VIEWER_POSITION,
                 password_hash=pwd_ctx.hash(VIEWER_PASSWORD),
                 is_active=True,
             )

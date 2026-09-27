@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
@@ -17,10 +18,10 @@ from app.models.dq import DQGCPArchive, DQRun, DQResult, DQFinding
 from app.models.metadata import MetadataRecord, ProjectSourceFile
 from app.models.user import AuditLog, User
 from app.schemas.dq import (
-    DQDeltaItem, DQGCPArchiveOut, DQReviewAction, DQRunCreate,
+    DQDeltaItem, DQGCPArchiveOut, DQProgressRun, DQProjectProgress, DQProjectReport, DQProjectReportTable,
+    DQReviewAction, DQRunCreate,
     DQRunListItem, DQRunOut, DQStatusResponse, DQTableSummary, ExcelPreviewResult,
     GCPConnectionRequest, GCPConnectionResult, PaginatedDQRun,
-    PostgresConnectionRequest, PostgresConnectionResult,
     ProjectFileDQSummary, ProjectSourceFileOut, ProjectFilePreviewResult,
 )
 from app.worker.tasks.notifications import send_workflow_notification
@@ -39,6 +40,101 @@ async def _load_run(db: AsyncSession, run_id: uuid.UUID) -> DQRun | None:
             selectinload(DQRun.gcp_archive),
         )
     )).scalar_one_or_none()
+
+
+async def _next_run_version(db: AsyncSession, project_id: uuid.UUID, dataset_name: str) -> int:
+    """DQ update number for a dataset within a project: highest existing version + 1 (first run = 1)."""
+    current = (await db.execute(
+        select(func.max(DQRun.version)).where(DQRun.project_id == project_id, DQRun.dataset_name == dataset_name)
+    )).scalar_one()
+    return (current or 0) + 1
+
+
+# Time estimate for the Generate step. The worker runs one DQ file at a time (--concurrency=1) and
+# llama3.2:3b on CPU needs about a minute per column (35-150 s measured, 2026-09-27).
+SECONDS_PER_COLUMN = 65
+MODEL_WARMUP_SECONDS = 60     # first AI call while the model loads
+UNKNOWN_COLUMN_COUNT = 10     # used when the column count is not known yet
+ETA_PRIOR_COLUMNS = 2         # weight of the usual speed against the speed measured so far
+QUEUE_LOOKBACK = timedelta(hours=24)  # older pending runs are stale, not queued work
+
+
+def _count_columns(path: str) -> int | None:
+    """Number of named columns in the first sheet's header row (None when unreadable)."""
+    try:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        try:
+            header = next(wb.active.iter_rows(min_row=1, max_row=1, values_only=True), ())
+        finally:
+            wb.close()
+        return sum(1 for h in header if h not in (None, "")) or None
+    except Exception:
+        return None
+
+
+def _utc(value: datetime | None) -> datetime | None:
+    return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
+
+
+def _remaining_seconds(run: DQRun, now: datetime) -> int:
+    """Estimated seconds until `run` finishes, from its progress so far."""
+    if run.status not in ("pending", "running"):
+        return 0
+    total = run.columns_total or UNKNOWN_COLUMN_COUNT
+    done = run.columns_done or 0
+    started = _utc(run.started_at)
+    if run.status == "running" and started:
+        elapsed = max((now - started).total_seconds(), 0)
+        if done:
+            # speed so far, blended with the usual speed so the first (model-loading) column
+            # does not swing the estimate; the estimate keeps falling while a column runs
+            per_column = (elapsed + ETA_PRIOR_COLUMNS * SECONDS_PER_COLUMN) / (done + ETA_PRIOR_COLUMNS)
+            return int(max(total * per_column - elapsed, 15))
+        return int(max(total * SECONDS_PER_COLUMN + MODEL_WARMUP_SECONDS - elapsed, 15))
+    return total * SECONDS_PER_COLUMN
+
+
+ACTIVE_STATUSES = ("pending", "running")
+PROGRESS_WINDOW = timedelta(hours=12)  # finished runs still listed on the progress page
+
+
+async def _queue_and_eta(db: AsyncSession, run: DQRun, now: datetime) -> tuple[int | None, int | None]:
+    """Files queued before `run` and the seconds until it finishes (the worker runs one file at a time)."""
+    if run.status not in ACTIVE_STATUSES:
+        return None, None
+    ahead = (await db.execute(
+        select(DQRun).where(
+            DQRun.status.in_(ACTIVE_STATUSES),
+            DQRun.created_at < run.created_at,
+            DQRun.created_at >= (run.created_at - QUEUE_LOOKBACK),
+            DQRun.id != run.id,
+        )
+    )).scalars().all() if run.status == "pending" else []
+    return len(ahead), sum(_remaining_seconds(r, now) for r in ahead) + _remaining_seconds(run, now)
+
+
+async def _active_run_for_file(db: AsyncSession, source_file_id: uuid.UUID | None) -> DQRun | None:
+    """A queued or running DQ run of this source file (stale pending runs older than a day do not count)."""
+    if source_file_id is None:
+        return None
+    return (await db.execute(
+        select(DQRun).where(
+            DQRun.source_file_id == source_file_id,
+            DQRun.status.in_(ACTIVE_STATUSES),
+            DQRun.created_at >= datetime.now(UTC).replace(tzinfo=None) - QUEUE_LOOKBACK,
+        ).order_by(DQRun.created_at.desc())
+    )).scalars().first()
+
+
+def _already_running(run: DQRun) -> HTTPException:
+    state = "running" if run.status == "running" else "queued"
+    return HTTPException(
+        status_code=409,
+        detail=f"A DQ run for '{run.dataset_name}' is already {state} (version {run.version}). "
+               "Follow it on Data Quality > this project > View progress; start a new run after it finishes.",
+    )
 
 
 # Temp file registry (in-memory; keyed by temp_file_key)
@@ -69,51 +165,6 @@ async def validate_gcp_connection(
         return GCPConnectionResult(valid=False, message="google-cloud-bigquery not installed")
     except Exception as exc:
         return GCPConnectionResult(valid=False, message=str(exc))
-
-
-@router.post("/validate-postgres", response_model=PostgresConnectionResult)
-async def validate_postgres_connection(
-    body: PostgresConnectionRequest,
-    _: Annotated[User, Depends(require_permission("dq:create"))],
-) -> PostgresConnectionResult:
-    """Probe a PostgreSQL/Supabase table and confirm it is reachable."""
-    import asyncio
-    import functools
-
-    def _probe(dsn: str, table: str) -> PostgresConnectionResult:
-        try:
-            import psycopg2
-            conn = psycopg2.connect(dsn, connect_timeout=10)
-            cur = conn.cursor()
-            cur.execute(f'SELECT COUNT(*) FROM "{table}"')
-            row_count = cur.fetchone()[0]
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name = %s AND table_schema = 'public' "
-                "ORDER BY ordinal_position",
-                (table,),
-            )
-            columns = [r[0] for r in cur.fetchall()]
-            cur.close()
-            conn.close()
-            if not columns:
-                return PostgresConnectionResult(
-                    valid=False,
-                    message=f"Table '{table}' not found or has no columns in schema 'public'",
-                )
-            return PostgresConnectionResult(
-                valid=True,
-                message=f"Table '{table}' reachable ({row_count:,} rows)",
-                row_count=row_count,
-                columns=columns,
-            )
-        except Exception as exc:
-            return PostgresConnectionResult(valid=False, message=str(exc))
-
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None, functools.partial(_probe, body.connection_string, body.table_name)
-    )
 
 
 @router.post("/upload-excel", response_model=ExcelPreviewResult)
@@ -168,14 +219,22 @@ async def upload_excel(
 async def list_project_sources(
     project_id: uuid.UUID, db: DB,
     _: Annotated[User, Depends(require_permission("dq:create"))],
-) -> list[ProjectSourceFile]:
+) -> list[ProjectSourceFileOut]:
     """Return all Excel/CSV files imported via the Metadata module for a project."""
     rows = (await db.execute(
         select(ProjectSourceFile)
         .where(ProjectSourceFile.project_id == project_id)
         .order_by(ProjectSourceFile.uploaded_at.desc())
     )).scalars().all()
-    return list(rows)
+    out = []
+    for f in rows:
+        active = await _active_run_for_file(db, f.id)
+        out.append(ProjectSourceFileOut.model_validate(f).model_copy(update={
+            "file_available": os.path.exists(f.stored_path),
+            "active_run_id": active.id if active else None,
+            "active_run_status": active.status if active else None,
+        }))
+    return out
 
 
 @router.get("/project/{project_id}/summary", response_model=list[ProjectFileDQSummary])
@@ -279,7 +338,10 @@ async def get_project_dq_tables_summary(
 
         source_file = files_by_name.get(filename) if filename else None
         file_runs = runs_by_file.get(source_file.id, []) if source_file else []
-        latest = file_runs[0] if file_runs else None
+        newest = file_runs[0] if file_runs else None
+        # Show the newest run with results, so a re-run keeps the previous version visible until it finishes
+        latest = next((r for r in file_runs if r.status in REPORT_STATUSES), newest)
+        newer = newest if newest is not None and latest is not None and newest.id != latest.id else None
 
         result.append(DQTableSummary(
             table_name=table_name,
@@ -295,8 +357,84 @@ async def get_project_dq_tables_summary(
                 if latest and latest.overall_score is not None else None
             ),
             latest_run_date=latest.completed_at or latest.created_at if latest else None,
+            latest_run_version=latest.version if latest else None,
+            newer_run_id=newer.id if newer else None,
+            newer_run_status=newer.status if newer else None,
+            newer_run_version=newer.version if newer else None,
         ))
     return result
+
+
+@router.get("/project/{project_id}/progress", response_model=DQProjectProgress)
+async def get_project_dq_progress(
+    project_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dq:read"))],
+) -> DQProjectProgress:
+    """Runs to show on the project's progress page: queued/running ones and those finished recently."""
+    now = datetime.now(UTC)
+    since = now.replace(tzinfo=None) - PROGRESS_WINDOW
+    runs = (await db.execute(
+        select(DQRun).where(
+            DQRun.project_id == project_id,
+            (DQRun.status.in_(ACTIVE_STATUSES)) | (DQRun.created_at >= since),
+        ).order_by(DQRun.created_at)
+    )).scalars().all()
+    active = [r for r in runs if r.status in ACTIVE_STATUSES and _utc(r.created_at) >= now - QUEUE_LOOKBACK]
+    eta = None
+    if active:
+        etas = [(await _queue_and_eta(db, r, now))[1] or 0 for r in active]
+        eta = max(etas)
+    return DQProjectProgress(
+        project_id=project_id,
+        active_count=len(active),
+        eta_seconds=eta,
+        runs=[DQProgressRun(run_id=r.id, dataset_name=r.dataset_name, version=r.version, status=r.status,
+                            created_at=r.created_at) for r in runs],
+    )
+
+
+REPORT_STATUSES = ("completed", "under_review", "approved", "rejected")  # runs that have results
+
+
+@router.get("/project/{project_id}/report", response_model=DQProjectReport)
+async def get_project_dq_report(
+    project_id: uuid.UUID, db: DB,
+    _: Annotated[User, Depends(require_permission("dq:read"))],
+) -> DQProjectReport:
+    """Project DQ report: for every table (source file) the latest run that has results.
+
+    Tables are keyed by source file (or dataset name for runs without one). When the newest run of
+    a table failed or is still running, the previous run with results is used and noted.
+    """
+    runs = (await db.execute(
+        select(DQRun)
+        .where(DQRun.project_id == project_id)
+        .options(selectinload(DQRun.results).selectinload(DQResult.findings), selectinload(DQRun.gcp_archive))
+        .order_by(DQRun.created_at.desc())
+    )).scalars().all()
+
+    newest: dict[str, DQRun] = {}
+    used: dict[str, DQRun] = {}
+    for r in runs:  # newest first
+        key = str(r.source_file_id or r.dataset_name)
+        newest.setdefault(key, r)
+        if key not in used and r.status in REPORT_STATUSES and r.results:
+            used[key] = r
+
+    tables = [
+        DQProjectReportTable(
+            dataset_name=run.dataset_name,
+            run=DQRunOut.model_validate(run),
+            newer_run_status=newest[key].status if newest[key].id != run.id else None,
+        )
+        for key, run in sorted(used.items(), key=lambda item: item[1].dataset_name.lower())
+    ]
+    return DQProjectReport(
+        project_id=project_id,
+        generated_at=datetime.now(UTC),
+        tables=tables,
+        tables_without_results=sorted(r.dataset_name for key, r in newest.items() if key not in used),
+    )
 
 
 @router.get("/project-sources/{file_id}/preview", response_model=ProjectFilePreviewResult)
@@ -394,6 +532,15 @@ async def create_dq_run(
         )).scalar_one_or_none()
         if not source_file:
             raise HTTPException(status_code=404, detail="Source file not found")
+        if not os.path.exists(source_file.stored_path):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Source file '{source_file.original_filename}' is no longer in the uploads folder; "
+                       "re-upload it in Metadata, then start a new DQ run",
+            )
+        active = await _active_run_for_file(db, source_file.id)
+        if active is not None:
+            raise _already_running(active)
         stored_path = source_file.stored_path
         dataset_name = source_file.original_filename
         dataset_location = f"project_file://{source_file.id}"
@@ -404,8 +551,11 @@ async def create_dq_run(
         run_name=body.run_name,
         dataset_name=dataset_name,
         dataset_location=dataset_location,
+        version=await _next_run_version(db, body.project_id, dataset_name),
         status="pending",
         triggered_by=current_user.id,
+        columns_total=_count_columns(stored_path) if stored_path else None,  # for the time estimate
+        columns_done=0,
     )
     db.add(run)
     db.add(AuditLog(user_id=current_user.id, module="dq", action="create",
@@ -429,8 +579,6 @@ async def create_dq_run(
             bq_table=body.bq_table,
             temp_file_key=body.temp_file_key,
             sheet_name=body.sheet_name,
-            postgres_connection_string=body.postgres_connection_string,
-            postgres_table=body.postgres_table,
             stored_path=stored_path,
         )
         run.celery_task_id = task.id
@@ -465,8 +613,17 @@ async def poll_run_status(
     if not run:
         raise HTTPException(status_code=404, detail="DQ run not found")
 
-    progress_map = {"pending": 0, "running": 50, "completed": 100, "failed": 0,
-                    "under_review": 100, "approved": 100, "rejected": 100}
+    from app.services.dq_failures import CATEGORIES
+
+    # One worker runs DQ files one at a time: everything queued before this run goes first
+    queue_position, eta = await _queue_and_eta(db, run, datetime.now(UTC))
+
+    total, done = run.columns_total, run.columns_done or 0
+    if run.status == "running":
+        progress = int(100 * done / total) if total else 0
+    else:
+        progress = {"completed": 100, "under_review": 100, "approved": 100, "rejected": 100}.get(run.status, 0)
+
     msg_map = {
         "pending": "Queued — waiting for worker",
         "running": "Running DQ checks…",
@@ -476,12 +633,40 @@ async def poll_run_status(
         "approved": "Approved and archived",
         "rejected": "Rejected — revision required",
     }
+    message = msg_map.get(run.status, run.status)
+    if run.status == "pending" and queue_position:
+        message = f"Queued — {queue_position} file{'s' if queue_position > 1 else ''} ahead"
+    elif run.status == "running" and total:
+        message = f"Running — {done} of {total} columns done"
+
+    error_category, error_detail = run.error_category, run.error_message
+    if run.status == "failed" and not error_category:
+        # Runs that failed before failure reasons were recorded: the missing file is the one cause we can still check
+        source = await db.get(ProjectSourceFile, run.source_file_id) if run.source_file_id else None
+        if source is not None and not os.path.exists(source.stored_path):
+            error_category, error_detail = "source_file_missing", f"Missing file: {source.original_filename}"
+        else:
+            error_category, error_detail = "unexpected", "The reason was not recorded for this older run; see the worker log."
+
+    category = CATEGORIES.get(error_category or "")
     return DQStatusResponse(
         run_id=run.id,
         status=run.status,
-        progress_pct=progress_map.get(run.status, 0),
+        progress_pct=progress,
         overall_score=run.overall_score,
-        message=msg_map.get(run.status, run.status),
+        message=message,
+        columns_total=total,
+        columns_done=done,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        queue_position=queue_position,
+        eta_seconds=eta,
+        error_category=error_category,
+        error_title=category.title if category else None,
+        error_explanation=category.explanation if category else None,
+        error_action=category.action if category else None,
+        error_detail=error_detail,
+        will_retry=run.status == "pending" and bool(run.error_category),
     )
 
 
@@ -595,25 +780,42 @@ async def rerun_dq(
     run_id: uuid.UUID, db: DB,
     current_user: Annotated[User, Depends(require_permission("dq:create"))],
 ) -> DQRun:
-    """Create a new run version based on the same dataset."""
+    """Create and dispatch a new version of a run on the same project source file."""
     result = await db.execute(select(DQRun).where(DQRun.id == run_id))
     original = result.scalar_one_or_none()
     if not original:
         raise HTTPException(status_code=404, detail="DQ run not found")
+    source_file = (await db.execute(
+        select(ProjectSourceFile).where(ProjectSourceFile.id == original.source_file_id)
+    )).scalar_one_or_none() if original.source_file_id else None
+    if source_file is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Re-run needs the run's project source file; it is missing, so start a new DQ run instead",
+        )
+    if not os.path.exists(source_file.stored_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Source file '{source_file.original_filename}' is no longer in the uploads folder; "
+                   "re-upload it in Metadata, then start a new DQ run",
+        )
+    active = await _active_run_for_file(db, source_file.id)
+    if active is not None:
+        raise _already_running(active)
 
-    # Increment run_name version number
+    version = await _next_run_version(db, original.project_id, original.dataset_name)
     base_name = re.sub(r"\s+v\d+$", "", original.run_name)
-    count = (await db.execute(
-        select(func.count()).where(DQRun.dataset_name == original.dataset_name)
-    )).scalar_one()
-
     new_run = DQRun(
         project_id=original.project_id,
-        run_name=f"{base_name} v{count + 1}",
+        source_file_id=original.source_file_id,
+        run_name=f"{base_name} v{version}",
         dataset_name=original.dataset_name,
         dataset_location=original.dataset_location,
+        version=version,
         status="pending",
         triggered_by=current_user.id,
+        columns_total=_count_columns(source_file.stored_path),
+        columns_done=0,
     )
     db.add(new_run)
     db.add(AuditLog(user_id=current_user.id, module="dq", action="rerun",
@@ -621,7 +823,20 @@ async def rerun_dq(
     await db.flush()
     await db.commit()
     await db.refresh(new_run)
-    return new_run
+
+    try:
+        from app.worker.tasks.dq import run_dq_generation
+        task = run_dq_generation.delay(
+            run_id=str(new_run.id), source_type="project_file",
+            dataset_location=new_run.dataset_location, stored_path=source_file.stored_path,
+        )
+        new_run.celery_task_id = task.id
+        await db.commit()
+        await db.refresh(new_run)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Could not dispatch DQ re-run task: %s", exc)
+    return await _load_run(db, new_run.id) or new_run
 
 
 # ── Delta comparison ───────────────────────────────────────────────────────────

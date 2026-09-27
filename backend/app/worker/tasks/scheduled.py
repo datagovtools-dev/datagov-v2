@@ -28,34 +28,21 @@ def retention_eligibility_scan() -> dict:
 
     Marks records with expiry_date < today that are still in draft/submitted
     status so BAPD Officers see them on the eligible-datasets panel.
-    Real SQL execution uses a synchronous psycopg2 session wired at deployment.
     """
-    import psycopg2
-    import os
+    from sqlalchemy import func, select
 
-    db_url = os.getenv("DATABASE_URL", "")
-    if not db_url:
-        logger.warning("DATABASE_URL not set; retention scan skipped")
-        return {"status": "skipped", "reason": "no DATABASE_URL"}
+    from app.database import get_sync_session
+    from app.models.bapd import BAPDRecord
 
-    # Convert asyncpg URL to psycopg2 URL
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-    today = date.today().isoformat()
     flagged = 0
     try:
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT COUNT(*) FROM bapd_records
-            WHERE expiry_date < %s
-              AND status NOT IN ('executed', 'archived')
-            """,
-            (today,),
-        )
-        flagged = cur.fetchone()[0]
-        cur.close()
-        conn.close()
+        with get_sync_session() as db:
+            flagged = db.scalar(
+                select(func.count()).select_from(BAPDRecord).where(
+                    BAPDRecord.expiry_date < date.today(),
+                    BAPDRecord.status.not_in(("executed", "archived")),
+                )
+            )
     except Exception as exc:  # noqa: BLE001
         logger.error("Retention scan DB error: %s", exc)
         return {"status": "error", "error": str(exc)}
@@ -67,51 +54,35 @@ def retention_eligibility_scan() -> dict:
 @shared_task(name="app.worker.tasks.scheduled.dsr_expiry_check")
 def dsr_expiry_check() -> dict:
     """Daily 08:00 WIB: warn on DSRs expiring in 7 days; auto-revoke expired."""
-    import psycopg2
-    import os
+    from sqlalchemy import select, update
 
-    db_url = os.getenv("DATABASE_URL", "")
-    if not db_url:
-        logger.warning("DATABASE_URL not set; DSR expiry check skipped")
-        return {"status": "skipped", "reason": "no DATABASE_URL"}
+    from app.database import get_sync_session
+    from app.models.dsr import DataSharingRequest
 
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
     today = date.today()
-    warn_threshold = (today + timedelta(days=7)).isoformat()
-    today_str = today.isoformat()
+    warn_threshold = today + timedelta(days=7)
     warned = revoked = 0
 
     try:
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor()
+        with get_sync_session() as db:
+            # DSRs expiring within 7 days (still active)
+            expiring_soon = db.execute(
+                select(DataSharingRequest.id, DataSharingRequest.tracking_id).where(
+                    DataSharingRequest.duration_end <= warn_threshold,
+                    DataSharingRequest.duration_end > today,
+                    DataSharingRequest.status.not_in(("rejected", "archived", "executed")),
+                )
+            ).all()
+            warned = len(expiring_soon)
 
-        # DSRs expiring within 7 days (still active)
-        cur.execute(
-            """
-            SELECT id, tracking_id FROM data_sharing_requests
-            WHERE duration_end <= %s AND duration_end > %s
-              AND status NOT IN ('rejected', 'archived', 'executed')
-            """,
-            (warn_threshold, today_str),
-        )
-        expiring_soon = cur.fetchall()
-        warned = len(expiring_soon)
-
-        # Auto-revoke past due date
-        cur.execute(
-            """
-            UPDATE data_sharing_requests
-            SET status = 'archived'
-            WHERE duration_end < %s
-              AND status = 'approved'
-            RETURNING id
-            """,
-            (today_str,),
-        )
-        revoked = cur.rowcount
-        conn.commit()
-        cur.close()
-        conn.close()
+            # Auto-revoke past due date
+            result = db.execute(
+                update(DataSharingRequest)
+                .where(DataSharingRequest.duration_end < today, DataSharingRequest.status == "approved")
+                .values(status="archived")
+            )
+            revoked = result.rowcount
+            db.commit()
     except Exception as exc:  # noqa: BLE001
         logger.error("DSR expiry check DB error: %s", exc)
         return {"status": "error", "error": str(exc)}
@@ -156,105 +127,85 @@ def cleanup_temp_files() -> dict:
 
 @shared_task(name="app.worker.tasks.scheduled.source_file_expiry_check")
 def source_file_expiry_check() -> dict:
-    """Daily 07:00 WIB: warn project teams 7 days before source file deletion;
-    delete files + records when 30 days past project end_date."""
+    """Daily 07:00 WIB: warn project teams 7 days before source file deletion; delete files +
+    records at project end_date + 30 days, or end_date + the approved ROPA retention period
+    (see app/services/retention.py)."""
     import os
-    import psycopg2
-    import psycopg2.extras
 
-    db_url = os.getenv("DATABASE_URL", "")
-    if not db_url:
-        logger.warning("DATABASE_URL not set; source file expiry check skipped")
-        return {"status": "skipped", "reason": "no DATABASE_URL"}
+    from sqlalchemy import delete, select
 
-    sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
+    from app.database import get_sync_session
+    from app.models.metadata import ProjectSourceFile
+    from app.models.notification import Notification
+    from app.models.project import Project
+    from app.models.user import Role, User, UserProjectRole
+    from app.services.retention import project_retention_sync
+    from app.services.shared_uploads import remove_shared_copy
+
     today = date.today()
     warn_date = today + timedelta(days=7)   # alert when expiry is 7 days away
     warned = deleted_projects = deleted_files = 0
+    team_cols = ("sme_id", "delivery_manager_id", "project_manager_id",
+                 "dgo_id", "metadata_officer_id", "dq_officer_id",
+                 "pic_data_compliance_id", "created_by")
 
+    db = get_sync_session()
     try:
-        conn = psycopg2.connect(sync_url)
-        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-
         # Projects that have uploaded source files and have an end_date set
-        cur.execute("""
-            SELECT DISTINCT p.id, p.project_name, p.end_date,
-                   p.sme_id, p.delivery_manager_id, p.project_manager_id,
-                   p.dgo_id, p.metadata_officer_id, p.dq_officer_id,
-                   p.pic_data_compliance_id, p.created_by
-            FROM projects p
-            INNER JOIN project_source_files psf ON psf.project_id = p.id
-            WHERE p.end_date IS NOT NULL
-        """)
-        projects = cur.fetchall()
+        projects = db.scalars(
+            select(Project).distinct()
+            .join(ProjectSourceFile, ProjectSourceFile.project_id == Project.id)
+            .where(Project.end_date.is_not(None))
+        ).all()
 
-        # Fetch all super-admin user IDs + emails
-        cur.execute("""
-            SELECT DISTINCT u.id, u.email
-            FROM users u
-            JOIN project_roles pr ON pr.user_id = u.id
-            JOIN roles r ON r.id = pr.role_id
-            WHERE r.name = 'super_admin'
-              AND pr.revoked_at IS NULL
-              AND u.is_active = TRUE
-        """)
-        super_admins = cur.fetchall()
+        # All active super-admin user IDs
+        super_admin_ids = set(db.scalars(
+            select(User.id).distinct()
+            .join(UserProjectRole, UserProjectRole.user_id == User.id)
+            .join(Role, Role.id == UserProjectRole.role_id)
+            .where(Role.name == "super_admin", UserProjectRole.revoked_at.is_(None), User.is_active.is_(True))
+        ).all())
 
         for proj in projects:
-            end_date = proj["end_date"]
-            if isinstance(end_date, str):
-                from datetime import datetime as _dt
-                end_date = _dt.strptime(end_date, "%Y-%m-%d").date()
-
-            expiry_date = end_date + timedelta(days=30)
-            project_id = str(proj["id"])
-            project_name = proj["project_name"]
+            # end_date + 30 days, or end_date + the retention period of an approved ROPA
+            retention = project_retention_sync(db, proj)
+            expiry_date = retention.expiry_date
+            if expiry_date is None:
+                continue
+            basis_text = (f"project end date + approved ROPA retention period \"{retention.ropa_retention_period}\""
+                          if retention.basis == "ropa" else "project end date + 30 days, no approved ROPA")
+            project_id = str(proj.id)
+            project_name = proj.project_name
 
             # Collect team member IDs (non-null project fields)
-            team_ids = {
-                str(proj[col])
-                for col in ("sme_id", "delivery_manager_id", "project_manager_id",
-                            "dgo_id", "metadata_officer_id", "dq_officer_id",
-                            "pic_data_compliance_id", "created_by")
-                if proj[col]
-            }
-            team_ids.update(str(sa["id"]) for sa in super_admins)
+            team_ids = {getattr(proj, col) for col in team_cols if getattr(proj, col)}
+            team_ids.update(super_admin_ids)
 
             if not team_ids:
                 continue
 
             # Fetch emails for all recipients
-            id_list = list(team_ids)
-            cur.execute(
-                "SELECT id, email FROM users WHERE id = ANY(%s::uuid[]) AND is_active = TRUE",
-                (id_list,),
-            )
-            recipients = cur.fetchall()
-            recipient_emails = [r["email"] for r in recipients if r["email"]]
-            recipient_ids   = [str(r["id"]) for r in recipients]
+            recipients = db.execute(
+                select(User.id, User.email).where(User.id.in_(team_ids), User.is_active.is_(True))
+            ).all()
+            recipient_emails = [r.email for r in recipients if r.email]
+            recipient_ids = [r.id for r in recipients]
 
             # ── 7-day warning ────────────────────────────────────────
             if expiry_date == warn_date:
                 warned += 1
                 # In-app notifications
                 for uid in recipient_ids:
-                    cur.execute(
-                        """INSERT INTO notifications
-                           (id, user_id, module, event, title, body, entity_type, entity_id, is_read)
-                           VALUES (gen_random_uuid(), %s::uuid, 'metadata',
-                                   'source_files_expiry_warning',
-                                   %s, %s, 'project', %s, FALSE)""",
-                        (
-                            uid,
-                            f"Source files expiring in 7 days — {project_name}",
-                            (
-                                f"Uploaded source files for project \"{project_name}\" will be "
-                                f"permanently deleted on {expiry_date.strftime('%d %b %Y')}. "
-                                "Download them before the deadline if needed."
-                            ),
-                            project_id,
+                    db.add(Notification(
+                        user_id=uid, module="metadata", event="source_files_expiry_warning",
+                        title=f"Source files expiring in 7 days — {project_name}",
+                        body=(
+                            f"Uploaded source files for project \"{project_name}\" will be "
+                            f"permanently deleted on {expiry_date.strftime('%d %b %Y')} ({basis_text}). "
+                            "Download them before the deadline if needed."
                         ),
-                    )
+                        entity_type="project", entity_id=project_id, is_read=False,
+                    ))
                 # Email notifications (best-effort)
                 try:
                     from app.worker.tasks.notifications import send_workflow_notification
@@ -265,6 +216,7 @@ def source_file_expiry_check() -> dict:
                         context={
                             "project_name": project_name,
                             "expiry_date": expiry_date.strftime("%d %b %Y"),
+                            "retention_basis": basis_text,
                             "actor": "system",
                         },
                     )
@@ -274,47 +226,36 @@ def source_file_expiry_check() -> dict:
             # ── Deletion ─────────────────────────────────────────────
             elif expiry_date <= today:
                 # Fetch file paths before deleting records
-                cur.execute(
-                    "SELECT id, stored_path FROM project_source_files WHERE project_id = %s",
-                    (project_id,),
-                )
-                files = cur.fetchall()
+                stored_paths = db.scalars(
+                    select(ProjectSourceFile.stored_path).where(ProjectSourceFile.project_id == proj.id)
+                ).all()
 
-                # Delete physical files
-                for f in files:
+                # Delete physical files (and their repository copy in shared_uploads, if any)
+                for stored_path in stored_paths:
                     try:
-                        if f["stored_path"] and os.path.exists(f["stored_path"]):
-                            os.remove(f["stored_path"])
+                        if stored_path and os.path.exists(stored_path):
+                            os.remove(stored_path)
                             deleted_files += 1
                     except OSError as exc:
-                        logger.warning("Could not delete %s: %s", f["stored_path"], exc)
+                        logger.warning("Could not delete %s: %s", stored_path, exc)
+                    remove_shared_copy(stored_path)
 
                 # Remove DB records
-                cur.execute(
-                    "DELETE FROM project_source_files WHERE project_id = %s",
-                    (project_id,),
-                )
+                db.execute(delete(ProjectSourceFile).where(ProjectSourceFile.project_id == proj.id))
                 deleted_projects += 1
 
                 # In-app notifications
                 for uid in recipient_ids:
-                    cur.execute(
-                        """INSERT INTO notifications
-                           (id, user_id, module, event, title, body, entity_type, entity_id, is_read)
-                           VALUES (gen_random_uuid(), %s::uuid, 'metadata',
-                                   'source_files_deleted',
-                                   %s, %s, 'project', %s, FALSE)""",
-                        (
-                            uid,
-                            f"Source files deleted — {project_name}",
-                            (
-                                f"Uploaded source files for project \"{project_name}\" have been "
-                                "automatically deleted (30-day post-project retention elapsed). "
-                                "Metadata attributes and definitions remain intact."
-                            ),
-                            project_id,
+                    db.add(Notification(
+                        user_id=uid, module="metadata", event="source_files_deleted",
+                        title=f"Source files deleted — {project_name}",
+                        body=(
+                            f"Uploaded source files for project \"{project_name}\" have been "
+                            f"automatically deleted (retention elapsed: {basis_text}). "
+                            "Metadata attributes and definitions remain intact."
                         ),
-                    )
+                        entity_type="project", entity_id=project_id, is_read=False,
+                    ))
                 # Email notifications (best-effort)
                 try:
                     from app.worker.tasks.notifications import send_workflow_notification
@@ -322,17 +263,18 @@ def source_file_expiry_check() -> dict:
                         event="source_files_deleted",
                         entity_id=project_id,
                         recipients=recipient_emails,
-                        context={"project_name": project_name, "actor": "system"},
+                        context={"project_name": project_name, "retention_basis": basis_text, "actor": "system"},
                     )
                 except Exception:
                     pass
 
-        conn.commit()
-        cur.close()
-        conn.close()
+        db.commit()
     except Exception as exc:
+        db.rollback()
         logger.error("Source file expiry check error: %s", exc)
         return {"status": "error", "error": str(exc)}
+    finally:
+        db.close()
 
     logger.info(
         "Source file expiry check: %d projects warned, %d projects deleted (%d files)",

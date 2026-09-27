@@ -6,6 +6,7 @@ import { ShieldCheck, Sparkles, CheckCircle2, Lock, ArrowRight } from "lucide-re
 import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { useAuthStore } from "@/store/authStore";
+import { errorDetail } from "@/lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -26,17 +27,7 @@ export default function LoginPage() {
         credentials: "include",
         body: JSON.stringify({ email, password }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        const detail = data.detail;
-        const msg =
-          typeof detail === "string"
-            ? detail
-            : Array.isArray(detail)
-            ? detail.map((e: any) => e.msg ?? JSON.stringify(e)).join(", ")
-            : "Login failed. Please verify credentials.";
-        throw new Error(msg);
-      }
+      if (!res.ok) throw new Error(await errorDetail(res));
       const { access_token } = await res.json();
 
       const meRes = await fetch("/api/v1/auth/me", {

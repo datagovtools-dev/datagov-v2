@@ -4,8 +4,12 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { ProjectInfoStrip } from "@/components/details/ProjectInfoStrip";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
+import {
+  DONE_STATUSES, FailureBox, RunProgressRow, formatDuration, launchFailure, secondsLeft, type RunStatusInfo,
+} from "@/components/dq/RunProgress";
 
 interface ProjectOption { id: string; project_code: string | null; project_name: string; }
 
@@ -18,6 +22,13 @@ interface ProjectFileItem {
   file_size: number | null;
   uploaded_at: string;
   uploaded_by: string | null;
+  file_available?: boolean; // false when the uploaded file is no longer in the uploads folder
+  active_run_id?: string | null;     // a DQ run of this file is already queued or running
+  active_run_status?: string | null;
+}
+
+function isCheckable(f: ProjectFileItem): boolean {
+  return f.file_available !== false && !f.active_run_id;
 }
 
 interface ProjectFilePreview {
@@ -113,11 +124,15 @@ function DQWizardPage() {
   const [batchLaunching, setBatchLaunching] = useState(false);
   const [batchRunIds, setBatchRunIds] = useState<string[]>([]);
   const [batchRunFiles, setBatchRunFiles] = useState<Array<{ id: string; filename: string }>>([]);
-  const [batchRunStatuses, setBatchRunStatuses] = useState<Record<string, string>>({});
+  const [batchRunStatuses, setBatchRunStatuses] = useState<Record<string, RunStatusInfo>>({});
+  // Files the API refused to queue (e.g. file missing), shown as failed rows with the reason
+  const [launchFailures, setLaunchFailures] = useState<Record<string, RunStatusInfo>>({});
 
   // Step 4 — run polling
   const [runId, setRunId] = useState<string | null>(null);
-  const [runStatus, setRunStatus] = useState<{ status: string; progress_pct: number; overall_score: string | null; message: string } | null>(null);
+  const [runStatus, setRunStatus] = useState<RunStatusInfo | null>(null);
+  // Clock for the countdown between polls
+  const [now, setNow] = useState(() => Date.now());
 
   const { data: projects } = useQuery<ProjectOption[]>({
     queryKey: ["projects-select"],
@@ -151,6 +166,7 @@ function DQWizardPage() {
     setBatchRunIds([]);
     setBatchRunFiles([]);
     setBatchRunStatuses({});
+    setLaunchFailures({});
     setRunId(null);
     setRunStatus(null);
   }, [project_id, initialFile]);
@@ -161,9 +177,15 @@ function DQWizardPage() {
       if (initialFile) return;
     }
     if (!projectFiles || projectFiles.length === 0 || initialFileRef.current) return;
-    setSelectedProjectFiles(new Set(projectFiles.map((f: ProjectFileItem) => f.id)));
-    setSelectedProjectFileItems([...projectFiles]);
+    const available = projectFiles.filter(isCheckable);
+    setSelectedProjectFiles(new Set(available.map((f: ProjectFileItem) => f.id)));
+    setSelectedProjectFileItems(available);
   }, [projectFiles, initialFile]);
+
+  // Files that can be checked: still in the uploads folder and not already queued/running
+  const availableFiles = (projectFiles ?? []).filter(isCheckable);
+  const missingFileCount = (projectFiles ?? []).filter((f: ProjectFileItem) => f.file_available === false).length;
+  const busyFileCount = (projectFiles ?? []).filter((f: ProjectFileItem) => !!f.active_run_id).length;
 
   const firstSelectedFile = selectedProjectFileItems[0] ?? null;
 
@@ -187,10 +209,10 @@ function DQWizardPage() {
     const poll = async () => {
       while (!cancelled) {
         try {
-          const s = await api.get<typeof runStatus>(`/dq/${runId}/status`);
-          setRunStatus(s);
-          if (s && (s.status === "completed" || s.status === "failed")) {
-            if (s.status === "completed") setTimeout(() => setStep(5), 600);
+          const s = await api.get<RunStatusInfo>(`/dq/${runId}/status`);
+          setRunStatus(s ? { ...s, fetchedAt: Date.now() } : s);
+          if (s && DONE_STATUSES.includes(s.status)) {
+            if (s.status === "completed") setTimeout(() => setStep(5), 1500);
             break;
           }
         } catch { break; }
@@ -207,17 +229,19 @@ function DQWizardPage() {
     let cancelled = false;
     const poll = async () => {
       while (!cancelled) {
-        const statuses: Record<string, string> = {};
+        const statuses: Record<string, RunStatusInfo> = {};
         await Promise.all(
           batchRunIds.map(async (id: string) => {
             try {
-              const s = await api.get<{ status: string }>(`/dq/${id}/status`);
-              statuses[id] = s?.status ?? "pending";
-            } catch { statuses[id] = "pending"; }
+              const s = await api.get<RunStatusInfo>(`/dq/${id}/status`);
+              statuses[id] = { ...s, fetchedAt: Date.now() };
+            } catch {
+              statuses[id] = { status: "pending", progress_pct: 0, overall_score: null, message: "" };
+            }
           })
         );
         setBatchRunStatuses({ ...statuses });
-        const allDone = Object.values(statuses).every((s) => s === "completed" || s === "failed");
+        const allDone = Object.values(statuses).every((s) => DONE_STATUSES.includes(s.status));
         if (allDone || cancelled) break;
         await new Promise((r) => setTimeout(r, 4000));
       }
@@ -225,6 +249,17 @@ function DQWizardPage() {
     poll();
     return () => { cancelled = true; };
   }, [batchRunIds, step, batchLaunching]);
+
+  // Tick every second while something is still running, so the countdown moves between polls
+  const anyRunActive = step === 4 && (
+    (runStatus !== null && !DONE_STATUSES.includes(runStatus.status)) ||
+    batchRunIds.some((id) => !DONE_STATUSES.includes(batchRunStatuses[id]?.status ?? "pending"))
+  );
+  useEffect(() => {
+    if (!anyRunActive) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [anyRunActive]);
 
   const createRunMutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) => api.post<{ id: string }>("/dq", payload),
@@ -262,10 +297,12 @@ function DQWizardPage() {
       setBatchRunIds([]);
       setBatchRunFiles([]);
       setBatchRunStatuses({});
+      setLaunchFailures({});
       setStep(4);
       (async () => {
         const ids: string[] = [];
         const runFiles: Array<{ id: string; filename: string }> = [];
+        const refused: Record<string, RunStatusInfo> = {};
         for (const f of items) {
           try {
             const result = await api.post<{ id: string }>("/dq", {
@@ -277,8 +314,14 @@ function DQWizardPage() {
             });
             ids.push(result.id);
             runFiles.push({ id: result.id, filename: f.original_filename });
-          } catch { /* continue with remaining files */ }
+          } catch (err) {
+            // keep the file in the list as failed, with the API's reason, and continue with the rest
+            const id = `refused-${f.id}`;
+            refused[id] = launchFailure(err);
+            runFiles.push({ id, filename: f.original_filename });
+          }
         }
+        setLaunchFailures(refused);
         setBatchRunFiles(runFiles);
         setBatchRunIds(ids);
         setBatchLaunching(false);
@@ -299,6 +342,9 @@ function DQWizardPage() {
       </div>
 
       <StepBar current={step} />
+
+      {/* Project info strip once the project is chosen (steps 2–6) */}
+      {step > 1 && project_id && <ProjectInfoStrip projectId={project_id} />}
 
       {/* ── Step 1: Project selection ── */}
       {step === 1 && (
@@ -348,23 +394,39 @@ function DQWizardPage() {
                 <p className="text-sm text-gray-500">
                   Files imported via the Metadata module. Select one or more — each generates a separate DQ run.
                 </p>
-                {projectFiles && projectFiles.length > 0 && (
+                {availableFiles.length > 0 && (
                   <button
                     onClick={() => {
-                      if (selectedProjectFiles.size === projectFiles.length) {
+                      if (selectedProjectFiles.size === availableFiles.length) {
                         setSelectedProjectFiles(new Set());
                         setSelectedProjectFileItems([]);
                       } else {
-                        setSelectedProjectFiles(new Set(projectFiles.map((f: ProjectFileItem) => f.id)));
-                        setSelectedProjectFileItems([...projectFiles]);
+                        setSelectedProjectFiles(new Set(availableFiles.map((f: ProjectFileItem) => f.id)));
+                        setSelectedProjectFileItems([...availableFiles]);
                       }
                     }}
                     className="text-xs font-medium text-blue-600 hover:text-blue-800 whitespace-nowrap ml-4"
                   >
-                    {selectedProjectFiles.size === projectFiles.length ? "Deselect All" : "Select All"}
+                    {selectedProjectFiles.size === availableFiles.length ? "Deselect All" : "Select All"}
                   </button>
                 )}
               </div>
+              {missingFileCount > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-800">
+                  {missingFileCount} file{missingFileCount > 1 ? "s are" : " is"} registered but no longer in the uploads
+                  folder, so {missingFileCount > 1 ? "they" : "it"} cannot be checked. Re-upload {missingFileCount > 1 ? "them" : "it"} in
+                  Metadata for this project to include {missingFileCount > 1 ? "them" : "it"}.
+                </div>
+              )}
+              {busyFileCount > 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm text-blue-800 flex items-center justify-between gap-3">
+                  <span>
+                    {busyFileCount} file{busyFileCount > 1 ? "s are" : " is"} already queued or running, so {busyFileCount > 1 ? "they" : "it"} cannot
+                    be started again until {busyFileCount > 1 ? "they finish" : "it finishes"}.
+                  </span>
+                  <Button size="sm" variant="outline" onClick={() => router.push(`/dq/progress/${project_id}`)}>View progress</Button>
+                </div>
+              )}
               {projectFilesLoading ? (
                 <div className="text-sm text-blue-600 text-center py-6">Loading project files…</div>
               ) : !projectFiles || projectFiles.length === 0 ? (
@@ -379,9 +441,14 @@ function DQWizardPage() {
                 <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                   {projectFiles.map((f: ProjectFileItem) => {
                     const isSelected = selectedProjectFiles.has(f.id);
+                    const isMissing = f.file_available === false;
+                    const isBusy = !!f.active_run_id;
                     return (
                       <button
                         key={f.id}
+                        disabled={isMissing || isBusy}
+                        title={isMissing ? "The uploaded file is no longer in the uploads folder — re-upload it in Metadata"
+                          : isBusy ? "A DQ run of this file is already queued or running — see View progress" : undefined}
                         onClick={() => {
                           setSelectedProjectFiles((prev) => {
                             const next = new Set(prev);
@@ -395,7 +462,8 @@ function DQWizardPage() {
                           );
                         }}
                         className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
-                          isSelected ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300 bg-white"
+                          isMissing || isBusy ? "border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed"
+                            : isSelected ? "border-blue-500 bg-blue-50" : "border-gray-200 hover:border-gray-300 bg-white"
                         }`}
                       >
                         <div className="flex items-start justify-between gap-2">
@@ -414,6 +482,16 @@ function DQWizardPage() {
                               </p>
                             </div>
                           </div>
+                          {isMissing && (
+                            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 whitespace-nowrap">
+                              File missing — re-upload in Metadata
+                            </span>
+                          )}
+                          {isBusy && (
+                            <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 whitespace-nowrap">
+                              {f.active_run_status === "running" ? "Running now" : "Queued"}
+                            </span>
+                          )}
                         </div>
                       </button>
                     );
@@ -523,64 +601,92 @@ function DQWizardPage() {
           {/* Batch mode: runInitiated flips synchronously on button click → guaranteed immediate UI change */}
           {selectedProjectFileItems.length > 1 ? (
             runInitiated ? (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="font-semibold text-gray-800">
-                      {batchLaunching
-                        ? `Queuing ${selectedProjectFileItems.length} DQ runs…`
-                        : batchRunFiles.length > 0
-                        ? (() => {
-                            const done = batchRunFiles.filter((r) => ["completed","failed"].includes(batchRunStatuses[r.id] ?? "")).length;
-                            const allDone = done === batchRunFiles.length;
-                            return allDone ? `All ${batchRunFiles.length} runs completed` : `Processing — ${done} / ${batchRunFiles.length} done`;
-                          })()
-                        : "Runs queued — processing in background"}
-                    </p>
-                    <p className="text-xs text-gray-400 mt-0.5">Each file is analysed independently. DQ checks run in parallel.</p>
-                  </div>
-                  <Button size="sm" variant="outline" onClick={() => router.push("/dq")}>View DQ Runs</Button>
-                </div>
-
-                {/* Progress bar — shows 0 while queuing, fills as runs complete */}
-                {batchRunFiles.length > 0 && (
-                  <div className="w-full bg-gray-100 rounded-full h-2">
-                    <div className="bg-blue-500 h-2 rounded-full transition-all duration-700"
-                      style={{ width: `${(batchRunFiles.filter((r) => ["completed","failed"].includes(batchRunStatuses[r.id] ?? "")).length / batchRunFiles.length) * 100}%` }} />
-                  </div>
-                )}
-
-                {/* Per-run status rows */}
-                <div className="space-y-2">
-                  {(batchRunFiles.length > 0 ? batchRunFiles.map((r) => ({ id: r.id, filename: r.filename, status: batchRunStatuses[r.id] ?? "pending" }))
-                    : selectedProjectFileItems.map((f) => ({ id: f.id, filename: f.original_filename, status: "queuing" }))
-                  ).map((row) => (
-                    <div key={row.id} className="flex items-center gap-3 px-4 py-3 rounded-lg border border-gray-100 bg-gray-50">
-                      <div className="w-5 flex-shrink-0 flex items-center justify-center">
-                        {row.status === "completed" && <span className="text-green-600 font-bold">✓</span>}
-                        {row.status === "failed"    && <span className="text-red-500 font-bold">✗</span>}
-                        {(row.status === "running" || row.status === "queuing") &&
-                          <div className="w-4 h-4 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin" />}
-                        {row.status === "pending"  && <div className="w-4 h-4 rounded-full border-2 border-gray-300 bg-white" />}
+              (() => {
+                const infoFor = (id: string) => batchRunStatuses[id] ?? launchFailures[id];
+                const total = batchRunFiles.length;
+                const completed = batchRunFiles.filter((r) => infoFor(r.id)?.status === "completed").length;
+                const failed = batchRunFiles.filter((r) => infoFor(r.id)?.status === "failed").length;
+                const finished = total > 0 && completed + failed === total;
+                // the last file in the queue finishes last, so its estimate is the batch estimate
+                const batchLeft = batchRunFiles.reduce<number | null>((max, r) => {
+                  const left = secondsLeft(infoFor(r.id), now);
+                  return left === null ? max : Math.max(max ?? 0, left);
+                }, null);
+                const title = batchLaunching
+                  ? `Queuing ${selectedProjectFileItems.length} DQ runs…`
+                  : total === 0
+                  ? "Runs queued — processing in background"
+                  : !finished
+                  ? `Processing — ${completed + failed} / ${total} done${failed ? ` (${failed} failed)` : ""}`
+                  : failed === 0
+                  ? `All ${total} runs completed`
+                  : completed === 0
+                  ? `${failed === 1 ? "The run" : `All ${failed} runs`} failed`
+                  : `Finished — ${completed} completed, ${failed} failed`;
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className={`font-semibold ${finished && failed ? "text-red-700" : "text-gray-800"}`}>{title}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          Files are checked one after another (the local AI model handles one file at a time), about 1 minute per column.
+                        </p>
+                        {!finished && (
+                          <p className="text-xs text-blue-700 mt-0.5">
+                            You can leave this page: the runs continue, and Data Quality → this project → <b>View progress</b> shows them again.
+                          </p>
+                        )}
                       </div>
-                      <span className="text-sm text-gray-700 flex-1 min-w-0 truncate">📄 {row.filename}</span>
-                      <span className={`text-xs font-medium px-2 py-0.5 rounded-full capitalize whitespace-nowrap ${
-                        row.status === "completed" ? "bg-green-100 text-green-700" :
-                        row.status === "failed"    ? "bg-red-100 text-red-700" :
-                        row.status === "running"   ? "bg-blue-100 text-blue-700" :
-                        row.status === "queuing"   ? "bg-yellow-100 text-yellow-700" :
-                        "bg-gray-100 text-gray-500"
-                      }`}>{row.status}</span>
+                      <div className="flex items-center gap-3 flex-shrink-0">
+                        {batchLeft !== null && (
+                          <div className="text-right" title="Estimated time until all files are finished">
+                            <p className="text-[10px] uppercase tracking-wider text-gray-400 font-mono">Time left</p>
+                            <p className="text-lg font-bold font-mono text-gray-800">≈ {formatDuration(batchLeft)}</p>
+                          </div>
+                        )}
+                        <Button size="sm" variant="outline" onClick={() => router.push(`/dq?project=${project_id}`)}>View DQ Runs</Button>
+                      </div>
                     </div>
-                  ))}
-                </div>
 
-                {batchRunFiles.length > 0 && batchRunFiles.every((r) => ["completed","failed"].includes(batchRunStatuses[r.id] ?? "")) && (
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 text-center">
-                    All runs finished. Open each run from the DQ list to review and approve.
+                    {/* Progress bar: columns checked across all files (finished files count in full) */}
+                    {total > 0 && (() => {
+                      const columnsAll = batchRunFiles.reduce((s, r) => s + (infoFor(r.id)?.columns_total ?? 0), 0);
+                      const columnsDone = batchRunFiles.reduce((s, r) => {
+                        const i = infoFor(r.id);
+                        return s + (DONE_STATUSES.includes(i?.status ?? "") ? (i?.columns_total ?? 0) : (i?.columns_done ?? 0));
+                      }, 0);
+                      const pct = finished ? 100 : columnsAll ? (100 * columnsDone) / columnsAll : (100 * (completed + failed)) / total;
+                      return (
+                        <div className="w-full bg-gray-100 rounded-full h-2">
+                          <div className={`h-2 rounded-full transition-all duration-700 ${finished && failed ? "bg-red-400" : "bg-blue-500"}`}
+                            style={{ width: `${pct}%` }} />
+                        </div>
+                      );
+                    })()}
+
+                    {/* Per-file rows: status, columns done, countdown, score or failure reason */}
+                    <div className="space-y-2">
+                      {(total > 0
+                        ? batchRunFiles.map((r) => ({ id: r.id, filename: r.filename, info: infoFor(r.id) }))
+                        : selectedProjectFileItems.map((f) => ({ id: f.id, filename: f.original_filename, info: undefined }))
+                      ).map((row) => (
+                        <RunProgressRow key={row.id} filename={row.filename} info={row.info} now={now} />
+                      ))}
+                    </div>
+
+                    {finished && (failed === 0 ? (
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800 text-center">
+                        All runs finished. Open each run from the DQ list to review and approve.
+                      </div>
+                    ) : (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800 text-center">
+                        {failed} of {total} run{total > 1 ? "s" : ""} failed — see the reason under each file, fix it, then start a new DQ run for {failed > 1 ? "those files" : "that file"}.
+                        {completed > 0 && " The completed runs can be reviewed from the DQ list."}
+                      </div>
+                    ))}
                   </div>
-                )}
-              </div>
+                );
+              })()
             ) : (
               <div className="space-y-4 text-center">
                 <p className="text-gray-500 text-sm">
@@ -612,11 +718,16 @@ function DQWizardPage() {
               <Button onClick={handleLaunchRun} disabled={createRunMutation.isPending} className="mx-auto">
                 {createRunMutation.isPending ? "Starting…" : "Generate DQ Checks"}
               </Button>
+              {createRunMutation.isError && (
+                <div className="max-w-xl mx-auto text-left">
+                  <FailureBox info={launchFailure(createRunMutation.error)} />
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-5">
               <div className="flex flex-col items-center gap-3">
-                {runStatus?.status === "running" && (
+                {(runStatus?.status === "running" || !runStatus) && (
                   <div className="w-12 h-12 rounded-full border-4 border-blue-200 border-t-blue-600 animate-spin" />
                 )}
                 {runStatus?.status === "completed" && (
@@ -625,15 +736,33 @@ function DQWizardPage() {
                 {runStatus?.status === "failed" && (
                   <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-2xl">✗</div>
                 )}
-                <p className="font-medium text-gray-800">{runStatus?.message ?? "Queued…"}</p>
+                <p className={`font-medium ${runStatus?.status === "failed" ? "text-red-700" : "text-gray-800"}`}>
+                  {runStatus?.status === "failed" ? "The DQ run failed" : runStatus?.message ?? "Queued…"}
+                </p>
+                {(() => {
+                  const left = secondsLeft(runStatus ?? undefined, now);
+                  return left !== null ? (
+                    <p className="text-sm font-mono text-gray-600" title="Estimated time until the run is finished">
+                      Time left ≈ {formatDuration(left)}
+                    </p>
+                  ) : null;
+                })()}
                 {runStatus?.overall_score && (
                   <p className="text-3xl font-bold text-blue-600">{parseFloat(runStatus.overall_score).toFixed(1)}%</p>
                 )}
               </div>
-              <div className="bg-gray-100 rounded-full h-3 max-w-sm mx-auto overflow-hidden">
-                <div className="bg-blue-500 h-full transition-all duration-500 rounded-full"
-                  style={{ width: `${runStatus?.progress_pct ?? 0}%` }} />
-              </div>
+              {runStatus?.status !== "failed" && (
+                <div className="bg-gray-100 rounded-full h-3 max-w-sm mx-auto overflow-hidden">
+                  <div className="bg-blue-500 h-full transition-all duration-500 rounded-full"
+                    style={{ width: `${runStatus?.progress_pct ?? 0}%` }} />
+                </div>
+              )}
+              {runStatus?.status === "pending" && runStatus.will_retry && (
+                <p className="text-xs text-amber-700 text-center">{runStatus.error_title} — retrying automatically.</p>
+              )}
+              {runStatus?.status === "failed" && (
+                <div className="max-w-xl mx-auto"><FailureBox info={runStatus} /></div>
+              )}
             </div>
           )}
         </div>
@@ -766,7 +895,8 @@ function ResultsPanel({ run, onApprove, onReject, onRequestRevision, reviewing }
                     <td className="px-3 py-2">
                       <span className={`text-xs font-medium px-2 py-0.5 rounded ${
                         r.status === "pass" ? "bg-green-100 text-green-700" :
-                        r.status === "fail" ? "bg-red-100 text-red-700" : "bg-yellow-100 text-yellow-700"
+                        r.status === "fail" ? "bg-red-100 text-red-700" :
+                        r.status === "no_data" ? "bg-gray-100 text-gray-500" : "bg-yellow-100 text-yellow-700"
                       }`}>{r.status}</span>
                     </td>
                   </tr>
