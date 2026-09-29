@@ -521,11 +521,11 @@ database:
     included_test_project: "PRJ-2026-022 (fictitious test project, included in the final 2026-09-27 export at the user's request): metadata 32 attributes (TEST01-04, TEST04 header-only), DSR-2026-0007 + AICK + DPIA, 4 DQ runs (TEST04 failed 'No data found' on purpose); files in backend/shared_uploads/ and Dummy Data Source/PRJ-2026-022/."
   current_documented_counts:
     users: 113
-    projects: 9
-    data_owner_stewards: 16
-    data_sharing_requests: 7
-    ai_compliance_checklists: 7
-    dpia_records: 7
+    projects: 10
+    data_owner_stewards: 18
+    data_sharing_requests: 8
+    ai_compliance_checklists: 8
+    dpia_records: 8
     ropa_records: 5
     bapd_records: 6
     retention_policies: 8
@@ -534,7 +534,7 @@ database:
     dq_runs: 11
     dq_results: 372
     dq_findings: 98
-    audit_logs: 2641
+    audit_logs: 2804
   developer_rules:
     - "When the data changes, export with .\\export-sqlite.ps1 (consistent snapshot, rollback-journal mode) and commit backend/datagov.db, database/datagov.db and database/datagov_sqlite_dump.sql together with updated database/README.md counts."
     - "Do not copy the live WAL database file directly."

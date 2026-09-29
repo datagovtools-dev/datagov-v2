@@ -25,15 +25,15 @@ AI Governance Tools uses **SQLite**. This directory holds the bundled dataset.
 | `users` | 113 | Admin + team users; passwords bcrypt-hashed |
 | `roles` | 11 | Application roles (incl. `requester`); `permissions` empty, so built-in defaults apply |
 | `user_project_roles` | 17 | User to role / project assignments |
-| `projects` | 9 | See project list below |
-| `data_owner_stewards` | 16 | Data Steward + Data Owner per project |
-| `data_sharing_requests` | 7 | DSR-2026-0001 to DSR-2026-0006 |
-| `dsr_approvals` | 28 | 4-step serial approval records per DSR |
+| `projects` | 10 | See project list below |
+| `data_owner_stewards` | 18 | Data Steward + Data Owner per project |
+| `data_sharing_requests` | 8 | DSR-2026-0001 to DSR-2026-0006 |
+| `dsr_approvals` | 32 | 4-step serial approval records per DSR |
 | `data_sharing_agreements` | 0 | DSA attachments linked to DSRs |
-| `ai_compliance_checklists` | 7 | Auto-created from DSRs; 3-step serial approval |
-| `ai_checklist_approvals` | 21 | Approval step records per AICK |
-| `dpia_records` | 7 | DPIA-2026-0001 to DPIA-2026-0006; 2-step approval |
-| `dpia_approvals` | 14 | Approval step records per DPIA |
+| `ai_compliance_checklists` | 8 | Auto-created from DSRs; 3-step serial approval |
+| `ai_checklist_approvals` | 24 | Approval step records per AICK |
+| `dpia_records` | 8 | DPIA-2026-0001 to DPIA-2026-0006; 2-step approval |
+| `dpia_approvals` | 16 | Approval step records per DPIA |
 | `ropa_records` | 5 | Record of Processing Activities (PRJ-2026-020) |
 | `bapd_records` | 6 | Data extermination/disposal requests |
 | `bapd_approvals` | 12 | Dual-approval step records per BAPD |
@@ -45,9 +45,9 @@ AI Governance Tools uses **SQLite**. This directory holds the bundled dataset.
 | `metadata_records` | 285 | Includes standard_format and distinct_values |
 | `project_source_files` | 21 | Excel/CSV upload tracking; stored path + retention metadata |
 | `ai_provider_configs` | 1 | AI/LLM settings (local Ollama, `llama3.2:3b`); no API key stored |
-| `notifications` | 24 | In-app notification messages |
+| `notifications` | 27 | In-app notification messages |
 | `notification_preferences` | 0 | Per-user notification opt-in/opt-out settings |
-| `audit_logs` | 2641 | Full activity history across all modules; rows cannot be updated or deleted (SQLite triggers) |
+| `audit_logs` | 2804 | Full activity history across all modules; rows cannot be updated or deleted (SQLite triggers) |
 
 ## Projects & Metadata Records
 
@@ -120,5 +120,6 @@ Merge rules:
 - When the data changes, commit `backend/datagov.db`, `database/datagov.db` and `database/datagov_sqlite_dump.sql` together and update the counts in this README in the same commit.
 - Refreshed again on 2026-09-27 for `data_owner_stewards.position`.
 - **Latest refresh (2026-09-27, evening):** the test project **PRJ-2026-022** "Retail Customer Churn Prediction" (fictitious data) is now part of the dataset with everything linked to it: owners (with Data Owner position), 32 metadata attributes with AI definitions (tables TEST01–TEST04; TEST04 is header-only on purpose), DSR-2026-0007 with its AICK, DPIA with governance activities, approvals, and 4 DQ runs (TEST01 94.2%, TEST02 91.7%, TEST03 93.5%, TEST04 failed "No data found" as expected). Its uploaded files are in `backend/shared_uploads/<project_id>/` (restored into the uploads volume on API start); the readable copies and the test guide are in `Dummy Data Source/PRJ-2026-022/`. `metadata_records.business_term` now keeps abbreviations in UPPERCASE where the term was still the automatic one (PRJ-2026-001 "IP Address", PRJ-2026-003 "PII Flag" ×3, PRJ-2026-019 "GPS Tracking Identifier", PRJ-2026-022 "NIK", "Amount IDR"). The three failed PRJ-2026-003 runs are still left out. The next new 2026 project gets `PRJ-2026-023`.
+- **Refresh 2026-09-29:** adds the sample project **PRJ-2026-023** "Credit Card Fraud Detection" (fictitious, entered in the UI from `Dummy Data Source/PRJ-2026-023/PRJ-2026-023_Filling_Guide.pdf`): project, team, Data Steward and Data Owner, DSR-2026-0008 with its AICK and approval steps, and the project's DPIA draft. No Metadata or uploaded files yet. The next new 2026 project gets `PRJ-2026-024`.
 - To load this dataset on a machine that already ran the stack: stop it, `docker volume rm datagov-v2_sqlite_data`, start again (the volume is only seeded from `backend/datagov.db` when empty).
 - Do not export failed DQ test runs or test projects into the baseline unless those records are intentionally part of it (remove them from the snapshot, following the foreign keys, not from the live database).
