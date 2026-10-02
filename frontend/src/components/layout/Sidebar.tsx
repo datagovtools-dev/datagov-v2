@@ -31,27 +31,21 @@ interface NavGroup {
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    items: [{ label: "Executive Dashboard", href: "/dashboard", icon: LayoutDashboard }],
-  },
-  {
-    title: "DISCOVER",
+    title: "MAIN",
     items: [
       { label: "Data Assets Catalog", href: "/projects", icon: FolderOpen },
-      { label: "Metadata Management", href: "/metadata", icon: Database },
-    ],
-  },
-  {
-    title: "GOVERN",
-    items: [
+      { label: "Executive Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { label: "Data Sharing (DSR)", href: "/dsr", icon: Share2 },
       { label: "AI/ML Checklist (AICK)", href: "/ai-checklist", icon: Bot },
       { label: "Privacy Impact (DPIA)", href: "/dpia", icon: ShieldCheck },
-      { label: "ROPA Records", href: "/ropa", icon: ClipboardList },
+      { label: "Metadata Management", href: "/metadata", icon: Database },
+      { label: "Data Quality Control", href: "/dq", icon: BarChart2 },
     ],
   },
+
   {
-    title: "QUALITY",
-    items: [{ label: "Data Quality Control", href: "/dq", icon: BarChart2 }],
+    title: "GOVERN",
+    items: [{ label: "ROPA Records", href: "/ropa", icon: ClipboardList }],
   },
   {
     title: "CONTROL",

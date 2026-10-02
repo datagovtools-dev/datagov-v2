@@ -12,55 +12,40 @@ Write-Host ""
 # 1. Check Docker is running
 try {
     docker info 2>&1 | Out-Null
-    Write-Host "[1/5] Docker is running" -ForegroundColor Green
+    Write-Host "[1/3] Docker is running" -ForegroundColor Green
 } catch {
-    Write-Host "[1/5] ERROR: Docker Desktop is not running. Please start it first." -ForegroundColor Red
+    Write-Host "[1/3] ERROR: Docker Desktop is not running. Please start it first." -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
 }
 
-# 2. Build and start all containers
+# 2. Build and start all containers (SQLite database is seeded from backend/datagov.db on first run)
 Write-Host ""
-Write-Host "[2/5] Starting containers (this takes ~3-5 min on first run)..." -ForegroundColor Yellow
+Write-Host "[2/3] Starting containers (this takes ~3-5 min on first run)..." -ForegroundColor Yellow
 docker compose -f docker-compose.dev.yml up -d --build
 if ($LASTEXITCODE -ne 0) {
     Write-Host "ERROR: docker compose failed. Check the output above." -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
 }
-Write-Host "[2/5] All containers started" -ForegroundColor Green
+Write-Host "[2/3] All containers started" -ForegroundColor Green
 
-# 3. Wait for database to be ready
+# 3. Wait for the API (it creates missing tables and the default users on startup)
 Write-Host ""
-Write-Host "[3/5] Waiting for database to be ready..." -ForegroundColor Yellow
+Write-Host "[3/3] Waiting for the API to be ready..." -ForegroundColor Yellow
 $retries = 0
 do {
     Start-Sleep -Seconds 3
     $retries++
-    $result = docker compose -f docker-compose.dev.yml exec -T db pg_isready -U ag_user -d ag_db 2>&1
-} while ($result -notmatch "accepting connections" -and $retries -lt 20)
+    $ok = $false
+    try { $ok = (Invoke-WebRequest -Uri "http://localhost:8000/health" -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200 } catch {}
+} while (-not $ok -and $retries -lt 40)
 
-if ($retries -ge 20) {
-    Write-Host "WARNING: Database may not be ready yet. Continuing anyway..." -ForegroundColor Yellow
+if ($ok) {
+    Write-Host "[3/3] API ready" -ForegroundColor Green
 } else {
-    Write-Host "[3/5] Database ready" -ForegroundColor Green
+    Write-Host "WARNING: API is not responding yet. Check: docker compose -f docker-compose.dev.yml logs api" -ForegroundColor Yellow
 }
-
-# 4. Run database migrations
-Write-Host ""
-Write-Host "[4/5] Running database migrations..." -ForegroundColor Yellow
-docker compose -f docker-compose.dev.yml exec -T api alembic upgrade head
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "WARNING: Migration may have already been applied or failed. Check logs." -ForegroundColor Yellow
-} else {
-    Write-Host "[4/5] Migrations applied" -ForegroundColor Green
-}
-
-# 5. Seed admin user
-Write-Host ""
-Write-Host "[5/5] Creating admin user..." -ForegroundColor Yellow
-docker compose -f docker-compose.dev.yml exec -T api python scripts/seed_admin.py
-Write-Host "[5/5] Admin user ready" -ForegroundColor Green
 
 # 6. Pull Ollama model in background
 Write-Host ""

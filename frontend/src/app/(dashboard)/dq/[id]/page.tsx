@@ -3,88 +3,38 @@
 import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronDown, ChevronUp } from "lucide-react";
+import { ChevronLeft } from "lucide-react";
 import { api } from "@/lib/api";
+import { ProjectInfoStrip } from "@/components/details/ProjectInfoStrip";
+import {
+  AttributeScores,
+  buildSummaryCards,
+  DimensionChips,
+  DQ_DIMENSIONS,
+  ExportMenu,
+  exportRuleRow,
+  KpiRows,
+  reportRows,
+  RulesTable,
+  ScoreLegend,
+  type DQResultItem,
+} from "@/components/dq/DQReportParts";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { toast } from "@/components/ui/Toast";
 import { DetailSkeleton } from "@/components/ui/LoadingState";
 import { formatDate, formatDateTime } from "@/lib/utils";
+import {
+  exportDQRulesExcel,
+  exportDQRulesPDF,
+  fileNamePart,
+  type DQRulesExport,
+  type ExportOwner,
+  type ExportProject,
+} from "@/lib/dqExport";
 
 type DQDetailTab = "score" | "rules" | "findings" | "archive";
-
-interface DQResultItem {
-  id: string;
-  check_name: string;
-  check_type: string;
-  column_name: string | null;
-  status: string;
-  actual_value: string | null;
-  row_count: number | null;
-  failed_count: number | null;
-  details: Record<string, unknown> | null;
-  business_rules: string | null;
-  regex_pattern: string | null;
-  ai_model: string | null;
-  regex_version: string | null;
-  column_category: string | null;
-  findings: Array<{
-    id: string;
-    severity: string;
-    description: string;
-    recommendation: string | null;
-    status: string;
-  }>;
-}
-
-const DQ_DIMENSIONS = ["completeness", "consistency", "uniqueness", "latency"] as const;
-type DQDimension = (typeof DQ_DIMENSIONS)[number];
-
-function ScoreBar({ value }: { value: number }) {
-  const color =
-    value >= 90 ? "bg-emerald-600" : value >= 70 ? "bg-amber-600" : "bg-rose-600";
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 bg-slate-100 rounded-md h-2 overflow-hidden">
-        <div className={`h-full rounded-md transition-all ${color}`} style={{ width: `${value}%` }} />
-      </div>
-      <span
-        className={`text-xs font-mono font-bold w-12 text-right tabular-nums ${
-          value >= 90 ? "text-emerald-700" : value >= 70 ? "text-amber-700" : "text-rose-700"
-        }`}
-      >
-        {value.toFixed(1)}%
-      </span>
-    </div>
-  );
-}
-
-function DimLabel({ dim }: { dim: string }) {
-  const labels: Record<string, string> = {
-    completeness: "Completeness",
-    consistency: "Consistency",
-    uniqueness: "Uniqueness",
-    latency: "Latency",
-  };
-  return <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider block mb-1">{labels[dim] ?? dim}</span>;
-}
-
-function ExpandableText({ text, maxLen = 80 }: { text: string; maxLen?: number }) {
-  const [open, setOpen] = useState(false);
-  if (text.length <= maxLen) return <span>{text}</span>;
-  return (
-    <span>
-      {open ? text : `${text.slice(0, maxLen)}…`}
-      <button
-        className="ml-1 text-slate-700 hover:underline text-xs inline-flex items-center gap-0.5 font-mono"
-        onClick={() => setOpen((o) => !o)}
-      >
-        {open ? <><ChevronUp className="h-3 w-3" />less</> : <><ChevronDown className="h-3 w-3" />more</>}
-      </button>
-    </span>
-  );
-}
 
 export default function DQDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -99,9 +49,11 @@ export default function DQDetailPage() {
     queryFn: () =>
       api.get<{
         id: string;
+        project_id: string;
         run_name: string;
         dataset_name: string;
         dataset_location: string;
+        version: number | null;
         status: string;
         total_checks: number;
         passed_checks: number;
@@ -111,6 +63,7 @@ export default function DQDetailPage() {
         completed_at: string | null;
         triggered_by: string;
         created_at: string;
+        empty_attributes?: string[] | null;
         results: DQResultItem[];
         gcp_archive: {
           gcs_report_path: string | null;
@@ -151,8 +104,28 @@ export default function DQDetailPage() {
   });
 
   const rerunMutation = useMutation({
-    mutationFn: () => api.post<{ id: string }>(`/dq/${id}/rerun`, {}),
-    onSuccess: (data) => router.push(`/dq/${data.id}`),
+    mutationFn: () => api.post<{ id: string; version: number; project_id: string }>(`/dq/${id}/rerun`, {}),
+    // The new version runs in the background; this version stays visible (Data Quality table, Project Report)
+    // until it finishes, and the progress page shows its countdown
+    onSuccess: (data) => {
+      toast.success(`Version ${data.version} queued. Scores stay on this version until it finishes.`, { id: "dq-rerun" });
+      router.push(`/dq/progress/${data.project_id}`);
+    },
+    onError: (e: any) => {
+      toast.error(e.message || "Could not start the re-run", { id: "dq-rerun" });
+    },
+  });
+
+  // Project details for the export header (same queries/cache as ProjectInfoStrip)
+  const { data: project } = useQuery<ExportProject>({
+    queryKey: ["project", run?.project_id],
+    queryFn: () => api.get(`/projects/${run!.project_id}`),
+    enabled: !!run?.project_id,
+  });
+  const { data: owners = [] } = useQuery<ExportOwner[]>({
+    queryKey: ["metadata-owners", run?.project_id],
+    queryFn: () => api.get(`/metadata/owners/${run!.project_id}`),
+    enabled: !!run?.project_id,
   });
 
   if (isLoading) return <DetailSkeleton />;
@@ -163,28 +136,38 @@ export default function DQDetailPage() {
   const criticalFindings = allFindings.filter((f) => f.severity === "critical");
   const canReview = run.status === "completed" || run.status === "under_review";
 
-  // Group results by column for the Score tab
-  const byColumn = run.results.reduce<
-    Record<string, Partial<Record<DQDimension, number>>>
-  >((acc, r) => {
-    if (!r.column_name) return acc;
-    acc[r.column_name] = acc[r.column_name] ?? {};
-    if (r.actual_value) {
-      acc[r.column_name][r.check_type as DQDimension] = parseFloat(r.actual_value);
-    }
-    return acc;
-  }, {});
+  // Checks with their table and blank-attribute flag, and the KPI cards (shared with the project report)
+  const rows = reportRows(run);
+  const { summaryCards, metricCards } = buildSummaryCards(rows, { kind: "file" }, score);
 
-  // Determine which dimensions are present in this run
-  const presentDims = DQ_DIMENSIONS.filter((d) =>
-    run.results.some((r) => r.check_type === d)
-  );
+  // Dimensions present in this run (Rules tab filter chips)
+  const presentDims = DQ_DIMENSIONS.filter((d) => run.results.some((r) => r.check_type === d));
 
-  // Filtered results for Rules tab
-  const filteredResults = dimFilter
-    ? run.results.filter((r) => r.check_type === dimFilter)
-    : run.results;
+  // Filtered rows for the Rules tab
+  const filteredRows = dimFilter ? rows.filter((row) => row.r.check_type === dimFilter) : rows;
 
+  // Rules tab export: the rows shown (same values as the table) plus the page header
+  const rulesExport = (): DQRulesExport => {
+    const version = run.version != null ? String(run.version) : "—";
+    const shown = dimFilter ? `${dimFilter.charAt(0).toUpperCase()}${dimFilter.slice(1)} only` : "All dimensions";
+    const created = formatDateTime(run.created_at);
+    const completed = run.completed_at ? formatDateTime(run.completed_at) : "—";
+    return {
+      title: `Data Quality Rules Report — ${run.run_name}`,
+      subtitle: `${run.dataset_name} · Version ${version} · ${run.status.replace(/_/g, " ")} · Created ${created}`
+        + `${run.completed_at ? ` · Completed ${completed}` : ""} · Rules shown: ${shown}`,
+      infoRows: [
+        ["Run", run.run_name], ["Dataset", run.dataset_name], ["Version", version],
+        ["Status", run.status.replace(/_/g, " ")], ["Created", created], ["Completed", completed], ["Rules shown", shown],
+      ],
+      fileBase: `dq_rules_${project?.project_code ?? "project"}_${fileNamePart(run.dataset_name)}_v${version}_${new Date().toISOString().slice(0, 10)}`,
+      project,
+      owners,
+      summaryCards,
+      metricCards,
+      rows: filteredRows.map((row) => exportRuleRow(row)),
+    };
+  };
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -225,31 +208,11 @@ export default function DQDetailPage() {
         </div>
       </div>
 
-      {/* KPI cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          {
-            label: "Overall Score",
-            value: score !== null ? `${score.toFixed(1)}%` : "—",
-            color:
-              score !== null
-                ? score >= 90
-                  ? "text-emerald-700"
-                  : score >= 70
-                  ? "text-amber-700"
-                  : "text-rose-700"
-                : "text-slate-400",
-          },
-          { label: "Total Checks", value: run.total_checks, color: "text-slate-900" },
-          { label: "Passed", value: run.passed_checks, color: "text-emerald-700" },
-          { label: "Failed", value: run.failed_checks, color: "text-rose-700" },
-        ].map((kpi) => (
-          <div key={kpi.label} className="bg-white rounded-md border border-slate-200 p-3.5 shadow-2xs">
-            <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">{kpi.label}</p>
-            <p className={`text-xl font-bold font-mono tabular-nums ${kpi.color}`}>{kpi.value}</p>
-          </div>
-        ))}
-      </div>
+      {/* Project info strip — shown above the KPI cards for every tab */}
+      <ProjectInfoStrip projectId={run.project_id} />
+
+      {/* KPI cards: run summary, then average score per metric (N/A when the metric was not run) */}
+      <KpiRows summaryCards={summaryCards} metricCards={metricCards} />
 
       {/* Running indicator */}
       {(run.status === "pending" || run.status === "running") && (
@@ -296,141 +259,26 @@ export default function DQDetailPage() {
           {/* Score tab — per-column dimension bars */}
           {tab === "score" && (
             <div className="space-y-4">
-              {Object.entries(byColumn).map(([col, checks]) => (
-                <div key={col} className="space-y-1.5 p-3 rounded-md border border-slate-100 bg-slate-50/30">
-                  <p className="text-xs font-mono font-semibold text-slate-900">{col}</p>
-                  <div
-                    className={`grid gap-3.5 ${
-                      presentDims.length === 4
-                        ? "grid-cols-2 lg:grid-cols-4"
-                        : presentDims.length === 3
-                        ? "grid-cols-3"
-                        : "grid-cols-2"
-                    }`}
-                  >
-                    {presentDims.map((dim) => (
-                      <div key={dim}>
-                        <DimLabel dim={dim} />
-                        <ScoreBar value={checks[dim] ?? 0} />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              {Object.keys(byColumn).length === 0 && (
-                <p className="text-slate-400 text-xs text-center py-6 font-mono">No results recorded yet.</p>
-              )}
+              {rows.length > 0 && <ScoreLegend />}
+              <AttributeScores rows={rows} />
             </div>
           )}
 
           {/* Rules tab — full results table with business rules & regex */}
           {tab === "rules" && (
             <div>
-              {/* Dimension filter */}
-              <div className="flex gap-1.5 mb-3.5 flex-wrap">
-                <button
-                  onClick={() => setDimFilter("")}
-                  className={`text-[10px] font-mono px-2.5 py-1 rounded-md border transition-colors ${
-                    !dimFilter
-                      ? "bg-slate-900 text-white border-slate-900 font-semibold"
-                      : "text-slate-600 border-slate-200 hover:bg-slate-50"
-                  }`}
-                >
-                  All
-                </button>
-                {presentDims.map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setDimFilter(d)}
-                    className={`text-[10px] font-mono px-2.5 py-1 rounded-md border capitalize transition-colors ${
-                      dimFilter === d
-                        ? "bg-slate-900 text-white border-slate-900 font-semibold"
-                        : "text-slate-600 border-slate-200 hover:bg-slate-50"
-                    }`}
-                  >
-                    {d}
-                  </button>
-                ))}
+              {/* Dimension filter + export (exports the rows shown, with the page header) */}
+              <div className="flex items-start justify-between gap-3 mb-3.5">
+              <DimensionChips dims={presentDims} value={dimFilter} onChange={setDimFilter} />
+                <ExportMenu
+                  disabled={filteredRows.length === 0}
+                  title="Exports the rules shown (all or the selected dimension) with the project info and score cards"
+                  onExcel={() => exportDQRulesExcel(rulesExport())}
+                  onPdf={() => exportDQRulesPDF(rulesExport())}
+                />
               </div>
 
-              <div className="overflow-x-auto rounded-md border border-slate-200">
-                <table className="min-w-full text-xs divide-y divide-slate-100">
-                  <thead className="bg-slate-50 text-[10px] uppercase font-mono text-slate-500 border-b border-slate-200">
-                    <tr>
-                      <th className="px-3 py-2 text-left">Column</th>
-                      <th className="px-3 py-2 text-left">Dimension</th>
-                      <th className="px-3 py-2 text-left">Score</th>
-                      <th className="px-3 py-2 text-left">Business Rules</th>
-                      <th className="px-3 py-2 text-left">Regex Pattern</th>
-                      <th className="px-3 py-2 text-left">Model</th>
-                      <th className="px-3 py-2 text-left">Regex Version</th>
-                      <th className="px-3 py-2 text-left">Complexity</th>
-                      <th className="px-3 py-2 text-left">Reasoning</th>
-                      <th className="px-3 py-2 text-left">Rows</th>
-                      <th className="px-3 py-2 text-left">Failed</th>
-                      <th className="px-3 py-2 text-left">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {filteredResults.map((r) => (
-                      <tr key={r.id} className="hover:bg-slate-50">
-                        <td className="px-3 py-2 font-mono text-xs text-slate-900">{r.column_name ?? "—"}</td>
-                        <td className="px-3 py-2 capitalize font-mono text-xs text-slate-700">{r.check_type}</td>
-                        <td className="px-3 py-2 font-mono font-semibold tabular-nums text-slate-900">
-                          {r.actual_value ? `${parseFloat(r.actual_value).toFixed(1)}%` : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-slate-600 max-w-xs text-xs">
-                          {r.business_rules ? (
-                            <ExpandableText text={r.business_rules} />
-                          ) : (
-                            <span className="text-slate-300 font-mono">—</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 font-mono text-xs max-w-xs text-slate-700">
-                          {r.regex_pattern ? (
-                            <ExpandableText text={r.regex_pattern} maxLen={40} />
-                          ) : (
-                            <span className="text-slate-300 font-mono">—</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-xs font-mono text-slate-500">
-                          {r.ai_model ?? "—"}
-                        </td>
-                        <td className="px-3 py-2 text-xs font-mono text-slate-500">
-                          {r.regex_version ?? "—"}
-                        </td>
-                        <td className="px-3 py-2 text-xs font-mono text-slate-500">
-                          {r.details?.complexity ? String(r.details.complexity) : "—"}
-                        </td>
-                        <td className="px-3 py-2 text-slate-600 max-w-xs text-xs">
-                          {r.details?.reasoning ? (
-                            <ExpandableText text={String(r.details.reasoning)} />
-                          ) : (
-                            <span className="text-slate-300 font-mono">—</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-slate-500 font-mono tabular-nums">
-                          {r.row_count?.toLocaleString()}
-                        </td>
-                        <td className="px-3 py-2 text-rose-700 font-mono tabular-nums font-semibold">{r.failed_count ?? 0}</td>
-                        <td className="px-3 py-2">
-                          <span
-                            className={`text-[10px] font-mono font-medium px-2 py-0.5 rounded-md border ${
-                              r.status === "pass"
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                                : r.status === "fail"
-                                ? "bg-rose-50 text-rose-700 border-rose-200"
-                                : "bg-amber-50 text-amber-700 border-amber-200"
-                            }`}
-                          >
-                            {r.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <RulesTable rows={filteredRows} />
             </div>
           )}
 

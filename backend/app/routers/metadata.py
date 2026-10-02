@@ -98,6 +98,7 @@ async def upsert_owner(
     if existing:
         existing.full_name = body.full_name
         existing.email = body.email
+        existing.position = body.position
         await db.commit()
         await db.refresh(existing)
         return existing
@@ -196,8 +197,6 @@ async def list_source_tables(
     source_type: str = Query(default="gcp"),
     gcp_project: str = Query(default=""),
     bq_dataset: str = Query(default=""),
-    connection_string: str = Query(default=""),
-    pg_schema: str = Query(default="public"),
 ) -> list[SourceTableInfo]:
     """List available tables and flag which are already documented."""
     # Fetch tables that already have records for this project
@@ -210,41 +209,7 @@ async def list_source_tables(
 
     tables: list[SourceTableInfo] = []
 
-    if source_type == "postgresql" and connection_string:
-        try:
-            import psycopg2
-            src_conn = psycopg2.connect(connection_string)
-            src_cur = src_conn.cursor()
-            src_cur.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = %s AND table_type = 'BASE TABLE' ORDER BY table_name",
-                (pg_schema,),
-            )
-            for (table_name,) in src_cur.fetchall():
-                src_cur.execute(
-                    "SELECT COUNT(*) FROM information_schema.columns "
-                    "WHERE table_schema = %s AND table_name = %s",
-                    (pg_schema, table_name),
-                )
-                col_count = src_cur.fetchone()[0]
-                try:
-                    src_cur.execute(f'SELECT COUNT(*) FROM "{pg_schema}"."{table_name}"')
-                    row_count = src_cur.fetchone()[0]
-                except Exception:
-                    row_count = None
-                full_name = f"{pg_schema}.{table_name}"
-                tables.append(SourceTableInfo(
-                    table_name=table_name,
-                    column_count=col_count,
-                    documented=full_name in documented_tables or table_name in documented_tables,
-                    row_count=row_count,
-                    source_type="postgresql",
-                ))
-            src_conn.close()
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"PostgreSQL error: {exc}") from exc
-
-    elif source_type == "gcp" and gcp_project and bq_dataset:
+    if source_type == "gcp" and gcp_project and bq_dataset:
         try:
             from google.cloud import bigquery
             client = bigquery.Client(project=gcp_project)
@@ -321,8 +286,6 @@ async def proceed_metadata(
             temp_file_key=body.temp_file_key,
             temp_file_keys=body.temp_file_keys,
             file_names=body.file_names,
-            connection_string=body.connection_string,
-            pg_schema=body.pg_schema or "public",
             project_name=project.project_name,
             project_year=getattr(project, "project_year", 2024),
             customer_name=getattr(project, "customer_name", ""),

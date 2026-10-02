@@ -1,11 +1,10 @@
 """
 Celery task: run_dq_generation
 Computes Completeness, Consistency (AI-powered via Ollama), Uniqueness,
-and Latency for a dataset. Supports GCP BigQuery, Excel, and PostgreSQL.
+and Latency for a dataset. Supports GCP BigQuery, Excel and project source files.
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
 import os
@@ -67,32 +66,50 @@ class DQAIConfig:
     base_url: str
     timeout_seconds: int
     api_key: str | None = None
+    parser_contract_version: str = "legacy_v1"
+    dq_policy: str = "guarded_legacy"
+    model_override_enabled: bool = True
+    repair_enabled: bool = True
+    minimum_score_delta: float = 0.0
+    fallback_enabled: bool = True
+    provider: str = "ollama"
 
 
-def _get_ai_config(db_url: str) -> DQAIConfig | None:
-    """Return enabled Ollama config from AI Setup, or None to use rule-based fallback."""
-    import psycopg2
+def _get_ai_config(db) -> DQAIConfig | None:
+    """Return the enabled configured AI provider, or None for rule-based fallback."""
+    from sqlalchemy import select
+
+    from app.models.ai_config import AIProviderConfig
     try:
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT model_name, base_url, timeout_seconds, encrypted_api_key "
-            "FROM ai_provider_configs "
-            "WHERE provider = 'ollama' AND enabled = true "
-            "ORDER BY updated_at DESC LIMIT 1"
-        )
-        row = cur.fetchone()
-        cur.close()
-        conn.close()
-        if row:
-            model_name, base_url, timeout_seconds, encrypted_api_key = row
-            if model_name and base_url:
-                return DQAIConfig(
-                    model_name=model_name,
-                    base_url=base_url.rstrip("/"),
-                    timeout_seconds=timeout_seconds or 60,
-                    api_key=decrypt_secret(encrypted_api_key),
-                )
+        cfg = db.scalars(
+            select(AIProviderConfig)
+            .where(AIProviderConfig.enabled.is_(True))
+            .order_by(AIProviderConfig.updated_at.desc())
+            .limit(1)
+        ).first()
+        if cfg and cfg.model_name and cfg.base_url:
+            return DQAIConfig(
+                provider=getattr(cfg, "provider", None) or "ollama",
+                model_name=cfg.model_name,
+                base_url=cfg.base_url.rstrip("/"),
+                timeout_seconds=cfg.timeout_seconds or 60,
+                api_key=decrypt_secret(cfg.encrypted_api_key),
+                parser_contract_version=getattr(cfg, "parser_contract_version", None) or "legacy_v1",
+                dq_policy=getattr(cfg, "dq_policy", None) or "guarded_legacy",
+                model_override_enabled=(
+                    getattr(cfg, "model_override_enabled", None)
+                    if getattr(cfg, "model_override_enabled", None) is not None else True
+                ),
+                repair_enabled=(
+                    getattr(cfg, "repair_enabled", None)
+                    if getattr(cfg, "repair_enabled", None) is not None else True
+                ),
+                minimum_score_delta=float(getattr(cfg, "minimum_score_delta", None) or 0.0),
+                fallback_enabled=(
+                    getattr(cfg, "fallback_enabled", None)
+                    if getattr(cfg, "fallback_enabled", None) is not None else True
+                ),
+            )
     except Exception as exc:
         logger.warning("Could not load AI config from DB: %s", exc)
     return None
@@ -114,35 +131,51 @@ def _call_ollama(
     base_url: str,
     timeout: int = 120,
     api_key: str | None = None,
+    provider: str = "ollama",
 ) -> str:
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+    if provider == "openrouter":
+        from app.services.ai_generation import openrouter_endpoint
+
+        endpoint = openrouter_endpoint(base_url, "chat/completions")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+    else:
+        endpoint = f"{base_url.rstrip('/')}/api/generate"
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        payload = {"model": model, "prompt": prompt, "stream": False}
     resp = requests.post(
-        f"{base_url.rstrip('/')}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": False},
+        endpoint,
+        json=payload,
         headers=headers,
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp.json().get("response", "")
+    data = resp.json()
+    if provider == "openrouter":
+        choices = data.get("choices") or []
+        message = choices[0].get("message") if choices else {}
+        content = message.get("content", "") if isinstance(message, dict) else ""
+        return content if isinstance(content, str) else ""
+    return data.get("response", "")
 
 
-def _extract_from_output(raw_text: str) -> dict:
-    result = {"business_rules": "", "regex_pattern": ""}
+def _extract_from_output(raw_text: str, contract_version: str = "legacy_v1") -> dict:
+    from app.services.ai_output_parser import parse_dq_output
 
-    m = re.search(r"HERE IS THE FINAL RESULT\.?\s*", raw_text, re.DOTALL | re.IGNORECASE)
-    if m:
-        raw_text = raw_text[m.end():]
-
-    raw_text = re.sub(r"\*\*", "", raw_text, flags=re.DOTALL)
-
-    clean = re.sub(r"\*|\s{2,}", "", raw_text, flags=re.DOTALL)
-    br_m = re.search(r"Business Rules:\s*(.*?)\s*RegEx Pattern:", clean, re.DOTALL)
-    result["business_rules"] = br_m.group(1).strip() if br_m else ""
-
-    rx_m = re.search(r"r'\^.*?\$'", raw_text, re.DOTALL)
-    result["regex_pattern"] = rx_m.group(0).strip() if rx_m else ""
-
-    return result
+    parsed = parse_dq_output(raw_text, contract_version=contract_version)
+    return {
+        "business_rules": parsed["business_rules"],
+        "regex_pattern": parsed["regex_pattern"],
+        "complexity": parsed["complexity"],
+        "reasoning": parsed["reasoning"],
+        "parser_warnings": parsed["parser_warnings"],
+    }
 
 
 def _clean_regex(raw_pattern: str) -> str:
@@ -224,8 +257,8 @@ def _compute_completeness(col: str, values: list[Any]) -> dict:
         "status": "pass" if score >= 95 else "warning" if score >= 80 else "fail",
         "business_rules": f"There should be no empty field for {col} in this table",
         "regex_pattern": None,
-        "ai_model": None,
         "regex_version": None,
+        "remarks": "-",
         "details": {"null_count": null_count, "non_null_count": non_null},
     }
 
@@ -243,10 +276,9 @@ def _compute_ai_consistency(
     random.seed(42)
     sample = sorted(random.sample(unique_vals, size) if size <= len(unique_vals) else unique_vals)
 
-    raw_text = ""
     extracted: dict = {"business_rules": "", "regex_pattern": ""}
     regex_str = ""
-    used_model = "rule-based"
+    remarks = "-"
 
     try:
         prompt = (
@@ -263,13 +295,14 @@ def _compute_ai_consistency(
             ai_config.base_url,
             ai_config.timeout_seconds,
             ai_config.api_key,
+            ai_config.provider,
         )
-        extracted = _extract_from_output(raw_text)
+        extracted = _extract_from_output(raw_text, contract_version=ai_config.parser_contract_version if ai_config else "legacy_v1")
         regex_str = _clean_regex(extracted.get("regex_pattern", ""))
-        used_model = ai_config.model_name
     except Exception as exc:
         logger.warning("AI consistency failed for '%s': %s — falling back to rule-based", col, exc)
         regex_str = _detect_format_regex(values) or ""
+        remarks = f"AI rule generation unavailable ({exc}); rule-based format regex used"
 
     matched, non_null_total, score = _apply_regex_score(values, regex_str)
     failed = non_null_total - matched
@@ -284,12 +317,9 @@ def _compute_ai_consistency(
         "status": "pass" if score >= 95 else "warning" if score >= 70 else "fail",
         "business_rules": extracted.get("business_rules") or "",
         "regex_pattern": regex_str,
-        "ai_model": used_model,
         "regex_version": "New Version",
-        "details": {
-            "matched": matched,
-            "raw_text": raw_text[:3000] if raw_text else "",
-        },
+        "remarks": remarks,
+        "details": {"matched": matched},
     }
 
 
@@ -309,8 +339,8 @@ def _compute_uniqueness(col: str, values: list[Any]) -> dict | None:
             "status": "pass",
             "business_rules": f"There should be no duplicated field for {col} in this table",
             "regex_pattern": None,
-            "ai_model": None,
             "regex_version": None,
+            "remarks": "-",
             "details": {"unique_count": unique, "total_non_null": total},
         }
     return None
@@ -382,8 +412,8 @@ def _compute_latency(col: str, values: list[Any]) -> dict:
         "status": "pass" if score >= 70 else "warning" if score >= 30 else "fail",
         "business_rules": f"Latest date in {col} should not be more than 14 days ago",
         "regex_pattern": None,
-        "ai_model": None,
         "regex_version": None,
+        "remarks": "-",
         "details": {
             "latest_date": str(latest) if latest else None,
             "days_since_latest": (today - latest).days if latest else None,
@@ -419,11 +449,17 @@ def _collect_findings(check: dict) -> list[dict]:
     return findings
 
 
+def _dq_model(ai_config: DQAIConfig | None) -> str:
+    """Model used for DQ rule generation: DQ_PRIMARY_MODEL, else Settings > AI Setup, else llama3.2:3b."""
+    return os.getenv("DQ_PRIMARY_MODEL") or (ai_config.model_name if ai_config else None) or "llama3.2:3b"
+
+
 def _analyse_dataframe(
     columns_data: dict[str, list[Any]],
     ai_config: DQAIConfig | None,
     table_name: str = "",
     project_name: str = "",
+    on_column_done: Any = None,
 ) -> tuple[list[dict], float]:
     """Return (check_results_list, overall_score) using the provided reference DQ method."""
     import pandas as pd
@@ -438,12 +474,21 @@ def _analyse_dataframe(
         or (ai_config.base_url if ai_config else None)
         or "http://ollama:11434"
     )
+    # Same model as Metadata (Settings > AI Setup, llama3.2:3b) unless DQ_* env vars override it;
+    # the second pass reuses it with the repair prompt.
+    primary_model = _dq_model(ai_config)
     config = ReferenceDQConfig(
         base_url=base_url,
-        timeout_seconds=int(os.getenv("DQ_OLLAMA_TIMEOUT_SECONDS") or (ai_config.timeout_seconds if ai_config else 120)),
+        timeout_seconds=max(int(os.getenv("DQ_OLLAMA_TIMEOUT_SECONDS") or (ai_config.timeout_seconds if ai_config else 120)), 300),
         api_key=ai_config.api_key if ai_config else os.getenv("DQ_OLLAMA_API_KEY"),
-        primary_model=os.getenv("DQ_PRIMARY_MODEL", "qwen2.5-coder:32b"),
-        secondary_model=os.getenv("DQ_SECONDARY_MODEL", "llama3.1:70b"),
+        primary_model=primary_model,
+        secondary_model=os.getenv("DQ_SECONDARY_MODEL") or primary_model,
+        parser_contract_version=ai_config.parser_contract_version if ai_config else "legacy_v1",
+        dq_policy=ai_config.dq_policy if ai_config else "guarded_legacy",
+        model_override_enabled=ai_config.model_override_enabled if ai_config else True,
+        repair_enabled=ai_config.repair_enabled if ai_config else True,
+        minimum_score_delta=ai_config.minimum_score_delta if ai_config else 0.0,
+        fallback_enabled=ai_config.fallback_enabled if ai_config else True,
     )
     df_raw = pd.DataFrame(columns_data)
     reference_df = run_reference_dq_for_dataframe(
@@ -451,6 +496,7 @@ def _analyse_dataframe(
         table_name=table_name,
         project_name=project_name,
         config=config,
+        on_column_done=on_column_done,
     )
     return result_rows_from_reference(reference_df)
 
@@ -458,34 +504,10 @@ def _analyse_dataframe(
 # ── Read data helpers ──────────────────────────────────────────────────────────
 
 def _read_excel(file_path: str, sheet_name: str | None = None) -> dict[str, list[Any]]:
-    import openpyxl
-    wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
-    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
-    rows = list(ws.iter_rows(values_only=True))
-    if not rows:
-        return {}
-    headers = [str(h) if h is not None else f"col_{i}" for i, h in enumerate(rows[0])]
-    data: dict[str, list[Any]] = {h: [] for h in headers}
-    for row in rows[1:]:
-        for header, val in zip(headers, row):
-            data[header].append(val)
-    return data
+    """Backward-compatible reader name; dispatches CSV and Excel by extension."""
+    from app.services.tabular_reader import read_tabular_columns
 
-
-def _read_postgres(connection_string: str, table_name: str, max_rows: int = 10_000) -> dict[str, list[Any]]:
-    import psycopg2
-    conn = psycopg2.connect(connection_string, connect_timeout=15)
-    cur = conn.cursor()
-    cur.execute(f'SELECT * FROM "{table_name}" LIMIT %s', (max_rows,))
-    cols = [desc[0] for desc in cur.description]
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    data: dict[str, list[Any]] = {col: [] for col in cols}
-    for row in rows:
-        for col, val in zip(cols, row):
-            data[col].append(val)
-    return data
+    return read_tabular_columns(file_path, sheet_name)
 
 
 def _read_bigquery(
@@ -534,39 +556,45 @@ def run_dq_generation(
     bq_table: str | None = None,
     temp_file_key: str | None = None,
     sheet_name: str | None = None,
-    postgres_connection_string: str | None = None,
-    postgres_table: str | None = None,
     stored_path: str | None = None,
 ) -> dict:
-    """Compute 4-dimension DQ checks and persist results via synchronous psycopg2."""
-    import psycopg2
+    """Compute 4-dimension DQ checks and persist results via a synchronous ORM session."""
+    from sqlalchemy import update
 
-    db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
-    if not db_url:
-        return {"error": "no DATABASE_URL"}
+    from app.database import get_sync_session
+    from app.models.dq import DQFinding, DQResult, DQRun
+    from app.models.project import Project
 
-    run_uuid = run_id
+    from app.services.dq_failures import (
+        CATEGORIES,
+        EmptyDataError,
+        UnsupportedSourceError,
+        classify_failure,
+        failure_detail,
+    )
+
+    run_uuid = UUID(run_id)
     started_at = datetime.now(timezone.utc)
+    ai_config = None
 
+    db = get_sync_session()
     try:
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
-        cur.execute(
-            "UPDATE dq_runs SET status='running', started_at=%s, celery_task_id=%s WHERE id=%s",
-            (started_at, self.request.id, run_uuid),
-        )
-        conn.commit()
-        cur.execute(
-            "SELECT r.dataset_name, COALESCE(p.project_name, '') "
-            "FROM dq_runs r LEFT JOIN projects p ON p.id = r.project_id "
-            "WHERE r.id = %s",
-            (run_uuid,),
-        )
-        run_meta = cur.fetchone() or ("", "")
-        current_dataset_name, current_project_name = run_meta
+        run = db.get(DQRun, run_uuid)
+        if run is None:
+            raise ValueError(f"DQ run {run_id} not found")
+        run.status = "running"
+        run.started_at = started_at
+        run.celery_task_id = self.request.id
+        run.columns_done = 0
+        run.error_category = None
+        run.error_message = None
+        db.commit()
+        project = db.get(Project, run.project_id) if run.project_id else None
+        current_dataset_name = run.dataset_name or ""
+        current_project_name = project.project_name if project else ""
 
         # Load AI config from DB
-        ai_config = _get_ai_config(db_url)
+        ai_config = _get_ai_config(db)
         if ai_config:
             logger.info("DQ run %s using AI model=%s base_url=%s", run_id, ai_config.model_name, ai_config.base_url)
         else:
@@ -580,17 +608,33 @@ def run_dq_generation(
             columns_data = _read_excel(file_path, sheet_name)
         elif source_type == "gcp" and gcp_project:
             columns_data = _read_bigquery(gcp_project, bq_dataset_name or "", bq_table or "", None)
-        elif source_type == "postgres" and postgres_connection_string and postgres_table:
-            columns_data = _read_postgres(postgres_connection_string, postgres_table)
         else:
-            raise ValueError(f"Unsupported source_type={source_type!r}")
+            raise UnsupportedSourceError(f"Unsupported source_type={source_type!r}")
+        if not columns_data or not any(len(values) for values in columns_data.values()):
+            raise EmptyDataError("The sheet has no header or no data rows")
+
+        from app.services.reference_dq import empty_attributes
+
+        run.columns_total = len(columns_data)
+        empty_cols = empty_attributes(columns_data)
+        db.commit()
+
+        def _progress(done: int, total: int) -> None:
+            db.execute(update(DQRun).where(DQRun.id == run_uuid).values(columns_done=done, columns_total=total))
+            db.commit()
 
         check_results, overall_score = _analyse_dataframe(
             columns_data,
             ai_config,
             table_name=current_dataset_name or dataset_location,
             project_name=current_project_name or "",
+            on_column_done=_progress,
         )
+
+        # Attributes that hold no real value at all: their checks are 'no_data', not failed
+        from app.services.reference_dq import mark_blank_attributes
+
+        mark_blank_attributes(check_results, empty_cols)
 
         passed = sum(1 for r in check_results if r["status"] == "pass")
         failed_checks = sum(1 for r in check_results if r["status"] == "fail")
@@ -599,43 +643,34 @@ def run_dq_generation(
 
         # Persist results
         for r in check_results:
-            cur.execute(
-                """INSERT INTO dq_results
-                   (id, run_id, check_name, check_type, column_name,
-                    status, actual_value, row_count, failed_count, details,
-                    business_rules, regex_pattern, ai_model, regex_version, column_category)
-                   VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s)
-                   RETURNING id""",
-                (
-                    run_uuid,
-                    r["check_name"], r["check_type"], r["column_name"],
-                    r["status"], str(r["score"]), r["row_count"], r["failed_count"],
-                    json.dumps(r.get("details", {})),
-                    r.get("business_rules"), r.get("regex_pattern"),
-                    r.get("ai_model"), r.get("regex_version"), r.get("column_category"),
-                ),
+            result = DQResult(
+                run_id=run_uuid,
+                check_name=r["check_name"], check_type=r["check_type"], column_name=r["column_name"],
+                data_type=r.get("data_type"), remarks=r.get("remarks") or "-",
+                status=r["status"], actual_value=str(r["score"]),
+                row_count=r["row_count"], failed_count=r["failed_count"],
+                details=r.get("details", {}),
+                business_rules=r.get("business_rules"), regex_pattern=r.get("regex_pattern"),
+                regex_version=r.get("regex_version"),
             )
-            result_id = cur.fetchone()[0]
+            db.add(result)
+            db.flush()  # assigns result.id for the findings below
 
             for f in r.get("findings", []):
-                cur.execute(
-                    """INSERT INTO dq_findings
-                       (id, result_id, severity, description, recommendation, status)
-                       VALUES (gen_random_uuid(), %s, %s, %s, %s, 'open')""",
-                    (result_id, f["severity"], f["description"], f.get("recommendation")),
-                )
+                db.add(DQFinding(
+                    result_id=result.id, severity=f["severity"], description=f["description"],
+                    recommendation=f.get("recommendation"), status="open",
+                ))
 
-        cur.execute(
-            """UPDATE dq_runs SET
-               status='completed', completed_at=%s,
-               total_checks=%s, passed_checks=%s, failed_checks=%s, overall_score=%s
-               WHERE id=%s""",
-            (completed_at, total, passed, failed_checks, overall_score, run_uuid),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+        run.status = "completed"
+        run.completed_at = completed_at
+        run.total_checks = total
+        run.passed_checks = passed
+        run.failed_checks = failed_checks
+        run.overall_score = overall_score
+        run.empty_attributes = empty_cols
+        db.commit()
+        db.close()
 
         try:
             from app.worker.tasks.notifications import send_workflow_notification
@@ -651,17 +686,27 @@ def run_dq_generation(
                 "total_checks": total, "passed": passed, "failed": failed_checks}
 
     except Exception as exc:
-        logger.error("DQ run %s failed: %s", run_id, exc)
+        category = classify_failure(exc)
+        detail = failure_detail(exc, category, model=_dq_model(ai_config))
+        # Retry only when the cause can go away by itself (AI service busy/down, database busy)
+        will_retry = CATEGORIES[category].transient and self.request.retries < self.max_retries
+        logger.error("DQ run %s failed (%s, retry=%s): %s", run_id, category, will_retry, exc)
+        if will_retry:
+            detail = (f"Attempt {self.request.retries + 1} of {self.max_retries + 1} failed; "
+                      f"retrying automatically in 60 s. {detail}")
         try:
-            conn2 = psycopg2.connect(db_url)
-            cur2 = conn2.cursor()
-            cur2.execute("UPDATE dq_runs SET status='failed' WHERE id=%s", (run_uuid,))
-            conn2.commit()
-            cur2.close()
-            conn2.close()
+            db.rollback()
+            db.execute(update(DQRun).where(DQRun.id == run_uuid).values(
+                status="pending" if will_retry else "failed", error_category=category, error_message=detail,
+            ))
+            db.commit()
         except Exception:
             pass
-        raise self.retry(exc=exc, countdown=60)
+        finally:
+            db.close()
+        if will_retry:
+            raise self.retry(exc=exc, countdown=60)
+        return {"run_id": run_id, "status": "failed", "error_category": category}
 
 
 @shared_task(
@@ -671,39 +716,27 @@ def run_dq_generation(
 )
 def archive_to_gcp(self, run_id: str) -> dict:
     """Write run summary to BigQuery and upload report to GCS."""
-    import psycopg2
+    from sqlalchemy import select
 
-    db_url = os.getenv("DATABASE_URL", "").replace("postgresql+asyncpg://", "postgresql://")
-    if not db_url:
-        return {"error": "no DATABASE_URL"}
+    from app.database import get_sync_session
+    from app.models.dq import DQGCPArchive, DQRun
 
-    run_uuid = run_id
+    run_uuid = UUID(run_id)
     try:
-        conn = psycopg2.connect(db_url)
-        cur = conn.cursor()
+        with get_sync_session() as db:
+            if db.get(DQRun, run_uuid) is None:
+                return {"error": "run not found"}
 
-        cur.execute(
-            "SELECT dataset_name, overall_score, total_checks, passed_checks, "
-            "failed_checks, completed_at FROM dq_runs WHERE id=%s",
-            (run_uuid,),
-        )
-        row = cur.fetchone()
-        if not row:
-            return {"error": "run not found"}
+            gcs_path = f"gs://dq-governance-outputs/{run_id}/dq_results.xlsx"
 
-        gcs_path = f"gs://dq-governance-outputs/{run_id}/dq_results.xlsx"
-
-        cur.execute(
-            """INSERT INTO dq_gcp_archives
-               (id, run_id, gcs_report_path, bq_dataset, bq_table, archive_status)
-               VALUES (gen_random_uuid(), %s, %s, 'dq_governance', 'run_summaries', 'completed')
-               ON CONFLICT (run_id)
-               DO UPDATE SET gcs_report_path=%s, archive_status='completed'""",
-            (run_uuid, gcs_path, gcs_path),
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
+            # Upsert on run_id (one archive row per run)
+            archive = db.scalars(select(DQGCPArchive).where(DQGCPArchive.run_id == run_uuid)).first()
+            if archive is None:
+                archive = DQGCPArchive(run_id=run_uuid, bq_dataset="dq_governance", bq_table="run_summaries")
+                db.add(archive)
+            archive.gcs_report_path = gcs_path
+            archive.archive_status = "completed"
+            db.commit()
 
         logger.info("DQ run %s archived to GCS=%s", run_id, gcs_path)
         return {"run_id": run_id, "gcs_path": gcs_path}

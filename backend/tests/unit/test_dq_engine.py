@@ -1,5 +1,4 @@
 """Unit tests for Data Quality engine helper functions."""
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -74,31 +73,18 @@ class TestDetectFormat:
 
 class TestAISetupWiring:
     def test_get_ai_config_reads_saved_setup_and_decrypts_key(self, monkeypatch):
-        class FakeCursor:
-            def execute(self, query):
-                self.query = query
-
-            def fetchone(self):
-                return ("gpt-oss:120b", "https://ollama.com/", 60, "encrypted-value")
-
-            def close(self):
-                return None
-
-        class FakeConnection:
-            def cursor(self):
-                return FakeCursor()
-
-            def close(self):
-                return None
-
-        monkeypatch.setitem(
-            sys.modules,
-            "psycopg2",
-            SimpleNamespace(connect=lambda _: FakeConnection()),
+        saved = SimpleNamespace(
+            model_name="gpt-oss:120b", base_url="https://ollama.com/",
+            timeout_seconds=60, encrypted_api_key="encrypted-value",
         )
+
+        class FakeSession:
+            def scalars(self, _query):
+                return SimpleNamespace(first=lambda: saved)
+
         monkeypatch.setattr(dq, "decrypt_secret", lambda value: "plain-key" if value == "encrypted-value" else None)
 
-        config = _get_ai_config("postgresql://example")
+        config = _get_ai_config(FakeSession())
 
         assert config == DQAIConfig(
             model_name="gpt-oss:120b",
@@ -134,6 +120,29 @@ class TestAISetupWiring:
         _call_ollama("prompt", "local-model", "http://ollama:11434", 120)
         assert calls["headers"] is None
 
+    def test_call_openrouter_uses_chat_completions_contract(self, monkeypatch):
+        calls = {}
+
+        def fake_post(url, json, headers, timeout):
+            calls.update({"url": url, "json": json, "headers": headers, "timeout": timeout})
+            return DummyResponse({"choices": [{"message": {"content": "ok"}}]})
+
+        monkeypatch.setattr(dq.requests, "post", fake_post)
+
+        result = _call_ollama(
+            "prompt",
+            "openai/gpt-4o-mini",
+            "https://openrouter.ai/api/v1",
+            60,
+            "secret-key",
+            "openrouter",
+        )
+
+        assert result == "ok"
+        assert calls["url"] == "https://openrouter.ai/api/v1/chat/completions"
+        assert calls["json"]["messages"] == [{"role": "user", "content": "prompt"}]
+        assert calls["headers"]["Authorization"] == "Bearer secret-key"
+
 
 class TestConsistency:
     def test_ai_success_uses_configured_model_and_generated_rules(self, monkeypatch):
@@ -155,13 +164,13 @@ class TestConsistency:
             DQAIConfig("gpt-oss:120b", "https://ollama.com", 60, "secret-key"),
         )
 
-        assert result["ai_model"] == "gpt-oss:120b"
+        assert result["remarks"] == "-"
         assert "Must be an email address" in result["business_rules"]
         assert result["score"] == pytest.approx(100.0)
 
     def test_missing_ai_setup_falls_back_to_rule_based_consistency(self):
         result = _compute_ai_consistency("Email", "object", ["a@b.com", "c@d.org"], None)
-        assert result["ai_model"] == "rule-based"
+        assert "rule-based format regex used" in result["remarks"]
         assert result["regex_pattern"] == r"^[\w._%+\-]+@[\w.\-]+\.[a-zA-Z]{2,}$"
         assert result["score"] == pytest.approx(100.0)
 

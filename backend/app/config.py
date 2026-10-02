@@ -22,11 +22,15 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
     bcrypt_rounds: int = 12
     allowed_origins: str = "http://localhost:3000"
+    # Local-only UI testing escape hatch. It is disabled by default and is
+    # additionally gated by environment and the request Host in deps.py.
+    local_auth_bypass_enabled: bool = False
+    local_auth_bypass_email: str = ""
+    local_auth_bypass_hosts: str = "localhost,127.0.0.1,::1"
 
-    # Database
-    database_url: str
-    database_url_sync: str
-    database_null_pool: bool = False
+    # Database (SQLite; relative paths resolve from the backend working directory)
+    database_url: str = "sqlite+aiosqlite:///./datagov.db"
+    database_url_sync: str = "sqlite:///./datagov.db"
 
     # Redis
     redis_url: str = ""

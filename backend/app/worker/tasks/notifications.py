@@ -180,7 +180,7 @@ EVENT_TEMPLATES: dict[str, dict[str, str]] = {
         "body": (
             "The uploaded source files for project <strong>{project_name}</strong> "
             "will be permanently deleted on <strong>{expiry_date}</strong> "
-            "(30 days after the project end date).<br><br>"
+            "({retention_basis}).<br><br>"
             "If you need to retain these files, please download or re-upload them before the deletion date."
         ),
         "action_label": "View Project",
@@ -190,7 +190,7 @@ EVENT_TEMPLATES: dict[str, dict[str, str]] = {
         "subject": "Uploaded Source Files Deleted — {project_name}",
         "body": (
             "The uploaded source files for project <strong>{project_name}</strong> "
-            "have been automatically deleted as the 30-day retention period after the project end date has elapsed.<br><br>"
+            "have been automatically deleted as the retention period has elapsed ({retention_basis}).<br><br>"
             "The metadata attributes and definitions remain intact in the system."
         ),
         "action_label": "View Project",

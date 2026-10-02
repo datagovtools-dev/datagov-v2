@@ -14,10 +14,13 @@ import sys
 from datetime import date
 
 import httpx
-import psycopg2
-import psycopg2.extras
+from sqlalchemy import select, update
 
-DB_URL = os.environ["DATABASE_URL_SYNC"]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.database import get_sync_session  # noqa: E402
+from app.models.metadata import MetadataRecord  # noqa: E402
+from app.models.project import Project  # noqa: E402
+
 OLLAMA_URL = "http://ollama:11434/api/generate"
 MODEL = "llama3.2:3b"
 OPTIONS = {
@@ -131,20 +134,20 @@ def generate(prompt: str) -> str:
 # ── main ───────────────────────────────────────────────────────────────────────
 
 def main(dry_run: bool = False) -> None:
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    db = get_sync_session()
 
-    cur.execute("""
-        SELECT m.id, m.data_attribute, m.business_term, m.data_type,
-               m.data_domain_table, m.data_grouping, m.line_of_business,
-               m.distinct_values, m.standard_format, m.sample_data,
-               m.data_sensitivity, m.is_primary_key, m.is_nullable,
-               p.project_code
-        FROM metadata_records m
-        JOIN projects p ON p.id = m.project_id
-        ORDER BY p.project_code, m.data_domain_table, m.seq_no
-    """)
-    records = cur.fetchall()
+    m = MetadataRecord
+    records = db.execute(
+        select(
+            m.id, m.data_attribute, m.business_term, m.data_type,
+            m.data_domain_table, m.data_grouping, m.line_of_business,
+            m.distinct_values, m.standard_format, m.sample_data,
+            m.data_sensitivity, m.is_primary_key, m.is_nullable,
+            Project.project_code,
+        )
+        .join(Project, Project.id == m.project_id)
+        .order_by(Project.project_code, m.data_domain_table, m.seq_no)
+    ).mappings().all()
     total = len(records)
     print(f"\nRecords to process: {total}")
     print(f"Model: {MODEL}  |  dry_run={dry_run}\n{'─' * 70}")
@@ -167,23 +170,19 @@ def main(dry_run: bool = False) -> None:
 
         try:
             definition = generate(prompt)
-            cur.execute(
-                """UPDATE metadata_records
-                   SET business_definition = %s,
-                       definition_status   = 'ai_generated',
-                       updated_date        = %s
-                   WHERE id = %s""",
-                (definition, date.today(), rec["id"]),
-            )
-            conn.commit()
+            db.execute(update(m).where(m.id == rec["id"]).values(
+                business_definition=definition,
+                definition_status="ai_generated",
+                updated_date=date.today(),
+            ))
+            db.commit()
             processed += 1
             print(f"  {definition}")
         except Exception as exc:
             failed += 1
             print(f"  ERROR: {exc}", file=sys.stderr)
 
-    cur.close()
-    conn.close()
+    db.close()
     print(f"\n{'═' * 70}")
     print(f"Done. Processed: {processed}  Failed: {failed}  Total: {total}")
 

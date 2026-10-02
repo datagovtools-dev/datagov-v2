@@ -1,13 +1,14 @@
 version: "3.9"
 # ── LOCAL DEVELOPMENT — no SSL, direct ports, hot-reload ─────────────────────
 # Usage: docker compose -f docker-compose.dev.yml up
+# Database: SQLite file in the sqlite_data volume, seeded from backend/datagov.db
 
 networks:
   internal:
     driver: bridge
 
 volumes:
-  postgres_data:
+  sqlite_data:
   redis_data:
   ollama_data:
 
@@ -44,17 +45,20 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - sqlite_data:/data
     env_file: .env
     environment:
       - ENVIRONMENT=development
+      - DATABASE_URL=sqlite+aiosqlite:////data/datagov.db
+      - DATABASE_URL_SYNC=sqlite:////data/datagov.db
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks: [internal]
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >
+      sh -c "[ -f /data/datagov.db ] || cp /app/datagov.db /data/datagov.db;
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   # ── Celery Worker ─────────────────────────────────────────────────────────
   worker:
@@ -64,12 +68,14 @@ services:
     container_name: ag_worker_dev
     volumes:
       - ./backend:/app
+      - sqlite_data:/data
     env_file: .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/datagov.db
+      - DATABASE_URL_SYNC=sqlite:////data/datagov.db
     depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - api
+      - redis
     networks: [internal]
     restart: unless-stopped
     command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=2 -Q default,dq,metadata,notifications,exports
@@ -83,31 +89,14 @@ services:
     volumes:
       - ./backend:/app
     env_file: .env
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////data/datagov.db
+      - DATABASE_URL_SYNC=sqlite:////data/datagov.db
     depends_on:
       - worker
     networks: [internal]
     restart: unless-stopped
     command: celery -A app.worker.celery_app beat --loglevel=info
-
-  # ── PostgreSQL ────────────────────────────────────────────────────────────
-  db:
-    image: postgres:15-alpine
-    container_name: ag_db_dev
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: ag_db
-      POSTGRES_USER: ag_user
-      POSTGRES_PASSWORD: dev_password_123
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    networks: [internal]
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ag_user -d ag_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   # ── Redis ─────────────────────────────────────────────────────────────────
   redis:

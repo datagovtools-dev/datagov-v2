@@ -4,9 +4,29 @@ import * as React from "react";
 import { Sidebar } from "./Sidebar";
 import { TopNav } from "./TopNav";
 import { Footer } from "./Footer";
+import { useAuthStore } from "@/store/authStore";
 
 export function DashboardLayout({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = React.useState(false);
+
+  React.useEffect(() => {
+    // The backend bypass is local-host-only. Hydrate the UI identity only on
+    // local browsers; public/tunnel sessions must continue through login.
+    const hostname = window.location.hostname.toLowerCase();
+    if (!["localhost", "127.0.0.1", "::1"].includes(hostname)) return;
+
+    let active = true;
+    fetch("/api/v1/auth/me", { credentials: "include" })
+      .then(async (response) => {
+        if (!active || !response.ok) return;
+        const user = await response.json();
+        if (active) useAuthStore.getState().setAuth(user, "");
+      })
+      .catch(() => null);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900 relative">

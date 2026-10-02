@@ -4,20 +4,34 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, get_db
 from app.core.rbac import require_permission
-from app.models.project import Project
+from app.models.project import PROJECT_CODE_PATTERN, Project
 from app.models.user import AuditLog, User
 from app.schemas.project import (
-    PaginatedProjects, ProjectCreate, ProjectFiltersResponse,
-    ProjectListItem, ProjectOut, ProjectUpdate,
+    NextProjectCode, PaginatedProjects, ProjectCreate, ProjectFiltersResponse,
+    ProjectListItem, ProjectOut, ProjectUpdate, SourceFileRetentionOut,
 )
+from app.services.retention import project_retention
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 DB = Annotated[AsyncSession, Depends(get_db)]
+
+
+async def next_project_code(db: AsyncSession, year: int) -> str:
+    """Next Project ID for a year: PRJ-<year>-<highest used sequence + 1>, starting at 001."""
+    codes = (await db.execute(
+        select(Project.project_code).where(Project.project_code.like(f"PRJ-{year:04d}-%"))
+    )).scalars().all()
+    used = [int(m.group(2)) for c in codes if c and (m := PROJECT_CODE_PATTERN.match(c))]
+    seq = max(used, default=0) + 1
+    if seq > 999:
+        raise HTTPException(status_code=409, detail=f"No Project IDs left for {year} (PRJ-{year}-999 is used)")
+    return f"PRJ-{year:04d}-{seq:03d}"
 
 
 @router.get("", response_model=PaginatedProjects)
@@ -83,6 +97,16 @@ async def get_filters(
     return ProjectFiltersResponse(years=years, categories=categories, clients=clients)
 
 
+@router.get("/next-code", response_model=NextProjectCode)
+async def get_next_project_code(
+    db: DB,
+    _: Annotated[User, Depends(require_permission("project:create"))],
+    year: int = Query(ge=1000, le=9999),
+) -> NextProjectCode:
+    """Preview of the Project ID the next new project for this year will receive."""
+    return NextProjectCode(project_year=year, project_code=await next_project_code(db, year))
+
+
 @router.get("/{project_id}", response_model=ProjectOut)
 async def get_project(
     project_id: uuid.UUID,
@@ -96,19 +120,41 @@ async def get_project(
     return project
 
 
+@router.get("/{project_id}/source-file-retention", response_model=SourceFileRetentionOut)
+async def get_source_file_retention(
+    project_id: uuid.UUID,
+    db: DB,
+    _: Annotated[User, Depends(require_permission("project:read"))],
+) -> SourceFileRetentionOut:
+    """Until when uploaded source files are kept: end date + 30 days, or + the approved ROPA retention period."""
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return SourceFileRetentionOut(**(await project_retention(db, project)).as_dict())
+
+
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
 async def create_project(
     body: ProjectCreate,
     db: DB,
     current_user: Annotated[User, Depends(require_permission("project:create"))],
 ) -> Project:
-    project = Project(**body.model_dump(), created_by=current_user.id)
-    db.add(project)
-    await db.flush()
+    # The Project ID is always assigned here; retry if a concurrent create took the same number
+    for attempt in range(3):
+        code = await next_project_code(db, body.project_year)
+        project = Project(**body.model_dump(), project_code=code, created_by=current_user.id)
+        db.add(project)
+        try:
+            await db.flush()
+            break
+        except IntegrityError:
+            await db.rollback()
+            if attempt == 2:
+                raise HTTPException(status_code=409, detail="Could not assign a Project ID, please try again")
     db.add(AuditLog(
         user_id=current_user.id, module="project", action="create",
         entity_type="project", entity_id=str(project.id),
-        details={"project_name": body.project_name, "customer_name": body.customer_name},
+        details={"project_code": code, "project_name": body.project_name, "customer_name": body.customer_name},
     ))
     await db.commit()
     await db.refresh(project)
@@ -126,11 +172,18 @@ async def update_project(
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    for field, value in body.model_dump(exclude_none=True).items():
+    changes = body.model_dump(exclude_none=True)
+    details = None
+    # The Project ID's year must match the project year: a year change assigns a new ID
+    if "project_year" in changes and changes["project_year"] != project.project_year:
+        old_code = project.project_code
+        project.project_code = await next_project_code(db, changes["project_year"])
+        details = {"project_code": {"from": old_code, "to": project.project_code}}
+    for field, value in changes.items():
         setattr(project, field, value)
     db.add(AuditLog(
         user_id=current_user.id, module="project", action="update",
-        entity_type="project", entity_id=str(project_id),
+        entity_type="project", entity_id=str(project_id), details=details,
     ))
     await db.commit()
     await db.refresh(project)

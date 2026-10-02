@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { toast } from "@/components/ui/Toast";
 
 interface AISettings {
@@ -20,6 +21,14 @@ interface AISettings {
   model_name: string;
   timeout_seconds: number;
   batch_size: number;
+  parser_contract_version: string;
+  metadata_contract_version: string;
+  dq_policy: string;
+  model_override_enabled: boolean;
+  repair_enabled: boolean;
+  minimum_score_delta: number;
+  metadata_validation: string;
+  fallback_enabled: boolean;
   api_key_configured: boolean;
   api_key_last4: string | null;
   updated_at: string | null;
@@ -37,10 +46,23 @@ const DEFAULT_FORM = {
   provider: "ollama",
   mode: "cloud",
   enabled: false,
-  base_url: "https://ollama.com",
-  model_name: "gpt-oss:120b",
+  base_url: "https://ollama.com/api",
+  model_name: "gemma4:31b-cloud",
   timeout_seconds: 60,
   batch_size: 5,
+  parser_contract_version: "legacy_v1",
+  metadata_contract_version: "metadata_v1",
+  dq_policy: "guarded_legacy",
+  model_override_enabled: true,
+  repair_enabled: true,
+  minimum_score_delta: 0,
+  metadata_validation: "strict",
+  fallback_enabled: true,
+};
+
+const PROVIDER_DEFAULTS: Record<string, { base_url: string; model_name: string }> = {
+  ollama: { base_url: "https://ollama.com/api", model_name: "gemma4:31b-cloud" },
+  openrouter: { base_url: "https://openrouter.ai/api/v1", model_name: "openai/gpt-4o-mini" },
 };
 
 export default function AISettingsPage() {
@@ -65,6 +87,14 @@ export default function AISettingsPage() {
       model_name: data.model_name,
       timeout_seconds: data.timeout_seconds,
       batch_size: data.batch_size,
+      parser_contract_version: data.parser_contract_version || "legacy_v1",
+      metadata_contract_version: data.metadata_contract_version || "metadata_v1",
+      dq_policy: data.dq_policy || "guarded_legacy",
+      model_override_enabled: data.model_override_enabled ?? true,
+      repair_enabled: data.repair_enabled ?? true,
+      minimum_score_delta: data.minimum_score_delta ?? 0,
+      metadata_validation: data.metadata_validation || "strict",
+      fallback_enabled: data.fallback_enabled ?? true,
     });
   }, [data]);
 
@@ -115,7 +145,9 @@ export default function AISettingsPage() {
   });
 
   const configured = data?.api_key_configured && !clearKey;
-  const statusReady = form.enabled && (configured || !!apiKey.trim());
+  const cloudRoute = form.provider === "openrouter" || form.mode === "cloud" || /ollama\.com/i.test(form.base_url);
+  const statusReady = form.enabled && (!cloudRoute || configured || !!apiKey.trim());
+  const providerLabel = form.provider === "openrouter" ? "OpenRouter" : "Ollama";
 
   return (
     <div className="space-y-4">
@@ -128,7 +160,7 @@ export default function AISettingsPage() {
           </div>
           <h1 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900 mt-0.5">AI Setup &amp; LLM Provider</h1>
           <p className="text-xs text-slate-500 font-mono mt-0.5">
-            Configure the local or cloud Ollama provider used for Metadata definitions and DQ AI rules
+            Configure the AI provider used for Metadata definitions and DQ AI rules
           </p>
         </div>
         <Badge variant={statusReady ? "success" : "warning"} className="text-[10px] font-mono">
@@ -139,9 +171,9 @@ export default function AISettingsPage() {
       <Card>
         <CardHeader className="pb-3 border-b border-slate-100">
           <div>
-            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Ollama Provider Configuration</CardTitle>
+            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">{providerLabel} Provider Configuration</CardTitle>
             <CardDescription className="text-xs text-slate-500">
-              Generation runs locally or via cloud endpoint; credentials are securely encrypted.
+              Generation runs through the selected provider; credentials are securely encrypted.
             </CardDescription>
           </div>
         </CardHeader>
@@ -174,20 +206,47 @@ export default function AISettingsPage() {
               </div>
 
               <div className="grid gap-3.5 md:grid-cols-2">
-                <Input label="Provider" value="Ollama" disabled className="h-8 text-xs font-mono" />
-                <Input label="Mode" value={form.mode || "Local / Host"} disabled className="h-8 text-xs font-mono" />
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-600 font-mono">Provider</label>
+                  <Select
+                    value={form.provider}
+                    onValueChange={(provider) => setForm((f) => ({
+                      ...f,
+                      provider,
+                      mode: provider === "openrouter" ? "cloud" : f.mode,
+                      base_url: PROVIDER_DEFAULTS[provider]?.base_url || f.base_url,
+                      model_name: PROVIDER_DEFAULTS[provider]?.model_name || f.model_name,
+                    }))}
+                  >
+                    <SelectTrigger className="h-8 text-xs font-mono"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="ollama">Ollama</SelectItem>
+                      <SelectItem value="openrouter">OpenRouter</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-600 font-mono">Mode</label>
+                  <Select value={form.mode} onValueChange={(value) => setForm((f) => ({ ...f, mode: value }))}>
+                    <SelectTrigger className="h-8 text-xs font-mono"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="cloud">Cloud</SelectItem>
+                      <SelectItem value="local">Local</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
                 <Input
                   label="Base URL"
                   value={form.base_url}
                   onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
-                  placeholder="https://ollama.com"
+                  placeholder={form.provider === "openrouter" ? "https://openrouter.ai/api/v1" : "https://ollama.com/api"}
                   className="h-8 text-xs font-mono"
                 />
                 <Input
                   label="Model"
                   value={form.model_name}
                   onChange={(e) => setForm((f) => ({ ...f, model_name: e.target.value }))}
-                  placeholder="gpt-oss:120b"
+                  placeholder={form.provider === "openrouter" ? "provider/model-id" : "gemma4:31b-cloud"}
                   className="h-8 text-xs font-mono"
                 />
                 <Input
@@ -212,6 +271,80 @@ export default function AISettingsPage() {
                 />
               </div>
 
+              <div className="rounded-md border border-slate-200 bg-slate-50/40 p-3.5 space-y-3">
+                <div>
+                  <div className="text-xs font-semibold text-slate-800 font-mono">Compatibility and output policy</div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    Controls that keep local and cloud results close to the existing DQ and Metadata behavior.
+                  </div>
+                </div>
+                <div className="grid gap-3.5 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-600 font-mono">Parser contract</label>
+                    <Select value={form.parser_contract_version} onValueChange={(value) => setForm((f) => ({ ...f, parser_contract_version: value }))}>
+                      <SelectTrigger className="h-8 text-xs font-mono"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="legacy_v1">Legacy v1</SelectItem></SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-600 font-mono">Metadata contract</label>
+                    <Select value={form.metadata_contract_version} onValueChange={(value) => setForm((f) => ({ ...f, metadata_contract_version: value }))}>
+                      <SelectTrigger className="h-8 text-xs font-mono"><SelectValue /></SelectTrigger>
+                      <SelectContent><SelectItem value="metadata_v1">Metadata v1</SelectItem></SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-600 font-mono">DQ policy</label>
+                    <Select value={form.dq_policy} onValueChange={(value) => setForm((f) => ({ ...f, dq_policy: value }))}>
+                      <SelectTrigger className="h-8 text-xs font-mono"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="legacy_compatible">Legacy compatible</SelectItem>
+                        <SelectItem value="guarded_legacy">Guarded legacy</SelectItem>
+                        <SelectItem value="profile_canonical">Profile canonical</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Input
+                    label="Minimum regex score improvement"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={form.minimum_score_delta}
+                    onChange={(e) => setForm((f) => ({ ...f, minimum_score_delta: Number(e.target.value) }))}
+                    hint="Percentage points"
+                    className="h-8 text-xs font-mono"
+                  />
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-semibold text-slate-600 font-mono">Metadata validation</label>
+                    <Select value={form.metadata_validation} onValueChange={(value) => setForm((f) => ({ ...f, metadata_validation: value }))}>
+                      <SelectTrigger className="h-8 text-xs font-mono"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="strict">Strict</SelectItem>
+                        <SelectItem value="warn">Warn only</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2 text-xs text-slate-700 font-mono">
+                  {([
+                    ["model_override_enabled", "Allow model regex override"],
+                    ["repair_enabled", "Enable DQ repair pass"],
+                    ["fallback_enabled", "Fallback when AI is unavailable"],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={form[key]}
+                        onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.checked }))}
+                        className="rounded border-slate-300"
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+
               <div className="rounded-md border border-slate-200 p-3.5 space-y-2.5">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 font-mono">
@@ -231,7 +364,7 @@ export default function AISettingsPage() {
                     setApiKey(e.target.value);
                     if (e.target.value) setClearKey(false);
                   }}
-                  placeholder={data?.api_key_configured ? "Leave blank to keep saved key" : "Paste Ollama Cloud API key"}
+                  placeholder={data?.api_key_configured ? "Leave blank to keep saved key" : `Paste ${providerLabel} API key`}
                   className="h-8 text-xs font-mono"
                 />
                 {data?.api_key_configured && (

@@ -1,12 +1,11 @@
 import os
-import pathlib
 
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("DATABASE_URL_SYNC", "sqlite:///:memory:")
-os.environ.setdefault("DATABASE_NULL_POOL", "true")
 
 from app.routers.settings import _to_status
+from app.schemas.settings import AISettingsUpdate
 
 
 def test_ai_status_exposes_batch_and_timeout_defaults():
@@ -16,10 +15,12 @@ def test_ai_status_exposes_batch_and_timeout_defaults():
     assert status.batch_size == 5
 
 
-def test_ai_config_rls_migration_keeps_browser_roles_revoked():
-    migration = pathlib.Path("alembic/versions/c7d8e9f0a1b2_allow_backend_ai_config_rls.py").read_text()
+def test_ai_settings_accepts_openrouter_provider():
+    settings = AISettingsUpdate(
+        provider="openrouter",
+        mode="cloud",
+        base_url="https://openrouter.ai/api/v1",
+        model_name="openai/gpt-4o-mini",
+    )
 
-    assert "CREATE POLICY rls_ai_provider_configs_backend_insert" in migration
-    assert "CREATE POLICY rls_ai_provider_configs_backend_update" in migration
-    assert "REVOKE ALL ON TABLE public.ai_provider_configs FROM anon" in migration
-    assert "REVOKE ALL ON TABLE public.ai_provider_configs FROM authenticated" in migration
+    assert settings.provider == "openrouter"

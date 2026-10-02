@@ -16,12 +16,49 @@
 project:
   name: "AI Governance Tools"
   app_version: "1.0.0"
-  repo: "https://github.com/datagovtools-dev/datagov-tools"
+  repo: "https://github.com/datagovtools-dev/datagov-v2"
   primary_branch: "main"
   validated_snapshot:
-    date: "2026-06-04"
-    latest_known_commit: "local-unpushed-dq-reference-method"
-    note: "Local development snapshot for project-based DQ reference method integration. Do not treat as pushed Git state until the team explicitly commits and pushes."
+    date: "2026-09-25"
+    latest_known_commit: "d6ed1e2 + local uncommitted changes"
+    note: "Local development snapshot: SQLite-only runtime, PostgreSQL removed, merged dataset, Project ID rule, llama3.2:3b installed. Do not treat as pushed Git state until the team explicitly commits and pushes."
+
+environments:
+  development:
+    status: "current"
+    database: "SQLite (WAL, busy_timeout 30000 ms) at /data/datagov.db in the sqlite_data volume"
+    compose_file: "docker-compose.yml"
+    schema_changes: "automatic on startup via sync_schema() (adds missing tables and nullable columns)"
+    backups: ".\\export-sqlite.ps1 snapshot into backend/datagov.db, database/datagov.db, database/datagov_sqlite_dump.sql"
+    accepted_limits:
+      - "One write at a time; heavy multi-user use is not supported."
+      - "Single Uvicorn process; API and worker on the same machine."
+      - "Column renames, drops and type changes need a one-off script."
+      - "Data access controlled by app RBAC only."
+      - "No point-in-time restore."
+  production:
+    status: "planned, not implemented"
+    database: "PostgreSQL 15 (Google Cloud SQL recommended)"
+    compose_file: "docker-compose.prod.yml (to be created; scripts/deploy-production.sh already refers to it)"
+    schema_changes: "Alembic with a new baseline migration generated from the current models (batch mode so it also runs on SQLite)"
+    backups: "Cloud SQL automated backups with point-in-time recovery"
+    switch_when: "Before go-live, or earlier if concurrent writes or more than one API server are needed."
+    changes_needed:
+      - "Add asyncpg and psycopg2-binary to backend/requirements.txt and pyproject.toml."
+      - "app/database.py: pooling options for PostgreSQL URLs; keep SQLite settings for SQLite URLs."
+      - "Re-introduce Alembic with one baseline migration; include the audit_logs immutability trigger."
+      - "Create docker-compose.prod.yml (no sqlite_data volume, DATABASE_URL from .env.production, API with 4 workers)."
+      - "Add a production PostgreSQL section to .env.example."
+      - "scripts/deploy-production.sh: run alembic upgrade head before starting services."
+      - "GitHub Actions: add a PostgreSQL migration + test job; make the staging/production deploy steps use docker-compose.prod.yml."
+      - "Load first production data (merged dataset via a SQLite-to-PostgreSQL copy script, or users and roles only)."
+      - "AI model: llama3.2:3b on CPU takes about 1 min per DQ column; for production volumes run Ollama on a GPU server or an Ollama-compatible cloud endpoint (Settings > AI Setup); a larger DQ model can be set with DQ_PRIMARY_MODEL / DQ_SECONDARY_MODEL without code changes."
+      - "Keep the uploads_data volume on persistent, backed-up storage: DQ runs and re-runs read the uploaded Excel files from it (the database stores only their path)."
+      - "Update README 'Environments', database/README.md and this file."
+    open_decisions:
+      - "Cloud SQL or a PostgreSQL container on the application server."
+      - "Merged dataset or clean start for first production data."
+      - "Database-level per-project security (RLS) or app RBAC only. Note: the old RLS policies were never effective because app.current_user_id was never set."
 
 local_runtime:
   source_of_truth: "Docker Compose"
@@ -41,6 +78,9 @@ local_runtime:
       image: "nginx:1.25-alpine"
       container_name: "ag_nginx"
       public_port: 80
+      upstream_resolution: "proxy_pass uses variables ($api_upstream = http://api:8000, $frontend_upstream = http://frontend:3000) with resolver 127.0.0.11 valid=10s, so nginx follows new container IPs after api/frontend restarts; do not go back to static upstream blocks (they keep the start-time IP -> 502 -> 'Unexpected token <' in the browser, fixed 2026-09-27)."
+      upload_limit: "client_max_body_size 25M (backend MAX_UPLOAD_SIZE_MB=20)"
+      timeouts: "proxy_read_timeout 120s for the API; 900s for /api/v1/metadata/regenerate* (AI definitions: batch_size x AI timeout_seconds, 5 x 120 s on CPU)"
     frontend:
       image_base: "node:20-alpine"
       container_name: "ag_frontend"
@@ -52,13 +92,15 @@ local_runtime:
       container_name: "ag_api"
       framework: "FastAPI 0.111.0"
       orm: "SQLAlchemy 2.0.30"
-      migrations: "Alembic 1.13.1"
+      sqlite_driver: "aiosqlite 0.20.0"
+      schema_changes: "no migration files; sync_schema() in app/database.py adds missing tables/columns on startup"
       pydantic: "2.7.1"
     database:
-      image: "postgres:15-alpine"
-      container_name: "ag_db"
-      database_name: "ag_db"
-      user: "ag_user"
+      engine: "sqlite"
+      live_file: "/data/datagov.db in the sqlite_data volume"
+      seed_file: "backend/datagov.db"
+      journal_mode: "WAL, busy_timeout 30000 ms"
+      audit_logs: "UPDATE/DELETE blocked by triggers created in sync_schema()"
     redis:
       image: "redis:7-alpine"
       container_name: "ag_redis"
@@ -74,18 +116,18 @@ local_runtime:
 commands:
   start_local: "docker compose up -d"
   stop_local: "docker compose down"
+  export_sqlite: ".\\export-sqlite.ps1"
+  reset_sqlite_to_repo_file: "docker volume rm datagov-v2_sqlite_data (with the stack stopped)"
   rebuild_frontend: "docker compose -f docker-compose.yml build frontend"
-  recreate_frontend_nginx: "docker compose -f docker-compose.yml up -d --force-recreate frontend nginx"
-  run_migrations: "docker exec ag_api alembic upgrade head"
-  seed_admin: "docker exec ag_api python -m scripts.seed_admin"
+  recreate_frontend: "docker compose -f docker-compose.yml up -d frontend (nginx needs no restart)"
+  reload_nginx_config: "docker exec ag_nginx nginx -t && docker exec ag_nginx nginx -s reload (only after editing nginx/nginx.conf)"
+  diagnose_502: "docker logs ag_nginx --tail 20; 'connect() failed (111)' to an IP other than the api's current IP means the running nginx has an old config -> reload it"
   pull_local_llm_model: "docker exec ag_ollama ollama pull llama3.2:3b"
-  pull_dq_primary_model: "docker compose -f docker-compose.yml exec -T ollama ollama pull qwen2.5-coder:32b"
-  pull_dq_secondary_model: "docker compose -f docker-compose.yml exec -T ollama ollama pull llama3.1:70b"
+  pull_local_llm_model_slow_network: "docker cp scripts/fetch-ollama-model.sh ag_ollama:/tmp/fetch-ollama-model.sh && docker exec ag_ollama sh /tmp/fetch-ollama-model.sh llama3.2 3b"
+  pull_dq_model: "Same as pull_local_llm_model (DQ uses llama3.2:3b since 2026-09-27; qwen2.5-coder:32b / llama3.1:70b are no longer needed)"
   list_ollama_models: "docker compose -f docker-compose.yml exec -T ollama ollama list"
-  refresh_database_dump: "docker exec ag_db pg_dump -U ag_user -d ag_db --no-owner --no-acl > database/ag_db_dump.sql"
-  restore_database_dump: "docker exec -i ag_db psql -U ag_user -d ag_db < database/ag_db_dump.sql"
   frontend_build_check: "docker compose -f docker-compose.yml build frontend"
-  backend_unit_tests: "docker exec ag_api pytest"
+  backend_unit_tests: "docker exec -e DATABASE_URL=sqlite+aiosqlite:///:memory: -e DATABASE_URL_SYNC=sqlite:///:memory: ag_api pytest tests/ --no-cov"
 
 secrets_policy:
   never_commit:
@@ -104,7 +146,7 @@ secrets_policy:
     rule: "Only last 4 characters may be displayed. Never log or dump plaintext API keys."
   database_dump_check:
     before_push:
-      - "Search database/ag_db_dump.sql for key-like values."
+      - "Search database/datagov_sqlite_dump.sql for key-like values."
       - "Confirm ai_provider_configs.encrypted_api_key is null or intentionally sanitized."
       - "Confirm database/README.md counts match the dump."
 
@@ -153,7 +195,7 @@ ai_settings:
   developer_warning:
     - "Do not tune active AI behavior through backend/app/config.py only."
     - "Metadata generation reads model/base URL from ai_provider_configs."
-    - "DQ reference method reads base URL/API key from ai_provider_configs when available, but its default model sequence is DQ-specific: qwen2.5-coder:32b then llama3.1:70b."
+    - "DQ reference method reads base URL, API key and model from ai_provider_configs (llama3.2:3b); DQ_PRIMARY_MODEL / DQ_SECONDARY_MODEL env vars override the model."
     - "Legacy env defaults may still exist for compatibility, but DB-backed settings are the active path."
 
 metadata_ai_definition_generation:
@@ -167,6 +209,12 @@ metadata_ai_definition_generation:
     recommended_model: "llama3.2:3b"
     prompt_variant: "Variant A"
     reason: "Validated for concise, plain-language, governance-friendly definitions."
+    local_install: "Installed 2026-09-25 in the ollama_data volume. On slow networks use scripts/fetch-ollama-model.sh (single resumable connection); plain `ollama pull` stalls."
+    local_performance: "CPU only (no GPU): ~60 s first answer (model load), ~15-20 s per definition, ~25-30 min for 'Generate All' on a 93-attribute project."
+    review_notes:
+      - "Definitions are only as good as the stored record fields: a wrong data_type (e.g. email stored as TIMESTAMP in PRJ-2026-001 test data) produces a wrong definition."
+      - "Rule 8 (privacy note) fires for 'Highly Confidential'/'Restricted' sensitivity and always says the data is personally identifiable; 'Confidential' does not trigger it."
+      - "The prompt exists in three copies that must stay in sync: app/services/ai_generation.py, app/worker/tasks/metadata.py (_worker_build_prompt), scripts/regenerate_all_definitions.py."
   ollama_options:
     temperature: 0.20
     top_p: 0.85
@@ -263,7 +311,7 @@ metadata_ai_definition_generation:
 
 data_quality_reference_method:
   purpose: "Run Data Quality from project Metadata source files using the provided Existing Data Quality reference method."
-  status: "Integrated locally on 2026-06-04; full successful execution requires the configured Ollama endpoint to provide the required DQ models."
+  status: "Integrated locally on 2026-06-04; runs on llama3.2:3b with the hybrid method since 2026-09-27 (validated end to end locally)."
   user_flow:
     overview_page: "Select a project first. The page then shows source tables/files already documented by Metadata."
     new_run_page: "Project -> Data -> Preview -> Generate -> Results -> Archive."
@@ -293,19 +341,43 @@ data_quality_reference_method:
       - "DQ_OLLAMA_TIMEOUT_SECONDS env var."
       - "Settings > AI Setup timeout_seconds."
       - "120 seconds."
+      - "The worker applies a minimum of 300 seconds for DQ calls."
   model_sequence:
+    changed_on: "2026-09-27: qwen2.5-coder:32b + llama3.1:70b replaced by llama3.2:3b (too heavy for local CPU computation)."
     primary:
-      default_model: "qwen2.5-coder:32b"
+      default_model: "Settings > AI Setup model_name (llama3.2:3b), then llama3.2:3b"
       env_override: "DQ_PRIMARY_MODEL"
-      use: "Generate initial business rules, regex pattern, complexity, and reasoning."
+      use: "Write business rules, complexity and reasoning around the data-profile regex; may correct the regex."
     secondary:
-      default_model: "llama3.1:70b"
+      default_model: "Same as primary"
       env_override: "DQ_SECONDARY_MODEL"
-      use: "Reprocess columns with Consistency Index below 70 and keep the better consistency result."
+      use: "Repair pass for columns with Consistency Index below 70 (REPAIR_PROMPT with the failing values); the better consistency result is kept."
+    ollama_options:
+      temperature: 0
+      num_ctx: 4096
+      num_predict: 400
+    speed_cpu: "About 35-150 s per column on CPU (average about 65 s), plus about 60 s on the first call while the model loads."
+    benchmark_2026_09_27: "18 test columns (15 from the HSO Splash rules index + e-mail, phone, plate): llama3.2:3b hybrid mean index 99.9, 100% wrong values rejected, 19.7 min; qwen2.5-coder:32b rules index mean 88.9 on the 15 HSO columns. Details: docs/data-quality-reference-method.md."
     operational_warning:
-      - "The metadata default model llama3.2:3b is not sufficient for this reference DQ method."
       - "If the configured Ollama endpoint does not have the selected model, /api/generate returns 404 and the file run fails."
-      - "The local Docker volume ollama_data must have enough storage for both large models, or the team should use an Ollama-compatible cloud endpoint."
+  hybrid_rule_generation:
+    reason: "A 3B model writes good business-rule text but is unreliable at regex syntax, so the regex is derived from the data and the model explains and may correct it."
+    data_profile_regex:
+      function: "profile_regex() in backend/app/services/reference_dq.py"
+      method: "Map each value to a shape (digits, upper/lower letters, literal separators); build the regex from the shapes covering >= 95% of rows (PROFILE_COVERAGE)."
+      style: "Same style as the qwen answers in the HSO Splash rules index: ^BPS_\\d{3}$, ^[A-Z]{3} [A-Z]{3}$, ^[A-Z]+( [A-Z]+)*$, ^(KAB\\.|KOTA) [A-Z]+( [A-Z]+)*$, ^[01]$, ^-?\\d+(\\.\\d+)?$, e-mail."
+      rare_shapes: "Shapes under 5% of rows are flagged as non-matching, not absorbed into the regex (intended: DQ should surface them)."
+      word_lengths: "Letter runs longer than 4 characters (names) get '+'; runs of 1-4 letters (codes such as AHM, JTG) keep their length (_CODE_LETTERS)."
+      category_lists: "<= 6 distinct one-word values (no digits, no spaces), different shapes, each repeated -> enumeration ^(-|AVG|MAX|Other|SUM)$; place names keep a shape."
+      integer_enumeration: "Only small codes (|n| < 100, <= 5 distinct) are enumerated; amounts get ^\\d+$."
+      real_data_validation: "2026-09-27 on the HSO sample data (1,685 columns with >= 2 real samples): FLOAT64 accepts all real values (qwen rejects real samples in 87 columns), INT64 190/239 identical to qwen, STRING leave-one-out 92.9%."
+    data_facts:
+      function: "data_facts() in backend/app/services/reference_dq.py"
+      method: "Plain-language facts on the same dominant rows: structure, distinct values (<= 10), number range, negatives, decimal places, capitalisation, length, characters used (numbers too: digits, '.', minus sign)."
+      reason: "A 3B model misreads regex syntax when explaining it (e.g. ^[135]$ as 'three digits'); rules are written from the facts."
+    prompt: "INIT_PROMPT: column name, type, samples, 'Facts measured on all values' and 'Regex derived from the data'; tasks Business Rules (a. structure/allowed values, b. characters, c. length/range/decimals, facts only), RegEx Pattern (repeat or correct), Complexity, Reasoning; output format unchanged (HERE IS THE FINAL RESULT.)."
+    regex_choice: "Model regex and profile regex are scored with the weighted index; the better one is stored and Remarks record the decision."
+    repair_prompt: "REPAIR_PROMPT: previous regex, up to 15 non-matching values and 10 matching values."
   required_python_packages:
     pandas: "2.2.2"
     numpy: "1.26.4"
@@ -319,7 +391,7 @@ data_quality_reference_method:
       status_mapping: "pass >= 95, warning >= 70, fail < 70 through reference mapper."
     consistency:
       rule_source: "AI-generated Business Rules from the reference prompt."
-      regex_source: "AI-generated RegEx Pattern from the reference prompt."
+      regex_source: "Data-profile regex, or the AI-corrected regex when it scores higher (see hybrid_rule_generation)."
       index: "Weighted regex match percentage against value counts."
       threshold_for_secondary_model: 70
       regex_requirement: "Regex must be compatible with Python regex/re semantics and use ^...$ anchors."
@@ -338,23 +410,54 @@ data_quality_reference_method:
         over_30_days_old: 0
   sample_selection:
     random_seed: 42
-    method: "Sample unique non-null values per column."
+    method: "_select_samples: shortest and longest unique values, one value per character class (digits, letters, space, punctuation), then random fill."
+    max_samples: 20
     unique_value_sample_size:
-      less_than_200: "Use all unique values."
-      less_than_500: "ceil(50% of unique values)."
-      up_to_5000: "ceil(30% of unique values)."
-      over_5000: "ceil(10% of unique values)."
+      less_than_200: "Use all unique values (capped at max_samples)."
+      less_than_500: "ceil(50% of unique values) (capped at max_samples)."
+      up_to_5000: "ceil(30% of unique values) (capped at max_samples)."
+      over_5000: "ceil(10% of unique values) (capped at max_samples)."
+    note: "The data-profile regex uses all value counts, so the small prompt sample does not limit regex coverage."
   result_mapping:
     dq_results_actual_value: "Reference Index rounded to 2 decimals."
+    dq_results_failed_count: "Completeness = empty rows; Consistency = rows not matching the regex (rows x (100 - index) / 100, empty rows included as in the template); Uniqueness/Latency = 1 when index < 70, else 0."
     dq_results_check_type: "Lowercase DQ Dimension."
     dq_results_business_rules: "Reference Business Rules."
     dq_results_regex_pattern: "Reference RegEx Pattern with r'...' wrapper stripped."
-    dq_results_ai_model: "Model used for the row."
+    removed_fields: "Model (ai_model), Category (column_category) and Raw Text (details.raw_text) are not stored or shown: not used in the real rules index (2026-09-25)."
     dq_results_regex_version: "New Version."
+    dq_results_data_type: "Reference Column Type (pandas dtype, e.g. object, int64, float64)."
+    dq_results_remarks: "Automated notes collected during generation (RemarkNotes in reference_dq.py): regex corrected by the model or data-profile regex kept (with both scores), invalid/missing AI regex, scientific-notation or ingest-time regex fallback, repair-pass outcome, >500,000-value skip, latest date for Latency. '-' when none."
+    dq_runs_version: "DQ update number per (project, dataset): first run 1, each re-run +1 (_next_run_version in app/routers/dq.py)."
+    rules_tab_columns: "Column, Data Type, Dimension, Score, Business Rules, Regex Pattern, Version, Regex Version, Complexity, Reasoning, Remarks, Rows, Failed, Status"
+    generate_step:
+      queue: "One worker, --concurrency=1: DQ files are checked one after another."
+      progress: "dq_runs.columns_done / columns_total (total read from the Excel header at run creation; done updated per column via on_column_done)."
+      eta: "GET /dq/{id}/status eta_seconds: running = columns_total x per_column - elapsed, per_column = (elapsed + 2 x 65 s) / (columns_done + 2) (ETA_PRIOR_COLUMNS, smooths the slow model-loading first column); before the first column: columns x 65 s + 60 s; queued = files ahead (last 24 h) + own columns x 65 s. The page counts down each second."
+      failure_reasons: "backend/app/services/dq_failures.py: classify_failure() -> category stored in dq_runs.error_category + error_message; status endpoint adds title, explanation, action. Categories: source_file_missing, file_unreadable, empty_data, ai_model_missing, ai_auth, ai_unreachable, ai_timeout, ai_error, database_busy, bigquery_error, unsupported_source, unexpected."
+      retry: "Only transient categories (ai_unreachable, ai_timeout, ai_error, database_busy) are retried (max 2, 60 s); status stays 'pending' with will_retry=true meanwhile."
+      missing_files: "/dq/project/{id}/sources returns file_available; Data step disables missing files; POST /dq returns 400 for a missing file."
+    project_report:
+      where: "Data Quality page > Source Tables & Status > 'Project Report' (shown when at least one table has runs); route /dq/project/[projectId]."
+      api: "GET /dq/project/{project_id}/report: per table (source_file_id, else dataset_name) the latest run with results (status completed/under_review/approved/rejected and results present); newer_run_status when a newer run failed or is running; tables_without_results."
+      cards: "Same 10 cards as the run page, combined over all tables (buildSummaryCards scope 'project'): checks summed, Overall/metric scores = average over all checks, Blank Attributes over all columns (table-qualified)."
+      tabs: "Score = per table section (version, checks, score, 'Open run') with its attribute bars; Rules = all rules with a Table column, table select + dimension chips, Export with Table column; Findings = all findings labelled with table and column."
+      shared_code: "frontend/src/components/dq/DQReportParts.tsx (cards, bars, rules table, summary numbers, export rows) used by dq/[id] and dq/project/[projectId]."
+    rules_export:
+      where: "DQ run page, Rules tab, Export button (Excel (.xlsx) / PDF), same pattern as the Metadata page."
+      code: "frontend/src/lib/dqExport.ts (exportDQRulesExcel, exportDQRulesPDF); data built by rulesExport() in dq/[id]/page.tsx from the same values the page shows."
+      content: "Title + run info (run, dataset, version, status, created, completed, rules shown), project info strip (7 fields), run summary cards and score-per-metric cards with explanations, then the Rules table (Column, Data Type, Dimension, Score, Business Rules, Regex Pattern, Version, Regex Version, Complexity, Reasoning, Remarks, Rows, Failed, Status)."
+      rows: "The rows shown: all dimensions, or only the selected dimension chip."
+      formats: "Excel: one sheet 'DQ Rules' (header block on top, rules table below). PDF: print window, A3 landscape; the browser's Save as PDF creates the file."
+    kpi_cards:
+      row_1: "Unit = metric checks (metric x attribute), counted in the page from the check statuses: Total Metric Checks = passed + warning + failed + no_data; Passed Checks = pass (index >= 95); Warning Checks = warning (70 <= index < 95); Failed Checks = fail (index < 70 on real values, creates a finding). Last card Blank Attributes = columns with no values, shown as 'blank / all columns' (their checks have status no_data). Each card shows a one-line explanation."
+      row_2: "Overall Score = average index of all checks (dq_runs.overall_score); Completeness / Consistency / Uniqueness / Latency Score = average actual_value of that check_type over the attributes that have it (computed in the page from run.results); 'N/A' with the reason when the run has no check of that type."
+      blank_null: "reference_dq.is_empty_value(): null/NaN/NaT, blank or whitespace, or placeholder text (null, none, nan, nat, n/a, na, #n/a, -, --, (blank), undefined; any case). empty_attributes() = columns where every value is empty -> dq_runs.empty_attributes (JSON); mark_blank_attributes() sets status 'no_data' on all their checks (not counted as passed/failed), adds the Completeness remark 'All N values are empty ...' and one finding per attribute. Scores unchanged (still in Overall Score). Observation is used because Completeness only counts true nulls (a column of 'NULL' texts scores 70-100%). Older runs: Completeness = 0% fallback, applied in the page."
+      check_statuses: "pass (>= 95), warning (70-95), fail (< 70 on real values), no_data (attribute has no values)."
+    score_tab: "4 fixed slots per attribute (Completeness, Consistency, Uniqueness, Latency); a dimension without a dq_results row shows a blank dashed bar 'N/A' with the reason on hover (Uniqueness only for fully unique columns, Latency only for date/time columns); a real 0 shows 0.0%."
     dq_results_details:
       - "reference_method"
       - "index"
-      - "raw_text"
       - "complexity"
       - "reasoning"
       - "total_unique"
@@ -366,9 +469,11 @@ data_quality_reference_method:
       - "reference_dq.py and dq.py compiled successfully with python -m py_compile."
       - "Frontend Docker build completed successfully after DQ UI changes."
       - "DQ overview and New DQ Run pages returned HTTP 200 through http://localhost."
-    blocked:
-      - "Full successful PRJ-001 DQ execution could not be validated locally because qwen2.5-coder:32b and llama3.1:70b are not installed and local disk capacity may be insufficient."
-      - "Observed failure mode: selected project file runs fail during Generate when Ollama returns 404 for missing model."
+      - "2026-09-27 llama3.2:3b end-to-end run via API + worker on PRJ002_Credit_Profile.xlsx (11 columns): completed, Version 2 -> 3 on re-run, 23 rules with every Rules tab field filled, about 1 min per column; test runs removed afterwards (snapshot restore)."
+      - "Backend tests 2026-09-27: 147 passed, 3 known failures in test_ai_generation.py (open item 11)."
+    known_limits:
+      - "Consistency counts empty rows as non-matching (template behaviour)."
+      - "The 3B model can still simplify a rule despite the facts; scores and regexes are not affected; data steward review recommended."
 
 metadata_standard_format:
   active_code_paths:
@@ -387,35 +492,58 @@ metadata_standard_format:
     command: "docker exec ag_api python -m scripts.reapply_standard_format"
     note: "Run this after changing classification logic so existing metadata rows are refreshed."
 
+business_rules:
+  project_id:
+    format: "PRJ-YYYY-NNN (YYYY = project_year, NNN = 3 digits from 001), e.g. PRJ-2026-001"
+    assigned_by: "system on create: highest NNN used for that year + 1 (next_project_code() in app/routers/projects.py)"
+    editable: "no; ProjectCreate/ProjectUpdate do not accept project_code, the UI field is read-only"
+    year_change: "changing project_year assigns the next ID for the new year (recorded in audit_logs)"
+    enforcement: "Project model @validates('project_code') rejects any other format"
+    preview_endpoint: "GET /api/v1/projects/next-code?year=YYYY"
+    tests: "backend/tests/integration/test_projects.py"
+
 database:
-  dump_file: "database/ag_db_dump.sql"
+  sqlite_file: "database/datagov.db (same file as backend/datagov.db)"
+  sqlite_dump_file: "database/datagov_sqlite_dump.sql"
   readme_file: "database/README.md"
   latest_refresh:
-    date: "2026-06-02"
-    source: "local Docker database container ag_db"
-    alembic_head: "b6c7d8e9f0a1"
-    note: "Not refreshed after the 2026-06-04 DQ reference method integration because full successful DQ execution was blocked by unavailable large Ollama models."
+    date: "2026-09-27"
+    source: "live SQLite snapshot (merged dataset of 2026-09-25 + schema/data changes of 2026-09-27)"
+    note: "See database/README.md 'Merge History' for merge rules (DSR/DPIA renumbering) and the Project ID rule (PRJ-YYYY-NNN, renamed IDs PRJ-2026-019/020/021)."
+    schema_changes_2026_09_27:
+      - "dq_runs: columns_total, columns_done, error_category, error_message, empty_attributes"
+      - "data_owner_stewards: position"
+    data_changes_2026_09_27:
+      - "users.position: company job titles for all users (no project-role labels); viewer = Internal Auditor"
+      - "metadata_records.business_term: acronyms in UPPERCASE where the term was still the automatic one (7 of 285: PRJ-2026-001 IP Address, PRJ-2026-003 PII Flag x3, PRJ-2026-019 GPS Tracking Identifier, PRJ-2026-022 NIK and Amount IDR). Done in the live database; included in the next export."
+    left_out_of_the_baseline:
+      - "3 failed PRJ-2026-003 DQ test runs (source files missing)"
+    included_test_project: "PRJ-2026-022 (fictitious test project, included in the final 2026-09-27 export at the user's request): metadata 32 attributes (TEST01-04, TEST04 header-only), DSR-2026-0007 + AICK + DPIA, 4 DQ runs (TEST04 failed 'No data found' on purpose); files in backend/shared_uploads/ and Dummy Data Source/PRJ-2026-022/."
   current_documented_counts:
     users: 113
-    projects: 5
-    data_owner_stewards: 10
-    data_sharing_requests: 4
-    ai_compliance_checklists: 4
-    dpia_records: 4
-    metadata_records: 226
-    project_source_files: 17
-    dq_runs: 7
-    dq_results: 299
-    dq_findings: 92
-    audit_logs: 2102
+    projects: 9
+    data_owner_stewards: 16
+    data_sharing_requests: 7
+    ai_compliance_checklists: 7
+    dpia_records: 7
+    ropa_records: 5
+    bapd_records: 6
+    retention_policies: 8
+    metadata_records: 285
+    project_source_files: 21
+    dq_runs: 11
+    dq_results: 372
+    dq_findings: 98
+    audit_logs: 2641
   developer_rules:
-    - "When refreshing the dump, update database/README.md counts in the same commit."
-    - "Run migrations before restoring into a fresh database."
-    - "Use --no-owner --no-acl so the dump restores cleanly under local PostgreSQL users."
-    - "Do not include plaintext secrets in dumps."
+    - "When the data changes, export with .\\export-sqlite.ps1 (consistent snapshot, rollback-journal mode) and commit backend/datagov.db, database/datagov.db and database/datagov_sqlite_dump.sql together with updated database/README.md counts."
+    - "Do not copy the live WAL database file directly."
+    - "New model columns are added automatically on startup (nullable); renames, drops and type changes need a one-off script against the SQLite file."
+    - "Do not include plaintext secrets in the database files."
     - "GitHub folder timestamps only change when files in that folder are touched; an older timestamp does not automatically mean stale content."
-    - "Do not refresh database/ag_db_dump.sql from a local database containing failed DQ trial runs unless the team intentionally wants those records preserved."
-    - "The existing dq_results AI fields are sufficient for the reference method output; no new migration is required for complexity/reasoning because those values live in details JSONB."
+    - "Do not export failed DQ trial runs or test projects into the baseline unless the team intentionally wants them; remove them from the snapshot copy (following the foreign keys), never from the live database."
+    - "When a shared test project is exported, also run 'docker exec ag_api python scripts/share_project_uploads.py <PRJ code>' and commit backend/shared_uploads/<project_id>/ with the database, so teammates get the uploaded files. Fictitious data only; never client data."
+    - "The existing dq_results AI fields are sufficient for the reference method output; complexity/reasoning live in the details JSON column."
 
 frontend_ui_contracts:
   detail_popups:
@@ -432,6 +560,9 @@ frontend_ui_contracts:
     text_visibility:
       - "Project name and client columns should expose full values through tooltip or equivalent."
       - "Do not make project names bold in the Projects overview table."
+  long_text_cells:
+    rule: "Long text in grids uses ExpandableText (frontend/src/components/dq/DQReportParts.tsx): first N characters + 'more/less' toggle. DQ Rules tab: Business Rules, Regex, Reasoning, Remarks. Metadata grid: Business Definition (80), Standard Format (40), Sample (30). Table names wrap (no truncation)."
+    rules_table_widths: "DQ Rules table uses fixed column widths (RULE_COLUMNS in DQReportParts.tsx, sum 100%, table-fixed, min 1100 px) so all columns incl. Failed and Status fit without horizontal scrolling."
   design_notes:
     - "Keep operational pages quiet, dense, and scannable."
     - "Avoid unrelated UI redesign when the task is logic/config/data only."
@@ -444,9 +575,34 @@ backend_contracts:
     dpia: "2-step approval."
     bapd: "Dual approval."
   auto_creation:
-    dsr_submit_creates:
-      - "AI Compliance Checklist"
-      - "DPIA record"
+    dsr_create_creates:
+      - "AI Compliance Checklist (status draft, 3 approval stubs) for every DSR"
+      - "DPIA record (status draft, empty risk content, 2 approval stubs) for the project, only if the project has no DPIA yet"
+    note: "Created on DSR create (POST /dsr), not on submit. The DPIA stays 'draft' until someone fills it in and submits it; the DPIA overview shows the DSR status and the DPIA status in separate columns."
+  people_and_positions:
+    user_position: "users.position = job title in the company (e.g. 'Head of Business Analytics'), never a project role; every user has one. Trial accounts get it from backend/app/services/init_db.py TRIAL_USERS on every startup; the viewer from backend/scripts/seed_viewer.py."
+    data_owner_position: "data_owner_stewards.position = the Data Owner's job title (e.g. 'CRM Department Head'), entered on New/Edit Project; optional; also accepted for the Lead Business Steward. Shown in ProjectDetailView (Data Assets Catalog and project popups) and the project PDF, and used for the DSR sign-off. NOT shown in ProjectInfoStrip (Metadata/DQ headers) or the Metadata/DQ exports: there steward and owner are name + email only (user decision 2026-09-27)."
+    business_term: "expand_business_term() in app/services/metadata_population.py (also used by the metadata worker): _ABBREV_MAP expansions (cd -> Code, id -> Identifier), ACRONYMS in UPPERCASE (nik -> NIK, amount_idr -> Amount IDR; Indonesian + English), other words capitalised. Add new abbreviations to ACRONYMS; leave out words that are also normal words."
+    dq_progress: "GET /dq/project/{id}/progress (active runs + runs of the last 12 h, eta = last active run) feeds /dq/progress/[projectId] and the Data Quality banner. POST /dq and /dq/{id}/rerun return 409 while the same source file has a pending/running run (created in the last 24 h). tables-summary latest_run_* = newest run with results (REPORT_STATUSES), newer_run_* = newer run without results. Shared UI: frontend/src/components/dq/RunProgress.tsx."
+    metadata_ai_progress: "Metadata page Generate AI Definitions: client-side countdown (REGEN_PRIOR_SECONDS local 25 s / cloud 5 s per definition, then measured speed); done/total from the regenerate-all answers (processed + remaining, whole project)."
+    http_error_messages: "frontend/src/lib/api.ts HTTP_ERROR_HELP / httpErrorHelp(): 'HTTP <code> · <cause>: <what to do>' when the response has no API detail; errorDetail() used by api.*, the Metadata Excel upload and login."
+    dsr_sign_off: "DSR checklist sign-off in edit mode: Prepared By = project Data Owner name + position (read-only; position editable with a hint only when missing); Acknowledged By = project SME name + users.position (read-only). Signed DSRs keep the stored names."
+    aick_sign_off: "Unchanged: Prepared By = Delivery Manager, Acknowledged By = SME (both from user accounts)."
+    approval_status_rule: "DSR and AICK: 'submitted' until PIC Data Compliance approves step 1, then 'under_review' until the last step, then 'approved'; signed last. AI Checklist overview label = the AICK's own status (In Progress, Submitted, Under Review, Approved (Ready for Sign-Off), Completed & Signed, Rejected); list filter checklist_status uses the same values."
+    aick_signed_state: "ai_compliance_checklists.validated_at (= 'is_signed' in the DSR list) is set only when both ai_assessment sign-off signatures exist or the last AICK approval step is approved; cleared on rejection. The pre-set 'Approved? = Yes' alone never signs (bug fixed 2026-09-27)."
+  source_file_retention:
+    rule: "Uploaded source files are kept until project end_date + 30 days while the project has no approved ROPA; with an approved ROPA until end_date + its retention_period (longest if several). Draft/submitted/under_review/rejected/archived ROPAs do not count."
+    period_parsing: "First '<number> <day|week|month|year>' in ropa_records.retention_period (English or Indonesian, digits or number words up to ten). Text without a duration is ignored (default applies) and reported as unreadable_ropa_periods."
+    code: "backend/app/services/retention.py; used by source_file_expiry_check (daily 07:00 WIB, 7-day warning) and GET /projects/{id}/source-file-retention"
+    ui: "Data Assets Catalog project page + PDF: 'Uploaded Source Files Kept Until' with the rule; hint on the ROPA Retention Period field."
+    deleted_on_expiry: "Only the uploaded files, their project_source_files rows and their backend/shared_uploads copies; metadata, DQ and governance records stay."
+  test_data:
+    folder: "Dummy Data Source/<project code>/ (committed): fictitious source files + TEST_GUIDE.md for the end-to-end UI test (PRJ-2026-022: TEST01-04). Scanned 2026-09-27: generated by openpyxl, no hidden sheets, no secrets, e-mails on .example."
+    never_commit: "DQ Template (Local Only)/ (live Telegram bot token, client HSO sample data) - in .gitignore."
+  shared_uploads:
+    folder: "backend/shared_uploads/<project_id>/<hex>_<filename> (= /app/shared_uploads), committed to Git; fictitious test data only."
+    export: "docker exec ag_api python scripts/share_project_uploads.py <PRJ code> [...]"
+    restore: "On API startup (app/services/shared_uploads.py) every file registered in project_source_files but missing from /app/uploads is copied back; existing uploads are never overwritten."
   rbac:
     super_admin: "Bypasses user-identity and approval-step UI gates; business rules still apply."
     viewer: "Read-only across modules; can create DSR drafts."
@@ -461,16 +617,17 @@ testing_and_validation:
       - "docker compose -f docker-compose.yml build frontend when frontend changed"
       - "docker compose -f docker-compose.yml build api worker when backend dependencies or DQ worker logic changed"
       - "docker compose -f docker-compose.yml run --rm --no-deps api python -m py_compile app/services/reference_dq.py app/worker/tasks/dq.py when DQ reference code changed"
-      - "docker exec ag_api alembic upgrade head when backend schema changed"
+      - "docker compose restart api and check the log for 'Schema sync' lines when backend models changed"
       - "docker exec ag_api pytest when backend logic changed"
+      - "After restarting api/frontend: curl http://localhost/api/v1/notifications?limit=1 returns 401 (not 502) and one Metadata Excel upload works through http://localhost"
     dq_reference_method_checks:
-      - "Confirm ollama list includes qwen2.5-coder:32b and llama3.1:70b, or configure DQ_* env vars to available cloud-supported equivalents."
+      - "Confirm ollama list includes llama3.2:3b (or the model set in DQ_PRIMARY_MODEL / DQ_SECONDARY_MODEL)."
       - "Run one PRJ-001 file end to end from DQ New Run after required models are available."
       - "Confirm dq_runs status becomes completed and dq_results contains completeness, consistency, uniqueness, and latency rows where applicable."
-      - "Confirm Rules tab shows Business Rules, Regex Pattern, AI Model, Regex Version, Complexity, and Reasoning."
+      - "Confirm Rules tab shows Data Type, Business Rules, Regex Pattern, Version, Regex Version, Complexity, Reasoning, and Remarks."
     known_backend_test_gap:
-      issue: "Some tests still rely on SQLite setup and fail on PostgreSQL JSONB models."
-      expected_action: "Use PostgreSQL-compatible test setup for DB integration tests involving JSONB."
+      issue: "3 tests in tests/unit/test_ai_generation.py fail (prompt wording and cloud API-key checks); they also fail on commit d6ed1e2 and are unrelated to the database."
+      expected_action: "Update those tests or the AI generation code to match the current prompt and error behaviour."
   after_push:
     verify_alignment:
       - "git fetch origin main"
@@ -489,5 +646,5 @@ change_management:
     - "Project-based DQ reference method behavior changes; also update docs/data-quality-reference-method.md."
   commit_guidance:
     - "Keep config/doc updates in the same commit as the related code change when possible."
-    - "For database refreshes, commit database/ag_db_dump.sql and database/README.md together."
+    - "For database refreshes, run .\\export-sqlite.ps1 and commit backend/datagov.db, database/datagov.db, database/datagov_sqlite_dump.sql and database/README.md together."
     - "For AI prompt changes, include the reason and expected behavior in the commit message or PR notes."

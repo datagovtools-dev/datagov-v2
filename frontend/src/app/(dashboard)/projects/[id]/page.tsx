@@ -17,12 +17,14 @@ import {
   ProjectBasicInformationContent,
   ProjectOwnerStewardContent,
   ProjectTeamContent,
+  retentionBasisText,
+  type SourceFileRetentionLike,
 } from "@/components/details/ProjectDetailView";
 import { formatDate } from "@/lib/utils";
 import { printA4, pdfField } from "@/lib/exportPdf";
 
 interface UserOption { id: string; full_name: string; email: string }
-interface OwnerRecord { id: string; role_type: string; full_name: string; email: string }
+interface OwnerRecord { id: string; role_type: string; full_name: string; email: string; position?: string | null }
 interface ProjectOut {
   id: string; project_code: string | null; project_name: string; customer_name: string;
   line_of_business: string | null; use_case: string | null;
@@ -64,9 +66,16 @@ export default function ProjectDetailPage() {
     enabled: !!id,
   });
 
+  // Until when uploaded source files are kept (end date + 30 days, or the approved ROPA retention period)
+  const { data: retention } = useQuery<SourceFileRetentionLike>({
+    queryKey: ["project-retention", id],
+    queryFn: () => api.get<SourceFileRetentionLike>(`/projects/${id}/source-file-retention`),
+    enabled: !!id,
+  });
+
   const [ownerForms, setOwnerForms] = React.useState({
-    lead_business_steward: { full_name: "", email: "" },
-    data_owner:            { full_name: "", email: "" },
+    lead_business_steward: { full_name: "", email: "", position: "" },
+    data_owner:            { full_name: "", email: "", position: "" },
   });
 
   const userOptions = users.map(u => ({ value: u.id, label: u.full_name, sublabel: u.email }));
@@ -95,8 +104,8 @@ export default function ProjectDetailPage() {
     const steward = owners.find(o => o.role_type === "lead_business_steward") ?? owners.find(o => o.role_type === "business_steward");
     const owner   = owners.find(o => o.role_type === "data_owner");
     setOwnerForms({
-      lead_business_steward: { full_name: steward?.full_name ?? "", email: steward?.email ?? "" },
-      data_owner:            { full_name: owner?.full_name   ?? "", email: owner?.email   ?? "" },
+      lead_business_steward: { full_name: steward?.full_name ?? "", email: steward?.email ?? "", position: steward?.position ?? "" },
+      data_owner:            { full_name: owner?.full_name   ?? "", email: owner?.email   ?? "", position: owner?.position   ?? "" },
     });
     setEditing(true);
     setServerError("");
@@ -129,7 +138,7 @@ export default function ProjectDetailPage() {
 
   const saveOwnersMutation = useMutation({
     mutationFn: async () => {
-      const roles: [string, { full_name: string; email: string }][] = [
+      const roles: [string, { full_name: string; email: string; position: string }][] = [
         ["lead_business_steward", ownerForms.lead_business_steward],
         ["data_owner",            ownerForms.data_owner],
       ];
@@ -139,6 +148,7 @@ export default function ProjectDetailPage() {
             role_type,
             full_name: data.full_name.trim(),
             email: data.email.trim(),
+            position: data.position.trim() || null,
           });
         }
       }
@@ -148,7 +158,6 @@ export default function ProjectDetailPage() {
 
   const update = useMutation({
     mutationFn: () => api.put(`/projects/${id}`, {
-      project_code: form.project_code || null,
       project_name: form.project_name,
       customer_name: form.customer_name,
       line_of_business: form.line_of_business || null,
@@ -168,6 +177,7 @@ export default function ProjectDetailPage() {
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project", id] });
+      qc.invalidateQueries({ queryKey: ["project-retention", id] });
       qc.invalidateQueries({ queryKey: ["projects"] });
       saveOwnersMutation.mutate();
       setEditing(false);
@@ -216,7 +226,7 @@ export default function ProjectDetailPage() {
     ].map(([label, rec]) => `
       <tr>
         <td>${label}</td>
-        <td>${(rec as OwnerRecord | undefined)?.full_name ?? "—"}</td>
+        <td>${(rec as OwnerRecord | undefined)?.full_name ?? "—"}${(rec as OwnerRecord | undefined)?.position ? `<br><span style="color:#64748b">${(rec as OwnerRecord).position}</span>` : ""}</td>
         <td>${(rec as OwnerRecord | undefined)?.email ?? ""}</td>
       </tr>`).join("");
 
@@ -239,6 +249,7 @@ export default function ProjectDetailPage() {
           ${pdfField("Monetized", project.is_monetized ? "Yes" : "No")}
           ${pdfField("Start Date", project.start_date ? formatDate(project.start_date) : null)}
           ${pdfField("End Date", project.end_date ? formatDate(project.end_date) : null)}
+          ${retention?.expiry_date ? pdfField("Uploaded Source Files Kept Until", `${formatDate(retention.expiry_date)} — ${retentionBasisText(retention)}`, true) : ""}
           ${project.use_case ? pdfField("Use Case / Description", project.use_case, true) : ""}
         </div>
       </div>
@@ -319,8 +330,8 @@ export default function ProjectDetailPage() {
           <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-3.5">
             {editing ? (
               <>
-                <Input label="Project ID" value={form.project_code} onChange={e => set("project_code", e.target.value)}
-                  placeholder="e.g. PRJ-2026-001" hint="Unique identifier from BDP and Finance Team" />
+                <Input label="Project ID" value={form.project_code} readOnly disabled
+                  hint="Assigned by the system (PRJ-<Project Year>-<number>). Changing the Project Year assigns a new ID." />
                 <div className="hidden md:block" />
                 <Input label="Project Name" value={form.project_name} onChange={e => set("project_name", e.target.value)} required />
                 <Input label="Customer / Client Name" value={form.customer_name} onChange={e => set("customer_name", e.target.value)} required />
@@ -358,7 +369,7 @@ export default function ProjectDetailPage() {
                 </div>
               </>
             ) : (
-              <ProjectBasicInformationContent project={project} />
+              <ProjectBasicInformationContent project={project} retention={retention} />
             )}
           </CardContent>
         </Card>
@@ -424,6 +435,13 @@ export default function ProjectDetailPage() {
                     value={ownerForms.data_owner.full_name}
                     onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, full_name: e.target.value } }))}
                     placeholder="e.g. Jane Smith"
+                    className="h-8 text-xs"
+                  />
+                  <Input
+                    label="Position"
+                    value={ownerForms.data_owner.position}
+                    onChange={e => setOwnerForms(f => ({ ...f, data_owner: { ...f.data_owner, position: e.target.value } }))}
+                    placeholder="e.g. CRM Department Head"
                     className="h-8 text-xs"
                   />
                   <Input

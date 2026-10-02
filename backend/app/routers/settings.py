@@ -27,8 +27,8 @@ from app.services.ai_generation import (
     config_is_ready,
     decrypt_config_api_key,
     get_ai_config,
-    list_ollama_models,
-    test_ollama_connection,
+    list_provider_models,
+    test_provider_connection,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -47,6 +47,14 @@ def _to_out(config: AIProviderConfig | None) -> AISettingsOut:
         model_name=config.model_name,
         timeout_seconds=config.timeout_seconds,
         batch_size=config.batch_size,
+        parser_contract_version=config.parser_contract_version or "legacy_v1",
+        metadata_contract_version=config.metadata_contract_version or "metadata_v1",
+        dq_policy=config.dq_policy or "guarded_legacy",
+        model_override_enabled=config.model_override_enabled if config.model_override_enabled is not None else True,
+        repair_enabled=config.repair_enabled if config.repair_enabled is not None else True,
+        minimum_score_delta=float(config.minimum_score_delta or 0.0),
+        metadata_validation=config.metadata_validation or "strict",
+        fallback_enabled=config.fallback_enabled if config.fallback_enabled is not None else True,
         api_key_configured=bool(config.encrypted_api_key),
         api_key_last4=config.api_key_last4,
         updated_at=config.updated_at,
@@ -65,6 +73,14 @@ def _to_status(config: AIProviderConfig | None) -> AISettingsStatus:
         model_name=out.model_name,
         timeout_seconds=out.timeout_seconds,
         batch_size=out.batch_size,
+        parser_contract_version=out.parser_contract_version,
+        metadata_contract_version=out.metadata_contract_version,
+        dq_policy=out.dq_policy,
+        model_override_enabled=out.model_override_enabled,
+        repair_enabled=out.repair_enabled,
+        minimum_score_delta=out.minimum_score_delta,
+        metadata_validation=out.metadata_validation,
+        fallback_enabled=out.fallback_enabled,
         api_key_configured=out.api_key_configured,
     )
 
@@ -103,6 +119,14 @@ async def update_ai_settings(
     config.model_name = body.model_name
     config.timeout_seconds = body.timeout_seconds
     config.batch_size = body.batch_size
+    config.parser_contract_version = body.parser_contract_version
+    config.metadata_contract_version = body.metadata_contract_version
+    config.dq_policy = body.dq_policy
+    config.model_override_enabled = body.model_override_enabled
+    config.repair_enabled = body.repair_enabled
+    config.minimum_score_delta = body.minimum_score_delta
+    config.metadata_validation = body.metadata_validation
+    config.fallback_enabled = body.fallback_enabled
     config.updated_by = current_user.id
 
     if body.clear_api_key:
@@ -125,6 +149,14 @@ async def update_ai_settings(
             "enabled": config.enabled,
             "base_url": config.base_url,
             "model_name": config.model_name,
+            "parser_contract_version": config.parser_contract_version,
+            "metadata_contract_version": config.metadata_contract_version,
+            "dq_policy": config.dq_policy,
+            "model_override_enabled": config.model_override_enabled,
+            "repair_enabled": config.repair_enabled,
+            "minimum_score_delta": config.minimum_score_delta,
+            "metadata_validation": config.metadata_validation,
+            "fallback_enabled": config.fallback_enabled,
             "api_key_configured": bool(config.encrypted_api_key),
         },
     ))
@@ -163,7 +195,7 @@ async def test_ai_settings(
         api_key=api_key,
     )
     try:
-        await test_ollama_connection(candidate)
+        await test_provider_connection(candidate)
         return AISettingsTestResult(
             ok=True,
             message="Connection successful.",
@@ -189,6 +221,6 @@ async def get_ai_models(
         raise HTTPException(status_code=400, detail="AI settings are not configured")
     candidate = build_candidate_from_config(config)
     try:
-        return AIModelsResponse(models=await list_ollama_models(candidate))
+        return AIModelsResponse(models=await list_provider_models(candidate))
     except AIGenerationError as exc:
         raise HTTPException(status_code=exc.http_status, detail=str(exc)) from exc

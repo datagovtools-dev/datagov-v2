@@ -36,6 +36,24 @@ export interface OwnerRecordLike {
   role_type: string;
   full_name: string;
   email: string;
+  position?: string | null;
+}
+
+/** Until when uploaded source files are kept (GET /projects/{id}/source-file-retention). */
+export interface SourceFileRetentionLike {
+  expiry_date: string | null;
+  warning_date: string | null;
+  basis: "default" | "ropa" | string;
+  default_days: number;
+  ropa_retention_period: string | null;
+  ropa_process_name: string | null;
+  unreadable_ropa_periods: string[];
+}
+
+export function retentionBasisText(r: SourceFileRetentionLike): string {
+  return r.basis === "ropa"
+    ? `End date + approved ROPA retention period "${r.ropa_retention_period}"${r.ropa_process_name ? ` (${r.ropa_process_name})` : ""}`
+    : `End date + ${r.default_days} days (no approved ROPA yet)`;
 }
 
 function EmptyValue() {
@@ -57,12 +75,34 @@ function OwnerName({ owner }: { owner?: OwnerRecordLike }) {
   return owner ? (
     <span className="flex flex-col">
       <span className="font-semibold text-xs text-slate-900">{owner.full_name}</span>
+      {owner.position && <span className="text-[11px] text-slate-600">{owner.position}</span>}
       <span className="text-[11px] text-slate-400 font-mono">{owner.email}</span>
     </span>
   ) : <EmptyValue />;
 }
 
-export function ProjectBasicInformationContent({ project }: { project: ProjectDetailLike }) {
+function SourceFileRetentionField({ retention }: { retention: SourceFileRetentionLike }) {
+  return (
+    <div className="md:col-span-2">
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Uploaded Source Files Kept Until</p>
+      {retention.expiry_date ? (
+        <>
+          <p className="text-xs text-slate-900 font-mono">{formatDate(retention.expiry_date)}</p>
+          <p className="text-[11px] text-slate-500">{retentionBasisText(retention)}. Files are deleted on this date; metadata, DQ results and governance records stay.</p>
+        </>
+      ) : (
+        <p className="text-[11px] text-slate-500">Set the project End Date to start the retention period (end date + {retention.default_days} days, or the approved ROPA retention period).</p>
+      )}
+      {retention.unreadable_ropa_periods.length > 0 && (
+        <p className="text-[11px] text-amber-700 mt-0.5">
+          Approved ROPA retention period{retention.unreadable_ropa_periods.length > 1 ? "s" : ""} not readable as a duration: {retention.unreadable_ropa_periods.map(p => `"${p}"`).join(", ")}. Use e.g. &quot;5 Years&quot;.
+        </p>
+      )}
+    </div>
+  );
+}
+
+export function ProjectBasicInformationContent({ project, retention }: { project: ProjectDetailLike; retention?: SourceFileRetentionLike }) {
   return (
     <>
       <div>
@@ -80,6 +120,7 @@ export function ProjectBasicInformationContent({ project }: { project: ProjectDe
       <div><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Monetized</p><Badge variant={project.is_monetized ? "success" : "default"} className="text-[10px] font-mono">{project.is_monetized ? "Yes" : "No"}</Badge></div>
       <div><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Start Date</p><p className="text-xs text-slate-900 font-mono">{project.start_date ? formatDate(project.start_date) : <EmptyValue />}</p></div>
       <div><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">End Date</p><p className="text-xs text-slate-900 font-mono">{project.end_date ? formatDate(project.end_date) : <EmptyValue />}</p></div>
+      {retention && <SourceFileRetentionField retention={retention} />}
       {project.use_case && (
         <div className="md:col-span-2"><p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Use Case / Description</p><p className="text-xs text-slate-800 leading-relaxed">{project.use_case}</p></div>
       )}

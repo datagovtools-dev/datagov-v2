@@ -5,7 +5,6 @@ import os
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("DATABASE_URL_SYNC", "sqlite:///:memory:")
-os.environ.setdefault("DATABASE_NULL_POOL", "true")
 
 from app.services.metadata_population import (
     build_tables_from_uploaded_payload,

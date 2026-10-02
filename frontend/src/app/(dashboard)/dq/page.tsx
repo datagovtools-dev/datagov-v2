@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { Plus, BarChart2, Table2, ArrowRight } from "lucide-react";
+import { Plus, BarChart2, Table2, ArrowRight, Activity } from "lucide-react";
 import { api } from "@/lib/api";
+import { ProjectInfoStrip } from "@/components/details/ProjectInfoStrip";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/Table";
@@ -27,6 +28,38 @@ interface DQTableSummary {
   latest_run_status: string | null;
   latest_run_score: string | null;
   latest_run_date: string | null;
+  // latest_run_* = newest run with results; a newer run without results (queued/running/failed) is below
+  latest_run_version: number | null;
+  newer_run_id: string | null;
+  newer_run_status: string | null;
+  newer_run_version: number | null;
+}
+
+interface ProjectProgress { active_count: number; eta_seconds: number | null }
+
+function formatDuration(totalSeconds: number): string {
+  const s = Math.max(Math.round(totalSeconds), 0);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}` : `${m}:${String(s % 60).padStart(2, "0")}`;
+}
+
+// Badge for a re-run that has no results yet, shown next to the version whose results are displayed
+function NewerRunBadge({ t }: { t: DQTableSummary }) {
+  if (!t.newer_run_id || !t.newer_run_status) return null;
+  const v = t.newer_run_version ? `v${t.newer_run_version}` : "New run";
+  const cfg: Record<string, { text: string; cls: string }> = {
+    pending: { text: `${v} queued`, cls: "bg-slate-100 text-slate-700 border-slate-200" },
+    running: { text: `${v} running`, cls: "bg-blue-50 text-blue-700 border-blue-200" },
+    failed: { text: `${v} failed`, cls: "bg-rose-50 text-rose-700 border-rose-200" },
+  };
+  const c = cfg[t.newer_run_status] ?? { text: `${v} ${t.newer_run_status}`, cls: "bg-slate-100 text-slate-700 border-slate-200" };
+  return (
+    <Link href={`/dq/${t.newer_run_id}`} title="Newer run without results yet; the scores shown are from the previous version until it finishes"
+      className={`inline-flex items-center text-[10px] font-mono font-medium px-1.5 py-0.2 rounded-md border ${c.cls}`}>
+      {c.text}
+    </Link>
+  );
 }
 
 function ScorePill({ score }: { score: string | null }) {
@@ -87,16 +120,45 @@ export default function DQListPage() {
   const [projectId, setProjectId] = useState("");
   const [runFilter, setRunFilter] = useState<"all" | "has_runs" | "no_runs">("all");
 
+  // Keep the selected project in the URL (?project=) so Back from a run or the project report returns to it
+  useEffect(() => {
+    const fromUrl = new URLSearchParams(window.location.search).get("project");
+    if (fromUrl) setProjectId(fromUrl);
+  }, []);
+  useEffect(() => {
+    const url = projectId ? `/dq?project=${projectId}` : "/dq";
+    if (window.location.pathname + window.location.search !== url) window.history.replaceState(null, "", url);
+  }, [projectId]);
+
   const { data: projects } = useQuery<ProjectOption[]>({
     queryKey: ["projects-select"],
     queryFn: () => api.get<{ items: ProjectOption[] }>("/projects?page_size=100").then((r) => r.items),
   });
 
+  // Queued/running runs of the project: banner with time left, and no second start while they run
+  const { data: progress } = useQuery<ProjectProgress>({
+    queryKey: ["dq-progress", projectId],
+    queryFn: () => api.get<ProjectProgress>(`/dq/project/${projectId}/progress`),
+    enabled: !!projectId,
+    refetchInterval: (q) => ((q.state.data?.active_count ?? 0) > 0 ? 10000 : false),
+  });
+  const running = (progress?.active_count ?? 0) > 0;
+
   const { data: tables, isLoading } = useQuery<DQTableSummary[]>({
     queryKey: ["dq-tables-summary", projectId],
     queryFn: () => api.get<DQTableSummary[]>(`/dq/project/${projectId}/tables-summary`),
     enabled: !!projectId,
+    refetchInterval: running ? 10000 : false, // badges follow the runs; scores switch when a run finishes
   });
+  const [progressAt, setProgressAt] = useState(() => Date.now());
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => { setProgressAt(Date.now()); }, [progress]);
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [running]);
+  const timeLeft = progress?.eta_seconds != null ? Math.max(progress.eta_seconds - (nowTick - progressAt) / 1000, 0) : null;
 
   const allTables = tables ?? [];
   const displayed =
@@ -149,11 +211,19 @@ export default function DQListPage() {
             </div>
           )}
         </div>
-        <Link href={`/dq/new${projectId ? `?project=${projectId}` : ""}`} className="shrink-0">
-          <Button size="sm" className="font-medium">
-            <Plus className="h-3.5 w-3.5 mr-1" /> {projectId ? "Run All Data" : "New DQ Run"}
-          </Button>
-        </Link>
+        {projectId && running ? (
+          <Link href={`/dq/progress/${projectId}`} className="shrink-0" title="DQ is running for this project; follow it, or start new runs after it finishes">
+            <Button size="sm" className="font-medium">
+              <Activity className="h-3.5 w-3.5 mr-1" /> View Progress
+            </Button>
+          </Link>
+        ) : (
+          <Link href={`/dq/new${projectId ? `?project=${projectId}` : ""}`} className="shrink-0">
+            <Button size="sm" className="font-medium">
+              <Plus className="h-3.5 w-3.5 mr-1" /> {projectId ? "Run All Data" : "New DQ Run"}
+            </Button>
+          </Link>
+        )}
       </div>
 
       {/* Project Selector Card */}
@@ -179,6 +249,29 @@ export default function DQListPage() {
           </select>
         </div>
       </div>
+
+      {/* Project info strip for the selected project */}
+      {projectId && <ProjectInfoStrip projectId={projectId} />}
+
+      {/* DQ running for this project: way back to the progress page */}
+      {projectId && running && (
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-4 h-4 flex-shrink-0 rounded-full border-2 border-blue-200 border-t-blue-600 animate-spin" />
+            <p className="text-xs text-blue-900">
+              <span className="font-semibold">DQ running for this project</span>
+              {" · "}{progress!.active_count} file{progress!.active_count > 1 ? "s" : ""} queued or running
+              {timeLeft !== null && <>{" · "}<span className="font-mono font-semibold">≈ {formatDuration(timeLeft)} left</span></>}
+              <span className="text-blue-700"> · Scores below stay on the previous version until each file finishes.</span>
+            </p>
+          </div>
+          <Link href={`/dq/progress/${projectId}`}>
+            <Button size="sm" variant="outline" className="h-7 text-xs bg-white">
+              View progress <ArrowRight className="h-3 w-3 ml-1" />
+            </Button>
+          </Link>
+        </div>
+      )}
 
       {/* Table List Card */}
       {projectId ? (
@@ -210,11 +303,28 @@ export default function DQListPage() {
             </div>
 
             {allTables.length > 0 && (
-              <Link href={`/dq/new?project=${projectId}`} className="shrink-0">
-                <Button size="sm" variant="outline" className="h-6.5 text-[11px]">
-                  <Plus className="h-3 w-3 mr-1" /> Run All
-                </Button>
-              </Link>
+              <div className="flex items-center gap-2 shrink-0">
+                {withRuns > 0 && (
+                  <Link href={`/dq/project/${projectId}`} title="DQ results of all tables in this project: combined summary, per-table scores, all rules">
+                    <Button size="sm" variant="outline" className="h-6.5 text-[11px]">
+                      <BarChart2 className="h-3 w-3 mr-1" /> Project Report
+                    </Button>
+                  </Link>
+                )}
+                {running ? (
+                  <Link href={`/dq/progress/${projectId}`} title="DQ is running for this project; start new runs after it finishes">
+                    <Button size="sm" variant="outline" className="h-6.5 text-[11px]">
+                      <Activity className="h-3 w-3 mr-1" /> View Progress
+                    </Button>
+                  </Link>
+                ) : (
+                  <Link href={`/dq/new?project=${projectId}`}>
+                    <Button size="sm" variant="outline" className="h-6.5 text-[11px]">
+                      <Plus className="h-3 w-3 mr-1" /> Run All
+                    </Button>
+                  </Link>
+                )}
+              </div>
             )}
           </div>
 
@@ -255,16 +365,24 @@ export default function DQListPage() {
                     <TableCell className="text-xs text-slate-600 tabular-nums font-mono">{t.attribute_count}</TableCell>
                     <TableCell className="text-xs text-slate-900 tabular-nums font-semibold font-mono">{t.total_runs}</TableCell>
                     <TableCell>
-                      <ScorePill score={t.latest_run_score} />
+                      <div className="flex items-center gap-1.5">
+                        <ScorePill score={t.latest_run_score} />
+                        {t.latest_run_score && t.latest_run_version ? (
+                          <span className="text-[10px] font-mono text-slate-400">v{t.latest_run_version}</span>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>
-                      {t.latest_run_status ? (
-                        <Badge variant={statusVariant(t.latest_run_status)} className="text-[10px] capitalize">
-                          {t.latest_run_status.replace(/_/g, " ")}
-                        </Badge>
-                      ) : (
-                        <span className="text-slate-400 text-xs font-mono">—</span>
-                      )}
+                      <div className="flex flex-wrap items-center gap-1">
+                        {t.latest_run_status ? (
+                          <Badge variant={statusVariant(t.latest_run_status)} className="text-[10px] capitalize">
+                            {t.latest_run_status.replace(/_/g, " ")}
+                          </Badge>
+                        ) : (
+                          <span className="text-slate-400 text-xs font-mono">—</span>
+                        )}
+                        <NewerRunBadge t={t} />
+                      </div>
                     </TableCell>
                     <TableCell className="text-xs text-slate-500 font-mono">
                       {t.latest_run_date ? formatDate(t.latest_run_date) : "—"}

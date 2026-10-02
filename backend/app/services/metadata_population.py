@@ -41,6 +41,47 @@ _ABBREV_MAP = {
     "txt": "Text", "msg": "Message", "err": "Error", "log": "Log",
 }
 
+# Abbreviations (Indonesian and English) kept as a word but written in UPPERCASE in the
+# business term, e.g. nik -> NIK, amount_idr -> Amount IDR. Words that are also common
+# English/Indonesian words (it, do, so, am, hr = hour, ml = millilitre) are left out.
+ACRONYMS = frozenset({
+    # Indonesian: identity documents, government, finance, address
+    "nik", "ktp", "kk", "nkk", "npwp", "sim", "nip", "nrp", "nisn", "npsn", "kta", "kitas", "kitap",
+    "bpjs", "bpjstk", "bpjskes", "nib", "siup", "tdp", "kbli", "skt", "spt", "sk", "bast", "spk", "rab",
+    "ppn", "pph", "pbb", "bphtb", "apbn", "apbd", "bumn", "bumd", "umkm", "ojk", "bi", "bps", "lps",
+    "pln", "pdam", "spbu", "rt", "rw", "kcp", "kcu", "bpr", "bpd", "slik", "dpk", "kpr", "kur",
+    "wni", "wna", "tki", "pmi", "pks", "pdp", "uu", "pp", "nopol", "stnk", "bpkb",
+    # English: currency, finance, business
+    "idr", "usd", "sgd", "eur", "jpy", "cny", "vat", "gst", "tin", "ein", "ssn", "nric", "dob",
+    "kpi", "roi", "roe", "roa", "ebitda", "cogs", "pnl", "gl", "ap", "ar", "po", "sku", "upc", "ean",
+    "pos", "atm", "edc", "cif", "iban", "swift", "bic", "npl", "ldr", "casa", "nav", "aum",
+    "crm", "erp", "sla", "pic", "sme", "vip", "b2b", "b2c", "nps", "csat", "ltv", "clv", "arpu",
+    "mrr", "arr", "aov", "ctr", "cpc", "cpm", "roas", "ytd", "mtd", "qtd", "yoy", "mom", "eod", "eom",
+    "fy", "q1", "q2", "q3", "q4", "eta", "faq",
+    # English: technology and data
+    "api", "ip", "mac", "uuid", "guid", "otp", "pin", "sms", "gps", "imei", "imsi", "iccid", "msisdn",
+    "utc", "gmt", "iso", "html", "json", "xml", "csv", "pdf", "qr", "ai", "llm", "pii", "gdpr",
+    "dpia", "ropa", "dsr", "dq", "etl", "sql", "cctv", "lte",
+})
+
+
+def expand_business_term(attribute: str) -> str:
+    """FR-META-013: business term from a column name: abbreviations expanded (cd -> Code),
+    acronyms in UPPERCASE (nik -> NIK), other words capitalised."""
+    clean = re.sub(r"^(tbl_|fk_|idx_|pk_|f_|t_)", "", attribute, flags=re.IGNORECASE)
+    words = []
+    for part in re.split(r"[_\s\-]", clean):
+        if not part:
+            continue
+        lower = part.lower()
+        if lower in _ABBREV_MAP:
+            words.append(_ABBREV_MAP[lower])
+        elif lower in ACRONYMS:
+            words.append(part.upper())
+        else:
+            words.append(part.capitalize())
+    return " ".join(words)
+
 
 def _classify_sensitivity(attribute: str) -> str:
     lower = attribute.lower()
@@ -52,16 +93,6 @@ def _classify_sensitivity(attribute: str) -> str:
         if keyword in lower:
             return "Highly Confidential"
     return "Confidential"
-
-
-def _expand_business_term(attribute: str) -> str:
-    clean = re.sub(r"^(tbl_|fk_|idx_|pk_|f_|t_)", "", attribute, flags=re.IGNORECASE)
-    parts = re.split(r"[_\s\-]", clean)
-    expanded = []
-    for part in parts:
-        lower = part.lower()
-        expanded.append(_ABBREV_MAP.get(lower, part.capitalize()))
-    return " ".join(expanded)
 
 
 def _detect_data_type(values: list[Any]) -> str:
@@ -399,70 +430,6 @@ def _load_excel_tables_from_temp(
     return build_tables_from_uploaded_payload(payload_tables, table_names)
 
 
-def _load_postgresql_tables(
-    connection_string: str,
-    pg_schema: str,
-    table_names: Sequence[str] | None,
-) -> tuple[dict[str, dict[str, list[Any]]], dict[str, int]]:
-    import psycopg2
-    from psycopg2 import sql
-
-    tables_data: dict[str, dict[str, list[Any]]] = {}
-    row_counts: dict[str, int] = {}
-    source_connection = psycopg2.connect(connection_string)
-    try:
-        source_cursor = source_connection.cursor()
-        target_tables = list(table_names or [])
-        if not target_tables:
-            source_cursor.execute(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = %s AND table_type = 'BASE TABLE' ORDER BY table_name",
-                (pg_schema,),
-            )
-            target_tables = [row[0] for row in source_cursor.fetchall()]
-
-        for requested_table in target_tables:
-            table_name = requested_table.split(".", 1)[1] if requested_table.startswith(f"{pg_schema}.") else requested_table
-            source_cursor.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position",
-                (pg_schema, table_name),
-            )
-            columns = [row[0] for row in source_cursor.fetchall()]
-            if not columns:
-                continue
-
-            try:
-                source_cursor.execute(
-                    sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                        sql.Identifier(pg_schema), sql.Identifier(table_name)
-                    )
-                )
-                row_counts[table_name] = int(source_cursor.fetchone()[0])
-            except Exception:
-                row_counts[table_name] = 0
-
-            try:
-                source_cursor.execute(
-                    sql.SQL("SELECT * FROM {}.{} LIMIT 100").format(
-                        sql.Identifier(pg_schema), sql.Identifier(table_name)
-                    )
-                )
-                rows = source_cursor.fetchall()
-            except Exception:
-                rows = []
-
-            data = {column: [] for column in columns}
-            for row in rows:
-                for index, column in enumerate(columns):
-                    data[column].append(row[index] if index < len(row) else None)
-            tables_data[table_name] = data
-    finally:
-        source_connection.close()
-
-    return tables_data, row_counts
-
-
 def _load_gcp_tables(
     gcp_project: str,
     bq_dataset: str,
@@ -506,8 +473,6 @@ async def populate_metadata_records(
     file_names: Sequence[str] | None = None,
     gcp_project: str | None = None,
     bq_dataset: str | None = None,
-    connection_string: str | None = None,
-    pg_schema: str = "public",
 ) -> dict[str, Any]:
     """Synchronously populate MetadataRecord rows for selected source tables."""
     selected_tables = list(table_names or [])
@@ -519,8 +484,6 @@ async def populate_metadata_records(
             tables_data, row_counts = _load_excel_tables_from_temp(
                 temp_file_key, temp_file_keys, file_names, selected_tables
             )
-    elif source_type == "postgresql" and connection_string:
-        tables_data, row_counts = _load_postgresql_tables(connection_string, pg_schema, selected_tables)
     elif source_type == "gcp" and gcp_project and bq_dataset:
         tables_data, row_counts = _load_gcp_tables(gcp_project, bq_dataset, selected_tables)
     else:
@@ -552,8 +515,6 @@ async def populate_metadata_records(
     for table_name, columns in tables_data.items():
         if source_type == "gcp" and bq_dataset:
             domain_table = f"{bq_dataset}.{table_name}"
-        elif source_type == "postgresql":
-            domain_table = f"{pg_schema}.{table_name}"
         else:
             domain_table = table_name
 
@@ -568,7 +529,7 @@ async def populate_metadata_records(
             )).scalar_one_or_none()
 
             sensitivity = _classify_sensitivity(column)
-            business_term = _expand_business_term(column)
+            business_term = expand_business_term(column)
             sample = _get_sample_data(values)
             data_type = _detect_data_type(values)
             primary_key = _is_primary_key_candidate(values)

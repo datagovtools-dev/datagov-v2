@@ -17,12 +17,16 @@ async def lifespan(app: FastAPI):
         await get_redis()
     try:
         import app.models  # noqa: F401
-        from app.database import Base, engine, AsyncSessionLocal
+        from app.database import Base, engine, AsyncSessionLocal, sync_schema
         from app.services.init_db import seed_initial_data_if_needed
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(sync_schema)
         async with AsyncSessionLocal() as session:
             await seed_initial_data_if_needed(session)
+        from app.services.shared_uploads import restore_shared_uploads
+        async with AsyncSessionLocal() as session:
+            await restore_shared_uploads(session)
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Database auto-init skipped or failed: {e}")

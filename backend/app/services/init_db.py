@@ -16,13 +16,14 @@ from app.models.metadata import MetadataRecord
 
 logger = logging.getLogger(__name__)
 
+# `position` is the job title in the company (used e.g. for DSR sign-off), not the role in a project
 TRIAL_USERS = [
     {"full_name": "Super Administrator", "email": "admin@governance.local", "role": "super_admin", "password": "Admin1234!", "position": "Chief Data & AI Officer"},
-    {"full_name": "Eko Prasetyo", "email": "eko.prasetyo@company.com", "role": "regular_user", "password": "User1234!", "position": "Data Analyst / Requester"},
-    {"full_name": "Budi Santoso", "email": "budi.santoso@company.com", "role": "compliance_officer", "password": "User1234!", "position": "PIC Data Compliance"},
+    {"full_name": "Eko Prasetyo", "email": "eko.prasetyo@company.com", "role": "regular_user", "password": "User1234!", "position": "Data Analyst"},
+    {"full_name": "Budi Santoso", "email": "budi.santoso@company.com", "role": "compliance_officer", "password": "User1234!", "position": "Data Compliance Manager"},
     {"full_name": "Ahmad Fauzi", "email": "ahmad.fauzi@company.com", "role": "project_manager", "password": "User1234!", "position": "Delivery Manager"},
-    {"full_name": "Dewi Rahayu", "email": "dewi.rahayu@company.com", "role": "data_steward", "password": "User1234!", "position": "Subject Matter Expert (SME)"},
-    {"full_name": "Anisa Putri", "email": "anisa.putri@company.com", "role": "data_owner", "password": "User1234!", "position": "Data Governance Officer (DGO)"},
+    {"full_name": "Dewi Rahayu", "email": "dewi.rahayu@company.com", "role": "data_steward", "password": "User1234!", "position": "Head of Business Analytics"},
+    {"full_name": "Anisa Putri", "email": "anisa.putri@company.com", "role": "data_owner", "password": "User1234!", "position": "Data Governance Manager"},
     {"full_name": "Fitri Handayani", "email": "fitri.handayani@company.com", "role": "compliance_officer", "password": "User1234!", "position": "Data Protection Officer (DPO)"},
     {"full_name": "Bagas Adi Nugraha", "email": "bagas.nugraha@company.com", "role": "project_manager", "password": "User1234!", "position": "Lead Project Manager"},
 ]

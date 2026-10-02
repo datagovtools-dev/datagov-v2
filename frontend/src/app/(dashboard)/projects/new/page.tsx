@@ -22,7 +22,6 @@ const YEARS = Array.from({ length: 6 }, (_, i) => CURRENT_YEAR - 2 + i);
 export default function NewProjectPage() {
   const router = useRouter();
   const [form, setForm] = React.useState({
-    project_code: "",
     project_name: "",
     customer_name: "",
     line_of_business: "",
@@ -41,8 +40,8 @@ export default function NewProjectPage() {
     pic_data_compliance_id: "",
   });
   const [ownerForms, setOwnerForms] = React.useState({
-    lead_business_steward: { full_name: "", email: "" },
-    data_owner:            { full_name: "", email: "" },
+    lead_business_steward: { full_name: "", email: "", position: "" },
+    data_owner:            { full_name: "", email: "", position: "" },
   });
   const [errors, setErrors] = React.useState<Record<string, string>>({});
   const [serverError, setServerError] = React.useState("");
@@ -52,11 +51,17 @@ export default function NewProjectPage() {
     queryFn: () => api.get<UserOption[]>("/rbac/users/options"),
   });
 
+  // Project ID is assigned by the system (PRJ-<Project Year>-<next number>); this is only a preview
+  const { data: nextCode } = useQuery<{ project_year: number; project_code: string }>({
+    queryKey: ["projects-next-code", form.project_year],
+    queryFn: () => api.get(`/projects/next-code?year=${form.project_year}`),
+    enabled: /^\d{4}$/.test(form.project_year),
+  });
+
   const create = useMutation({
     mutationFn: () => {
       toast.loading("Registering data asset...", { id: "create-project" });
       const payload = {
-        project_code: form.project_code || null,
         project_name: form.project_name,
         customer_name: form.customer_name,
         line_of_business: form.line_of_business || null,
@@ -74,10 +79,10 @@ export default function NewProjectPage() {
         dq_officer_id: form.dq_officer_id || null,
         pic_data_compliance_id: form.pic_data_compliance_id || null,
       };
-      return api.post<{ id: string }>("/projects", payload);
+      return api.post<{ id: string; project_code: string }>("/projects", payload);
     },
     onSuccess: async (created) => {
-      const roles: [string, { full_name: string; email: string }][] = [
+      const roles: [string, { full_name: string; email: string; position: string }][] = [
         ["lead_business_steward", ownerForms.lead_business_steward],
         ["data_owner",            ownerForms.data_owner],
       ];
@@ -87,10 +92,11 @@ export default function NewProjectPage() {
             role_type,
             full_name: data.full_name.trim(),
             email: data.email.trim(),
+            position: data.position.trim() || null,
           });
         }
       }
-      toast.success("Data asset registered successfully!", { id: "create-project" });
+      toast.success(`Data asset ${created.project_code} registered successfully!`, { id: "create-project" });
       router.push("/projects");
     },
     onError: (e: any) => {
@@ -149,10 +155,11 @@ export default function NewProjectPage() {
           <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
             <Input
               label="Project ID / Code"
-              value={form.project_code}
-              onChange={(e) => set("project_code", e.target.value)}
-              placeholder="e.g. PRJ-2026-001"
-              hint="Unique identifier from BDP & Finance Team"
+              value={nextCode?.project_code ?? ""}
+              readOnly
+              disabled
+              placeholder="Assigned on save"
+              hint="Assigned automatically on save: PRJ-<Project Year>-<next number>"
               className="h-8 text-xs font-mono"
             />
             <div className="hidden md:block" />
@@ -320,6 +327,18 @@ export default function NewProjectPage() {
                   }))
                 }
                 placeholder="e.g. Jane Smith"
+                className="h-8 text-xs"
+              />
+              <Input
+                label="Position"
+                value={ownerForms.data_owner.position}
+                onChange={(e) =>
+                  setOwnerForms((f) => ({
+                    ...f,
+                    data_owner: { ...f.data_owner, position: e.target.value },
+                  }))
+                }
+                placeholder="e.g. CRM Department Head"
                 className="h-8 text-xs"
               />
               <Input

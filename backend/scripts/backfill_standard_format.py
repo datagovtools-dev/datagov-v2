@@ -14,11 +14,13 @@ Usage (inside container):
 import argparse
 import os
 import re
+import sys
 
-import psycopg2
-import psycopg2.extras
+from sqlalchemy import or_, select, update
 
-DB_URL = os.environ["DATABASE_URL_SYNC"]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from app.database import get_sync_session  # noqa: E402
+from app.models.metadata import MetadataRecord  # noqa: E402
 
 
 # ── Type → format map ─────────────────────────────────────────────────────────
@@ -131,22 +133,20 @@ def main() -> None:
     parser.add_argument("--overwrite", action="store_true", help="Re-assess ALL records, not just nulls")
     args = parser.parse_args()
 
-    conn = psycopg2.connect(DB_URL)
-    cur  = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    db = get_sync_session()
 
-    where = "TRUE" if args.overwrite else "(standard_format IS NULL OR standard_format = '')"
-    cur.execute(f"""
-        SELECT id, data_type, sample_data, distinct_values, data_attribute, data_domain_table, standard_format
-        FROM metadata_records
-        WHERE {where}
-        ORDER BY data_domain_table, data_attribute
-    """)
-    rows = cur.fetchall()
+    m = MetadataRecord
+    query = select(
+        m.id, m.data_type, m.sample_data, m.distinct_values,
+        m.data_attribute, m.data_domain_table, m.standard_format,
+    ).order_by(m.data_domain_table, m.data_attribute)
+    if not args.overwrite:
+        query = query.where(or_(m.standard_format.is_(None), m.standard_format == ""))
+    rows = db.execute(query).mappings().all()
 
     print(f"{'DRY RUN — ' if args.dry_run else ''}Processing {len(rows)} records …\n")
 
     updated = skipped = 0
-    update_cur = conn.cursor()
 
     for r in rows:
         # Prefer distinct_values for categorical re-inference when available
@@ -162,21 +162,16 @@ def main() -> None:
         print(f"  [{r['data_domain_table']}] {r['data_attribute']:40s}  {r['data_type']:12s}  →  {inferred}  {tag}")
 
         if not args.dry_run and inferred != r["standard_format"]:
-            update_cur.execute(
-                "UPDATE metadata_records SET standard_format = %s WHERE id = %s",
-                (inferred, r["id"]),
-            )
+            db.execute(update(m).where(m.id == r["id"]).values(standard_format=inferred))
             updated += 1
 
     if not args.dry_run:
-        conn.commit()
+        db.commit()
         print(f"\nDone. Updated {updated} records, skipped {skipped}.")
     else:
         print(f"\nDry run complete. Would update {len([r for r in rows if _infer(r['data_type'], r['sample_data'])])} records.")
 
-    cur.close()
-    update_cur.close()
-    conn.close()
+    db.close()
 
 
 if __name__ == "__main__":

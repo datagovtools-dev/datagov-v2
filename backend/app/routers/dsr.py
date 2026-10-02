@@ -231,22 +231,23 @@ async def list_dsrs(
         q = q.where(DataSharingRequest.is_ai_use == is_ai_use)
     if year is not None:
         q = q.where(extract("year", DataSharingRequest.created_at) == year)
+    # AICK status filter, from the checklist's own approval flow (matches the AI Checklist overview labels):
+    # submitted = waiting for PIC Data Compliance (step 1); under_review = later steps; pending_signoff =
+    # all steps approved, not yet signed; signed = validated_at set.
+    unsigned = AIComplianceChecklist.validated_at.is_(None)
     if checklist_status == "signed":
         q = q.where(AIComplianceChecklist.validated_at.isnot(None))
-    elif checklist_status == "pending_approval":
-        q = q.where(
-            AIComplianceChecklist.status.in_(["submitted", "under_review"])
-            | DataSharingRequest.status.in_(["submitted", "under_review"])
-        )
+    elif checklist_status in ("submitted", "under_review", "rejected"):
+        q = q.where(unsigned, AIComplianceChecklist.status == checklist_status)
+    elif checklist_status == "pending_approval":  # older links: submitted or under review
+        q = q.where(unsigned, AIComplianceChecklist.status.in_(["submitted", "under_review"]))
     elif checklist_status == "pending_signoff":
-        q = q.where(
-            AIComplianceChecklist.validated_at.is_(None),
-            DataSharingRequest.status.in_(["approved", "executed"]),
-        )
+        q = q.where(unsigned, AIComplianceChecklist.status == "approved")
     elif checklist_status == "in_progress":
         q = q.where(
-            AIComplianceChecklist.validated_at.is_(None),
-            DataSharingRequest.status.notin_(["approved", "executed", "submitted", "under_review"]),
+            unsigned,
+            AIComplianceChecklist.status.is_(None)
+            | AIComplianceChecklist.status.notin_(["submitted", "under_review", "approved", "rejected"]),
         )
 
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
@@ -631,6 +632,12 @@ async def get_checklist(
     return await _get_checklist_or_404(dsr_id, db)
 
 
+def _ai_sign_off_complete(checklist: AIComplianceChecklist) -> bool:
+    """Both AI-assessment sign-off signatures (prepared by DM, acknowledged by SME) are present."""
+    so = ((checklist.checklist_json or {}).get("ai_assessment") or {}).get("sign_off") or {}
+    return bool(so.get("prepared_signature")) and bool(so.get("acknowledged_signature"))
+
+
 @router.put("/{dsr_id}/checklist", response_model=AIChecklistOut)
 async def update_checklist(
     dsr_id: uuid.UUID, body: AIChecklistUpdate, db: DB,
@@ -639,15 +646,13 @@ async def update_checklist(
     checklist = await _get_checklist_or_404(dsr_id, db)
     if body.checklist_json is not None:
         checklist.checklist_json = body.checklist_json
-    # If the user completed the sign-off block in ai_assessment, record validation
-    cj = checklist.checklist_json or {}
-    ai = cj.get("ai_assessment", {})
-    so = ai.get("sign_off", {})
-    if (so.get("approved") or "").lower() == "yes":
+    # "Signed" only when both sign-off signatures are present (DM and SME steps); the pre-set
+    # "Approved? = Yes" answer alone does not sign the checklist. Final approval also signs it.
+    if _ai_sign_off_complete(checklist):
         if not checklist.validated_at:
             checklist.validated_by = current_user.id
             checklist.validated_at = datetime.now(timezone.utc)
-    else:
+    elif checklist.status != "approved":
         checklist.validated_by = None
         checklist.validated_at = None
     db.add(AuditLog(user_id=current_user.id, module="dsr", action="update_checklist",
@@ -794,8 +799,13 @@ async def action_ai_checklist_approval(
             checklist.status = "under_review"
         else:
             checklist.status = "approved"
+            if not checklist.validated_at:  # last step approved: the checklist is completed and signed
+                checklist.validated_by = current_user.id
+                checklist.validated_at = datetime.now(timezone.utc)
     else:
         checklist.status = "rejected"
+        checklist.validated_by = None
+        checklist.validated_at = None
 
     db.add(AuditLog(
         user_id=current_user.id, module="dsr", action=f"ai_checklist_approval_{body.action}",

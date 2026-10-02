@@ -19,6 +19,7 @@ class DataOwnerStewardCreate(BaseModel):
     role_type: str
     full_name: str
     email: str
+    position: Optional[str] = None
 
 
 class DataOwnerStewardOut(BaseModel):
@@ -27,6 +28,7 @@ class DataOwnerStewardOut(BaseModel):
     role_type: str
     full_name: str
     email: str
+    position: Optional[str] = None
     created_at: datetime
     model_config = {"from_attributes": True}
 
@@ -50,7 +52,7 @@ class UploadedMetadataTable(BaseModel):
 
 class ProceedMetadataRequest(BaseModel):
     project_id: uuid.UUID
-    source_type: str            # gcp | excel | postgresql
+    source_type: str            # gcp | excel
     gcp_project: Optional[str] = None
     bq_dataset: Optional[str] = None
     table_names: Optional[list[str]] = None   # selected tables
@@ -58,8 +60,6 @@ class ProceedMetadataRequest(BaseModel):
     temp_file_keys: Optional[list[str]] = None # for excel source (multi-file)
     file_names: Optional[list[str]] = None     # original filenames matching temp_file_keys order
     uploaded_tables: Optional[list[UploadedMetadataTable]] = None
-    connection_string: Optional[str] = None  # for postgresql/supabase source
-    pg_schema: Optional[str] = "public"      # for postgresql/supabase source
 
 
 # ── Metadata Record ────────────────────────────────────────────────────────────

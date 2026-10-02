@@ -249,6 +249,7 @@ export default function NewROPAPage() {
               required
               error={errors.retention_period}
               placeholder="e.g. 5 Years from Account Termination"
+              hint="Start with a duration (e.g. 5 Years, 18 Months). Once approved, the project's uploaded files are kept until the project end date + this period instead of 30 days."
               className="h-8 text-xs font-mono"
             />
           </CardContent>

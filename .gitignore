@@ -24,9 +24,6 @@ build/
 .mypy_cache/
 .ruff_cache/
 
-# Alembic â€” keep migrations, ignore local temp
-backend/alembic/__pycache__/
-
 # Node / Next.js
 node_modules/
 .next/
@@ -37,13 +34,22 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # Docker volumes / local data
-postgres_data/
+sqlite_data/
 redis_data/
 tmp_data/
 *.sqlite
 *.db
+*.db-wal
+*.db-shm
 !backend/datagov.db
 !database/*.db
+
+# Local-only DQ material: templates with a live bot token, client sample data, test guides
+DQ Template (Local Only)/
+
+# Uploaded files: only backend/shared_uploads/ (fictitious test data) is committed
+uploads/
+uploads_data/
 
 # Local one-off SQL scripts
 clear_prepared_sig.sql

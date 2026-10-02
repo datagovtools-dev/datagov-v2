@@ -51,7 +51,7 @@ interface ProjectDetail {
 }
 
 interface UserOption { id: string; full_name: string; email: string; position?: string | null }
-interface OwnerRecord { role_type: string; full_name: string; email: string }
+interface OwnerRecord { role_type: string; full_name: string; email: string; position?: string | null }
 
 type StatusVariant = "draft" | "pending" | "in-review" | "approved" | "rejected" | "done" | "default";
 
@@ -428,13 +428,16 @@ function SignaturePad({
 // ── SignOff component ─────────────────────────────────────────────────────────
 
 function SignOffBlock({
-  value, onChange, disabled, showErrors, acknowledgedReadOnly, activeApprovalStep, isSuperAdmin,
+  value, onChange, disabled, showErrors, acknowledgedReadOnly, preparedNameReadOnly, preparedPositionReadOnly,
+  activeApprovalStep, isSuperAdmin,
 }: {
   value: Record<string, string>;
   onChange: (field: string, val: string) => void;
   disabled?: boolean;
   showErrors?: boolean;
   acknowledgedReadOnly?: boolean;
+  preparedNameReadOnly?: boolean;      // filled from the project's Data Owner
+  preparedPositionReadOnly?: boolean;  // filled from the Data Owner's position on the project
   activeApprovalStep?: number;
   isSuperAdmin?: boolean;
 }) {
@@ -486,14 +489,24 @@ function SignOffBlock({
           <div className="space-y-2">
             <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">
               Prepared By{" "}
-              <span className="text-surface-400 normal-case font-normal">(client representative · required)</span>
+              {preparedNameReadOnly
+                ? <span className="text-primary-500 normal-case font-normal">(auto-filled · Project Data Owner)</span>
+                : <span className="text-surface-400 normal-case font-normal">(client representative · required)</span>
+              }
             </p>
-            <input type="text" placeholder="Full name" value={value.prepared_by ?? ""} disabled={disabled}
+            <input type="text" placeholder="Full name" value={value.prepared_by ?? ""}
+              disabled={disabled || preparedNameReadOnly}
               onChange={(e) => onChange("prepared_by", e.target.value)}
-              className={`input-base text-sm w-full ${err("prepared_by")}`} />
-            <input type="text" placeholder="Position only (e.g. Head of Analytics)" value={value.prepared_position ?? ""} disabled={disabled}
+              className={`input-base text-sm w-full ${disabled || preparedNameReadOnly ? "bg-surface-50 text-surface-600" : err("prepared_by")}`} />
+            <input type="text" placeholder="Position only (e.g. CRM Department Head)" value={value.prepared_position ?? ""}
+              disabled={disabled || preparedPositionReadOnly}
               onChange={(e) => onChange("prepared_position", e.target.value)}
-              className={`input-base text-sm w-full ${err("prepared_position")}`} />
+              className={`input-base text-sm w-full ${disabled || preparedPositionReadOnly ? "bg-surface-50 text-surface-600" : err("prepared_position")}`} />
+            {preparedNameReadOnly && !preparedPositionReadOnly && !disabled && (
+              <p className="text-[11px] text-amber-700">
+                The Data Owner has no position on the project yet: type it here, or add it under Data Assets Catalog → Edit → Data Owner → Position.
+              </p>
+            )}
             <div>
               <p className="text-xs text-surface-500 mb-1">Signature</p>
               <SignaturePad
@@ -518,7 +531,7 @@ function SignOffBlock({
             <p className="text-xs font-semibold text-surface-500 uppercase tracking-wide">
               Acknowledged By{" "}
               {acknowledgedReadOnly
-                ? <span className="text-primary-500 normal-case font-normal">(auto-filled · Project SME)</span>
+                ? <span className="text-primary-500 normal-case font-normal">(auto-filled · Project SME, company position)</span>
                 : <span className="text-surface-400 normal-case font-normal">(internal project SME)</span>
               }
             </p>
@@ -637,19 +650,22 @@ export default function DSRDetailPage() {
       purpose: dsr.purpose, is_ai_use: dsr.is_ai_use,
       duration_start: dsr.duration_start, duration_end: dsr.duration_end,
     });
-    // Always sync acknowledged_by from project SME
-    if (projectDetail?.sme_id) {
-      const sme = resolveUser(projectDetail.sme_id);
-      if (sme.name !== "—") {
-        setChecklistDraft((prev) => {
-          const current = prev ?? {};
-          const so = { ...(current.sign_off ?? {}) };
-          so.acknowledged_by = sme.name;
-          so.acknowledged_position = sme.position ?? "";
-          return { ...current, sign_off: so };
-        });
+    // Sign-off people come from the project: Prepared By = Data Owner (name + position on the project),
+    // Acknowledged By = project SME (name + company position from the user account)
+    const sme = projectDetail?.sme_id ? resolveUser(projectDetail.sme_id) : null;
+    setChecklistDraft((prev) => {
+      const current = prev ?? {};
+      const so = { ...(current.sign_off ?? {}) };
+      if (dataOwner?.full_name) {
+        so.prepared_by = dataOwner.full_name;
+        if (dataOwner.position) so.prepared_position = dataOwner.position;
       }
-    }
+      if (sme && sme.name !== "—") {
+        so.acknowledged_by = sme.name;
+        so.acknowledged_position = sme.position ?? "";
+      }
+      return { ...current, sign_off: so };
+    });
     setEditing(true);
     setServerError("");
   }
@@ -1272,6 +1288,8 @@ export default function DSRDetailPage() {
                 disabled={!editing}
                 showErrors={showErrors}
                 acknowledgedReadOnly={editing}
+                preparedNameReadOnly={editing && !!dataOwner?.full_name}
+                preparedPositionReadOnly={editing && !!dataOwner?.position}
                 activeApprovalStep={dsr.approvals.find(a => a.status === "requested")?.step_order}
                 isSuperAdmin={currentUser?.is_super_admin ?? false}
               />
