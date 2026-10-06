@@ -185,6 +185,18 @@ def require_any_permission(*permissions: str):
     return _check
 
 
+def require_super_admin():
+    """FastAPI dependency for operations restricted to the Super Administrator."""
+    async def _check(current_user: CurrentUser) -> User:
+        if not getattr(current_user, "is_super_admin", False):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Super Administrator permission required",
+            )
+        return current_user
+    return _check
+
+
 # ── Navigation Menus & Business Activities Taxonomy ───────────────────────────
 
 MENU_DEFINITIONS = [

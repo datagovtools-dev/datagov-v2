@@ -8,13 +8,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, get_db
-from app.core.rbac import require_permission
+from app.core.rbac import require_permission, require_super_admin
 from app.models.project import PROJECT_CODE_PATTERN, Project
 from app.models.user import AuditLog, User
 from app.schemas.project import (
-    NextProjectCode, PaginatedProjects, ProjectCreate, ProjectFiltersResponse,
-    ProjectListItem, ProjectOut, ProjectUpdate, SourceFileRetentionOut,
+    NextProjectCode, PaginatedProjects, ProjectCreate, ProjectDeletionPreview, ProjectDeletionResult,
+    ProjectFiltersResponse, ProjectListItem, ProjectOut, ProjectUpdate, SourceFileRetentionOut,
 )
+from app.services.project_deletion import collect_scope, delete_project_asset
 from app.services.retention import project_retention
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -107,6 +108,27 @@ async def get_next_project_code(
     return NextProjectCode(project_year=year, project_code=await next_project_code(db, year))
 
 
+@router.get("/{project_id}/deletion-preview", response_model=ProjectDeletionPreview)
+async def get_project_deletion_preview(
+    project_id: uuid.UUID,
+    db: DB,
+    _: Annotated[User, Depends(require_super_admin())],
+) -> ProjectDeletionPreview:
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    scope = await collect_scope(db, project)
+    return ProjectDeletionPreview(
+        project_id=project.id,
+        project_code=project.project_code,
+        project_name=project.project_name,
+        related_counts=scope.counts,
+        uploaded_file_count=len(scope.source_file_paths),
+        active_dq_runs=scope.active_dq_runs,
+        can_delete=bool(project.project_code) and scope.active_dq_runs == 0,
+    )
+
+
 @router.get("/{project_id}", response_model=ProjectOut)
 async def get_project(
     project_id: uuid.UUID,
@@ -131,6 +153,34 @@ async def get_source_file_retention(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return SourceFileRetentionOut(**(await project_retention(db, project)).as_dict())
+
+
+@router.delete("/{project_id}", response_model=ProjectDeletionResult)
+async def delete_project(
+    project_id: uuid.UUID,
+    db: DB,
+    current_user: Annotated[User, Depends(require_super_admin())],
+    confirmation_code: str = Query(..., min_length=1, max_length=80),
+) -> ProjectDeletionResult:
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not project.project_code:
+        raise HTTPException(status_code=409, detail="Asset has no project code and cannot be safely confirmed")
+    try:
+        result = await delete_project_asset(db, project, current_user.id, confirmation_code)
+        return ProjectDeletionResult(
+            project_id=result.project_id,
+            project_code=result.project_code,
+            deleted_counts=result.deleted_counts,
+            files_deleted=result.files_deleted,
+            files_missing=result.files_missing,
+            file_cleanup_errors=list(result.file_cleanup_errors),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)

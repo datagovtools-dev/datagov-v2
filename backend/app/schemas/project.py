@@ -100,6 +100,25 @@ class SourceFileRetentionOut(BaseModel):
     unreadable_ropa_periods: list[str] = []
 
 
+class ProjectDeletionPreview(BaseModel):
+    project_id: uuid.UUID
+    project_code: Optional[str] = None
+    project_name: str
+    related_counts: dict[str, int]
+    uploaded_file_count: int
+    active_dq_runs: int
+    can_delete: bool
+
+
+class ProjectDeletionResult(BaseModel):
+    project_id: uuid.UUID
+    project_code: Optional[str] = None
+    deleted_counts: dict[str, int]
+    files_deleted: int
+    files_missing: int
+    file_cleanup_errors: list[str] = []
+
+
 class ProjectFiltersResponse(BaseModel):
     years: list[int]
     categories: list[str]

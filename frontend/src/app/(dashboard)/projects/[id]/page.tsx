@@ -4,14 +4,18 @@ import * as React from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, Pencil, Save, X } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Save, X, Trash2, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuthStore } from "@/store/authStore";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/Select";
 import { UserCombobox } from "@/components/ui/UserCombobox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { toast } from "@/components/ui/Toast";
+import {
+  Modal, ModalBody, ModalContent, ModalDescription, ModalFooter, ModalHeader, ModalTitle,
+} from "@/components/ui/Modal";
 import { DetailSkeleton } from "@/components/ui/LoadingState";
 import {
   ProjectBasicInformationContent,
@@ -36,6 +40,15 @@ interface ProjectOut {
   dq_officer_id: string | null; pic_data_compliance_id: string | null;
   created_by: string; created_at: string; updated_at: string;
 }
+interface ProjectDeletionPreview {
+  project_id: string;
+  project_code: string | null;
+  project_name: string;
+  related_counts: Record<string, number>;
+  uploaded_file_count: number;
+  active_dq_runs: number;
+  can_delete: boolean;
+}
 
 const CATEGORIES = ["AI / ML", "Analytics", "Data Governance", "Data Quality", "Integration", "Other"];
 const CURRENT_YEAR = new Date().getFullYear();
@@ -49,6 +62,10 @@ export default function ProjectDetailPage() {
   const [form, setForm] = React.useState<Record<string, string>>({});
   const [teamErrors, setTeamErrors] = React.useState<Record<string, string>>({});
   const [serverError, setServerError] = React.useState("");
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [confirmationCode, setConfirmationCode] = React.useState("");
+  const currentUser = useAuthStore(s => s.user);
+  const isSuperAdmin = Boolean(currentUser?.is_super_admin || currentUser?.roles?.includes("super_admin"));
 
   const { data: project, isLoading } = useQuery<ProjectOut>({
     queryKey: ["project", id],
@@ -71,6 +88,12 @@ export default function ProjectDetailPage() {
     queryKey: ["project-retention", id],
     queryFn: () => api.get<SourceFileRetentionLike>(`/projects/${id}/source-file-retention`),
     enabled: !!id,
+  });
+
+  const { data: deletionPreview } = useQuery<ProjectDeletionPreview>({
+    queryKey: ["project-deletion-preview", id],
+    queryFn: () => api.get<ProjectDeletionPreview>(`/projects/${id}/deletion-preview`),
+    enabled: !!id && isSuperAdmin,
   });
 
   const [ownerForms, setOwnerForms] = React.useState({
@@ -183,6 +206,17 @@ export default function ProjectDetailPage() {
       setEditing(false);
     },
     onError: (e: any) => setServerError(e.message),
+  });
+
+  const deleteAsset = useMutation({
+    mutationFn: () => api.delete(`/projects/${id}?confirmation_code=${encodeURIComponent(confirmationCode.trim())}`),
+    onSuccess: () => {
+      toast.success("Asset deleted", { description: "The asset and its project-owned governance records were removed." });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      setDeleteOpen(false);
+      router.push("/projects");
+    },
+    onError: (e: any) => toast.error("Asset deletion failed", { description: e.message }),
   });
 
   if (isLoading) return <DetailSkeleton />;
@@ -313,6 +347,16 @@ export default function ProjectDetailPage() {
                     <Save className="h-3.5 w-3.5 mr-1" /> Save
                   </Button>
                 </>
+              )}
+              {isSuperAdmin && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="h-7.5 text-xs font-medium"
+                  onClick={() => { setConfirmationCode(""); setDeleteOpen(true); }}
+                >
+                  <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete Asset
+                </Button>
               )}
             </div>
           </div>
@@ -464,6 +508,69 @@ export default function ProjectDetailPage() {
           <p className="rounded-md bg-rose-50 border border-rose-200 px-3.5 py-2 text-xs text-rose-700 font-mono">{serverError}</p>
         )}
       </div>
+
+      <Modal open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <ModalContent size="lg">
+          <ModalHeader>
+            <ModalTitle className="flex items-center gap-2 text-rose-700">
+              <AlertTriangle className="h-4 w-4" /> Permanently delete asset
+            </ModalTitle>
+            <ModalDescription>
+              This action removes the asset and its project-owned governance records. Audit logs are retained.
+            </ModalDescription>
+          </ModalHeader>
+          <ModalBody>
+            <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-800">
+              <p className="font-semibold">{project.project_code} · {project.project_name}</p>
+              <p className="mt-1">Uploaded files are removed from the upload volume. External BigQuery/GCS data is not deleted.</p>
+            </div>
+            <div className="mt-4">
+              <p className="text-xs font-semibold text-slate-700 mb-2">Records that will be deleted</p>
+              {deletionPreview ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {Object.entries(deletionPreview.related_counts).map(([label, count]) => (
+                    <div key={label} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
+                      <p className="text-[10px] text-slate-500 break-words">{label.replaceAll("_", " ")}</p>
+                      <p className="text-sm font-semibold text-slate-900 tabular-nums">{count}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">Loading deletion preview…</p>
+              )}
+            </div>
+            {deletionPreview?.active_dq_runs ? (
+              <p className="mt-3 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-800">
+                Deletion is blocked while a DQ run is pending or running.
+              </p>
+            ) : null}
+            <div className="mt-4">
+              <label className="text-xs font-semibold text-slate-700 block mb-1">
+                Type <span className="font-mono text-rose-700">{project.project_code}</span> to confirm
+              </label>
+              <input
+                className="input-base h-8 text-xs font-mono w-full"
+                value={confirmationCode}
+                onChange={(e) => setConfirmationCode(e.target.value)}
+                placeholder={project.project_code ?? "Asset code"}
+                autoComplete="off"
+              />
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="outline" size="sm" onClick={() => setDeleteOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              loading={deleteAsset.isPending}
+              disabled={!deletionPreview?.can_delete || confirmationCode.trim() !== project.project_code}
+              onClick={() => deleteAsset.mutate()}
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Delete permanently
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </div>
   );
 }

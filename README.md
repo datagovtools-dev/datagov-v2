@@ -691,6 +691,12 @@ Summary for teammates pulling this version: DQ runs on `llama3.2:3b` (no qwen/ll
 - **Automatic deletion** — on expiry day: physical files removed from `uploads_data` volume, `project_source_files` records deleted, deletion-confirmed notification sent to the same recipients
 - GCP BigQuery imports have no physical files to clean up — their derived `metadata_records` stay permanently
 
+### Superadmin Asset Deletion
+- **Only Super Administrator** can call `GET /api/v1/projects/{project_id}/deletion-preview` and `DELETE /api/v1/projects/{project_id}?confirmation_code=PRJ-YYYY-NNN`; normal roles receive HTTP 403 from the backend even if the UI is bypassed
+- The confirmation dialog reports the related records before deletion and requires the exact asset code
+- The delete operation explicitly removes project-owned metadata, owner/steward records, uploaded source-file metadata and physical upload/shared copies, DQ runs/results/findings/archives, DSR/AICK approvals and records, DPIA approvals and records, ROPA, BAPD approvals and records, project-role assignments, and related notifications
+- Pending/running DQ runs block deletion with HTTP 409; external BigQuery/GCS data is not deleted; immutable `audit_logs` rows are retained with an `action=delete` record
+
 ### Metadata Import — Richer Data Capture
 - **`_get_sample_data()`** now stores up to **5 distinct non-null values** pipe-separated (was 1); richer context for AI definition generation
 - **`distinct_values`** now populated by the Celery `retrieve_metadata` task (was only set by the sync `metadata_population` path); categorical/boolean columns get their full unique value set stored
