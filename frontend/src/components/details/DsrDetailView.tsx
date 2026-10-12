@@ -5,15 +5,6 @@ import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { formatDate } from "@/lib/utils";
 
-export interface DsrApprovalLike {
-  id: string;
-  step_order: number;
-  approver_name?: string | null;
-  status: string;
-  comments?: string | null;
-  actioned_at: string | null;
-}
-
 export interface DsrChecklistLike {
   checklist_json: Record<string, any>;
   validated_at?: string | null;
@@ -33,7 +24,6 @@ export interface DsrDetailLike {
   duration_end: string | null;
   project_end_date?: string | null;
   status: string;
-  approvals: DsrApprovalLike[];
   ai_checklist?: DsrChecklistLike | null;
 }
 
@@ -170,7 +160,7 @@ export function DsrChecklistReadOnlyCard({ dsr }: { dsr: DsrDetailLike }) {
             Instructions: Fill the status based on data condition and record remarks if criteria are not met.
           </p>
         </div>
-        {checklist.validated_at && <Badge variant="success" className="text-[10px]">Signed off {formatDate(checklist.validated_at)}</Badge>}
+        {checklist.validated_at && <Badge variant="success" className="text-[10px]">AI assessment signed off {formatDate(checklist.validated_at)}</Badge>}
       </CardHeader>
       <CardContent className="pt-4 space-y-4">
         {CHECKLIST_TEMPLATE.filter((s) => !s.aiOnly || dsr.is_ai_use).map((section) => (
@@ -203,7 +193,7 @@ export function DsrChecklistReadOnlyCard({ dsr }: { dsr: DsrDetailLike }) {
         ))}
 
         <div>
-          <h3 className="text-xs font-semibold font-mono text-slate-900 bg-slate-100/60 px-3 py-1.5 rounded-t-md border border-slate-200">Sign Off</h3>
+          <h3 className="text-xs font-semibold font-mono text-slate-900 bg-slate-100/60 px-3 py-1.5 rounded-t-md border border-slate-200">Final Approval &amp; Sign Off</h3>
           <div className="border border-t-0 border-slate-200 rounded-b-md p-3 space-y-3 bg-white">
             <div className="flex items-center gap-2.5">
               <span className="text-xs font-semibold text-slate-700 font-mono w-24 shrink-0">Approved?</span>

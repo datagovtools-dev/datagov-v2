@@ -18,11 +18,6 @@ import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-interface DSRApproval {
-  id: string; approver_id?: string | null; step_order: number; approver_role: string; approver_name: string;
-  status: string; comments: string | null; actioned_at: string | null;
-}
-
 interface AIChecklist {
   id: string;
   checklist_json: Record<string, any>;
@@ -35,7 +30,6 @@ interface DSRDetail {
   dataset_name: string; recipient: string; purpose: string; is_ai_use: boolean;
   duration_start: string; duration_end: string; project_end_date: string | null; status: string;
   created_at: string; updated_at: string;
-  approvals: DSRApproval[];
   ai_checklist: AIChecklist | null;
 }
 
@@ -65,13 +59,6 @@ function statusVariant(s: string): StatusVariant {
 function statusLabel(s: string) {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
-
-const STEP_LABELS: Record<number, string> = {
-  1: "PIC Data Compliance Approval",
-  2: "DM Approval",
-  3: "SME Sign Off",
-  4: "Client Sign Off",
-};
 
 // ── Checklist template definition ─────────────────────────────────────────────
 
@@ -163,11 +150,13 @@ function getChecklistErrors(draft: Record<string, any>, isAiUse: boolean): Set<s
     }
   }
   const so = draft.sign_off ?? {};
-  if (!so.approved) errors.add("so_approved");
+  if (so.approved !== "Yes") errors.add("so_approved");
   if (!so.prepared_by?.trim()) errors.add("so_prepared_by");
   if (!so.prepared_position?.trim()) errors.add("so_prepared_position");
+  if (!so.prepared_signature) errors.add("so_prepared_signature");
   if (!so.acknowledged_by?.trim()) errors.add("so_acknowledged_by");
   if (!so.acknowledged_position?.trim()) errors.add("so_acknowledged_position");
+  if (!so.acknowledged_signature) errors.add("so_acknowledged_signature");
   return errors;
 }
 
@@ -455,9 +444,12 @@ function SignOffBlock({
   return (
     <div>
       <h3 className="text-sm font-semibold text-surface-800 bg-surface-100 px-3 py-2 rounded-t-md border border-surface-200">
-        Sign Off
+        Final Approval &amp; Sign Off
       </h3>
       <div className="border border-t-0 border-surface-200 rounded-b-md p-3 space-y-3">
+        <p className="text-xs text-surface-500">
+          Both signatures below complete the DSR approval. No separate approval chain is required.
+        </p>
         {/* Approved */}
         <div className="flex items-center gap-3">
           <span className="text-sm font-medium text-surface-700 w-28 shrink-0">
@@ -511,6 +503,9 @@ function SignOffBlock({
                 onClear={() => handleClear("prepared")}
                 disabled={disabled}
               />
+              {showErrors && !value.prepared_signature && (
+                <p className="text-[11px] text-rose-600">Signature required for final approval.</p>
+              )}
             </div>
             {value.prepared_signature && value.prepared_date && (
               <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.prepared_date}</span></p>
@@ -542,6 +537,9 @@ function SignOffBlock({
                 onClear={() => handleClear("acknowledged")}
                 disabled={disabled}
               />
+              {showErrors && !value.acknowledged_signature && (
+                <p className="text-[11px] text-rose-600">Signature required for final approval.</p>
+              )}
             </div>
             {value.acknowledged_signature && value.acknowledged_date && (
               <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.acknowledged_date}</span></p>
@@ -779,9 +777,9 @@ export default function DSRDetailPage() {
   const signOffDraft = (activeDraft.sign_off ?? {}) as Record<string, string>;
   const isChecklistDirty = JSON.stringify(activeDraft) !== JSON.stringify(checklist?.checklist_json ?? {});
 
-  // Lock editing once at least one signature has been saved to the server
+  // A saved final sign-off locks editing, but a draft must remain submittable.
   const savedSignOff = checklist?.checklist_json?.sign_off ?? {};
-  const isSigned = !!(savedSignOff.prepared_signature || savedSignOff.acknowledged_signature);
+  const isSigned = !!(savedSignOff.prepared_signature && savedSignOff.acknowledged_signature);
 
   // Submit is only allowed when the saved checklist is fully filled
   const isChecklistComplete = getChecklistErrors(checklist?.checklist_json ?? {}, dsr.is_ai_use).size === 0;
@@ -791,24 +789,6 @@ export default function DSRDetailPage() {
     const cj = checklist?.checklist_json ?? {};
     const so = (cj.sign_off ?? {}) as Record<string, string>;
 
-    const effectiveApprovals = [...dsr.approvals].sort((a, b) => a.step_order - b.step_order);
-
-    const approvalRows = effectiveApprovals
-      .map((s) => {
-        const displayName = s.step_order === 4 ? (so.prepared_by || s.approver_name) : s.approver_name;
-        const label = STEP_LABELS[s.step_order] ?? `Step ${s.step_order}`;
-        const statusBadge =
-          s.status === "approved" ? pdfBadge("Approved", "approved") :
-          s.status === "rejected" ? pdfBadge("Rejected", "rejected") :
-          pdfBadge("Requested", "pending");
-        return `<li>
-          <span class="tl-step">${s.step_order}.</span>
-          <span>
-            <div class="tl-label">${label} ${statusBadge}</div>
-            <div class="tl-meta">${displayName || "—"}${s.actioned_at ? " · " + formatDateTime(s.actioned_at) : ""}</div>
-          </span>
-        </li>`;
-      }).join("");
 
     const checklistSections = CHECKLIST_TEMPLATE
       .filter((s) => !s.aiOnly || dsr.is_ai_use)
@@ -837,7 +817,7 @@ export default function DSRDetailPage() {
       }).join("");
 
     const signOffHtml = `<div class="section">
-      <div class="section-title">Sign Off</div>
+      <div class="section-title">Final Approval &amp; Sign Off</div>
       <div class="grid2" style="margin-bottom:8px">
         ${pdfField("Approved?", so.approved)}
       </div>
@@ -885,8 +865,8 @@ export default function DSRDetailPage() {
       </div>
 
       <div class="section">
-        <div class="section-title">Approval Timeline</div>
-        <ul class="timeline">${approvalRows}</ul>
+        <div class="section-title">Approval</div>
+        <p>Approval is completed through the Final Approval &amp; Sign Off section below.</p>
       </div>
 
       ${checklist ? checklistSections : ""}
@@ -924,40 +904,40 @@ export default function DSRDetailPage() {
               <Button variant="outline" size="sm" className="h-7.5 text-xs font-medium" onClick={handleExportPDF}>
                 <Download className="h-3.5 w-3.5 mr-1" /> Export PDF
               </Button>
-              {!isSigned && (
-                editing ? (
-                  <>
-                    <Button variant="outline" size="sm" className="h-7.5 text-xs" onClick={handleCancel}>
-                      <X className="h-3.5 w-3.5 mr-1" /> Cancel
-                    </Button>
+              {editing ? (
+                <>
+                  <Button variant="outline" size="sm" className="h-7.5 text-xs" onClick={handleCancel}>
+                    <X className="h-3.5 w-3.5 mr-1" /> Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7.5 text-xs font-medium"
+                    onClick={() => handleSave(activeDraft, dsr.is_ai_use)}
+                    loading={isSaving || updateMutation.isPending || checklistMutation.isPending}
+                  >
+                    <Save className="h-3.5 w-3.5 mr-1" /> Save as Draft
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {dsr.status === "draft" && (
                     <Button
                       size="sm"
                       className="h-7.5 text-xs font-medium"
-                      onClick={() => handleSave(activeDraft, dsr.is_ai_use)}
-                      loading={isSaving || updateMutation.isPending || checklistMutation.isPending}
+                      onClick={() => submitMutation.mutate()}
+                      loading={submitMutation.isPending}
+                      disabled={!isChecklistComplete}
+                      title={!isChecklistComplete ? "Complete all checklist sections and both Sign Off signatures before submitting" : undefined}
                     >
-                      <Save className="h-3.5 w-3.5 mr-1" /> Save as Draft
+                      Submit
                     </Button>
-                  </>
-                ) : (
-                  <>
-                    {dsr.status === "draft" && (
-                      <Button
-                        size="sm"
-                        className="h-7.5 text-xs font-medium"
-                        onClick={() => submitMutation.mutate()}
-                        loading={submitMutation.isPending}
-                        disabled={!isChecklistComplete}
-                        title={!isChecklistComplete ? "Complete all checklist sections and sign-off fields before submitting" : undefined}
-                      >
-                        Submit
-                      </Button>
-                    )}
+                  )}
+                  {!isSigned && (
                     <Button size="sm" className="h-7.5 text-xs font-medium" onClick={startEdit}>
                       <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
                     </Button>
-                  </>
-                )
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -966,7 +946,7 @@ export default function DSRDetailPage() {
 
       {dsr.status === "draft" && !isChecklistComplete && (
         <div className="rounded-md bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs text-amber-800 font-mono">
-          Complete all checklist sections A–D and sign-off fields (excluding e-signatures) before submitting. Only &ldquo;Save as Draft&rdquo; is available until then.
+          Complete all checklist sections A–D and both Sign Off signatures before submitting. Only &ldquo;Save as Draft&rdquo; is available until then.
         </div>
       )}
 
@@ -1076,7 +1056,7 @@ export default function DSRDetailPage() {
                   </p>
                 </div>
                 {checklist.validated_at && (
-                  <Badge variant="success" className="text-[10px]">Signed off {formatDate(checklist.validated_at)}</Badge>
+                  <Badge variant="success" className="text-[10px]">AI assessment signed off {formatDate(checklist.validated_at)}</Badge>
                 )}
               </div>
             </CardHeader>
@@ -1098,7 +1078,7 @@ export default function DSRDetailPage() {
                 onChange={setSignOff}
                 disabled={!editing}
                 showErrors={showErrors}
-                acknowledgedReadOnly={editing}
+                acknowledgedReadOnly={editing && !!signOffDraft.acknowledged_by}
                 preparedNameReadOnly={editing && !!dataOwner?.full_name}
                 preparedPositionReadOnly={editing && !!dataOwner?.position}
               />
@@ -1108,7 +1088,7 @@ export default function DSRDetailPage() {
                 const errCount = getChecklistErrors(activeDraft, dsr.is_ai_use).size;
                 return errCount > 0 ? (
                   <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2 font-mono">
-                    {errCount} required field{errCount !== 1 ? "s" : ""} still incomplete. All checkboxes and remarks are required — use &quot;-&quot; if there is nothing to add.
+                    {errCount} required field{errCount !== 1 ? "s" : ""} still incomplete. All checklist answers, remarks, and both Sign Off signatures are required.
                   </p>
                 ) : null;
               })()}

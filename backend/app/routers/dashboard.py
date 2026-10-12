@@ -81,31 +81,8 @@ async def get_dashboard(db: DB, current_user: CurrentUser) -> DashboardResponse:
     # My Action Items — pending approvals for current user
     action_items: list[ActionItem] = []
 
-    _DSR_STEP_NAMES = {1: "PIC Compliance Review", 2: "DM Approval", 3: "SME Sign-Off", 4: "Client Sign-Off"}
     _DPIA_STEP_NAMES = {1: "PIC Compliance Review", 2: "DM/PM Approval"}
     _BAPD_STEP_NAMES = {1: "Data Owner Sign-Off", 2: "DGO Compliance Review"}
-
-    # DSRs submitted/under_review
-    dsrs_res = await db.execute(
-        select(DataSharingRequest)
-        .options(selectinload(DataSharingRequest.approvals))
-        .where(DataSharingRequest.status.in_(["submitted", "under_review"]))
-        .order_by(DataSharingRequest.created_at.asc())
-        .limit(20)
-    )
-    for dsr in dsrs_res.scalars().all():
-        active_step = next((a for a in sorted(dsr.approvals, key=lambda x: x.step_order) if a.status == "requested"), None)
-        step_label = _DSR_STEP_NAMES.get(active_step.step_order, f"Step {active_step.step_order}") if active_step else "Review"
-        expires_in = (dsr.duration_end - today).days if getattr(dsr, "duration_end", None) else None
-        urgency = "high" if (expires_in is not None and expires_in <= 7) or dsr.status == "submitted" else "medium"
-        action_items.append(ActionItem(
-            module="dsr",
-            entity_id=str(dsr.id),
-            title=f"DSR {dsr.tracking_id} — {step_label} Required",
-            status=dsr.status,
-            urgency=urgency,
-            due_label=f"Expires in {expires_in}d" if expires_in is not None else None,
-        ))
 
     # DPIAs under review
     dpias_res = await db.execute(

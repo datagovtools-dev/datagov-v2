@@ -183,10 +183,6 @@ const AICK_AREAS_DEF: { area: string; items: { id: string; assessment: string; r
   ] },
 ];
 
-const DSR_STEP_LABELS_MAP: Record<number, string> = {
-  1: "PIC Data Compliance Approval", 2: "DM Approval", 3: "SME Sign Off", 4: "Client Sign Off",
-};
-
 // ── Helper components ─────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
@@ -295,7 +291,6 @@ export default function DPIADetailPage() {
         duration_start: string; duration_end: string; project_end_date: string | null;
         recipient: string; is_ai_use: boolean; is_signed: boolean; signed_at: string | null;
         created_at: string;
-        approvals: { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[];
         ai_checklist: { id: string; status: string; validated_at: string | null; checklist_json: Record<string, any> } | null;
       }>(`/dsr/${dsr.id}`);
     },
@@ -537,13 +532,6 @@ export default function DPIADetailPage() {
     ? "bg-amber-100 text-amber-700 border border-amber-300"
     : "bg-green-100 text-green-700 border border-green-300";
   const piiDotCls = hasHighPii ? "bg-red-500" : hasPii ? "bg-amber-500" : "bg-green-500";
-
-  const dsrCj = dsrForDpia?.ai_checklist?.checklist_json as Record<string, any> | undefined;
-  const dsrSignOff = dsrCj?.sign_off as Record<string, string> | undefined;
-  const aickRaw = dsrCj?.ai_assessment as Record<string, any> | undefined;
-  const aickItems = (aickRaw?.items ?? {}) as Record<string, { status: string | null; remarks: string }>;
-  const aickSignOff = aickRaw?.sign_off as Record<string, string> | undefined;
-  const dsrApprovals = (dsrForDpia?.approvals ?? []) as { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[];
 
   return (
     <div className="space-y-4">
@@ -1153,7 +1141,6 @@ export default function DPIADetailPage() {
               project_id: dpia.project_id,
               project_code: dpia.project_code ?? project?.project_code ?? null,
               project_name: dpia.project_name ?? project?.project_name ?? "-",
-              approvals: dsrApprovals,
             }}
           />
         </DetailModal>

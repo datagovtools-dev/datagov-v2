@@ -80,6 +80,7 @@ class DSRListItem(BaseModel):
     status: str
     is_signed: bool = False
     signed_at: Optional[datetime] = None
+    is_final_signed: bool = False
     checklist_status: Optional[str] = None
     is_ai_use: bool
     duration_end: date

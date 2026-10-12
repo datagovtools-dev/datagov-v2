@@ -1,7 +1,7 @@
 import copy
 import math
 import uuid
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -9,7 +9,7 @@ from sqlalchemy import extract, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import CurrentUser, get_db
+from app.core.deps import get_db
 from app.core.rbac import require_permission
 from app.core.workflow import validate_transition, WorkflowError
 from app.models.dpia import DPIAApproval, DPIARecord
@@ -18,14 +18,12 @@ from app.models.dsr import (
     DataSharingAgreement, DataSharingRequest,
 )
 from app.models.project import Project
-from app.models.user import AuditLog, Role, User, UserProjectRole
+from app.models.user import AuditLog, User
 from app.schemas.dsr import (
-    AIChecklistOut, AIChecklistUpdate, ApprovalActionRequest,
+    AIChecklistOut, AIChecklistUpdate,
     DSACreate, DSAOut, DSRCreate, DSRListItem, DSROut, DSRUpdate,
     PaginatedDSR, TransitionRequest,
 )
-from app.worker.tasks.notifications import send_workflow_notification
-from app.services.notification_service import notify_approval_requested, notify_approval_completed
 from app.services.tracking_ids import next_yearly_tracking_id
 
 router = APIRouter(prefix="/dsr", tags=["dsr"])
@@ -68,37 +66,11 @@ _DSR_OPTS = [
 ]
 
 
-def _end_of_day(d: date) -> date:
-    """Sharing end is always treated as 23:59 — stored as the same date,
-    flagged here so expiry checks use datetime.combine(d, time(23, 59))."""
-    return d
-
-
 async def _gen_tracking_id(db: AsyncSession) -> str:
     return await next_yearly_tracking_id(
         db, DataSharingRequest, DataSharingRequest.tracking_id, "DSR"
     )
 
-
-async def _find_approver_for_role(
-    db: AsyncSession, role_name: str, project_id: uuid.UUID, fallback_id: uuid.UUID
-) -> uuid.UUID:
-    result = await db.execute(
-        select(UserProjectRole.user_id)
-        .join(Role, UserProjectRole.role_id == Role.id)
-        .where(
-            Role.name == role_name,
-            UserProjectRole.project_id == project_id,
-            UserProjectRole.revoked_at.is_(None),
-        )
-        .limit(1)
-    )
-    uid = result.scalar_one_or_none()
-    return uid if uid else fallback_id
-
-
-_STEP_LABELS = {1: "PIC Data Compliance Approval", 2: "DM / PM Approval", 3: "SME Sign Off", 4: "Client Sign Off"}
-_SIGN_OFF_STEPS = {3, 4}
 
 _AI_CHECKLIST_REQUIRED_ITEMS = [
     "before_use_1", "before_use_2", "before_use_3",
@@ -120,24 +92,6 @@ def _is_ai_checklist_complete(checklist_json: dict) -> bool:
         if not (so.get(f) or "").strip():
             return False
     return True
-
-
-async def _get_user(db: AsyncSession, user_id: uuid.UUID) -> User | None:
-    return (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
-
-
-async def _notify_approver(db: AsyncSession, user: User, step: int, dsr_id: str, tracking_id: str, actor_name: str) -> None:
-    step_label = _STEP_LABELS.get(step, f"Step {step}")
-    await notify_approval_requested(
-        db=db,
-        approver=user,
-        module="dsr",
-        tracking_id=tracking_id,
-        entity_id=dsr_id,
-        step=step,
-        step_label=step_label,
-        actor_name=actor_name,
-    )
 
 
 async def _get_dsr_or_404(dsr_id: uuid.UUID, db: AsyncSession) -> DataSharingRequest:
@@ -193,6 +147,7 @@ async def list_dsrs(
             Project.project_name,
             Project.project_code,
             Project.end_date.label("project_end_date"),
+            AIComplianceChecklist.checklist_json.label("checklist_json"),
             (AIComplianceChecklist.validated_at.isnot(None)).label("is_signed"),
             AIComplianceChecklist.validated_at.label("signed_at"),
             AIComplianceChecklist.status.label("checklist_status"),
@@ -248,6 +203,7 @@ async def list_dsrs(
             status=r.DataSharingRequest.status,
             is_signed=bool(r.is_signed),
             signed_at=r.signed_at,
+            is_final_signed=_final_sign_off_complete(r.checklist_json),
             checklist_status=r.checklist_status,
             is_ai_use=r.DataSharingRequest.is_ai_use,
             duration_end=r.DataSharingRequest.duration_end,
@@ -283,26 +239,13 @@ async def create_dsr(
     db.add(checklist_rec)
     await db.flush()  # populate checklist_rec.id
 
-    # Look up approvers directly from project fields (reliable — no role-name guessing)
+    # Resolve the project once for the related DPIA auto-creation below.
+    # DSR approval itself is completed by the form's Sign Off section.
     proj_res = await db.execute(select(Project).where(Project.id == dsr.project_id))
     proj = proj_res.scalar_one_or_none()
 
-    step_approvers = [
-        ("pic_compliance", proj.pic_data_compliance_id if proj else None),
-        ("dm_pm",          proj.delivery_manager_id    if proj else None),
-        ("sme",            proj.sme_id                 if proj else None),
-        ("client",         proj.dgo_id                 if proj else None),
-    ]
-
-    for step, (role, approver_id) in enumerate(step_approvers, 1):
-        db.add(DSRApproval(
-            dsr_id=dsr.id, approver_id=approver_id or current_user.id,
-            approver_role=role, step_order=step,
-            status="pending",
-        ))
-
-    # AICK no longer has a separate approval workflow. The sign-off section is
-    # persisted in checklist_json and remains the completion control.
+    # No DSR approval rows are created. The legacy table and response field are
+    # retained only so historical records remain readable.
 
     db.add(AuditLog(
         user_id=current_user.id, module="dsr", action="create",
@@ -370,7 +313,7 @@ async def update_dsr(
     return await _get_dsr_or_404(dsr_id, db)
 
 
-# ── Submit (draft → submitted, activates step 1) ─────────────────────────────
+# ── Submit (draft → approved through Final Approval & Sign Off) ───────────────
 
 _CHECKLIST_REQUIRED_ITEMS = [
     "A_i_1", "A_i_2", "A_i_3",
@@ -378,7 +321,20 @@ _CHECKLIST_REQUIRED_ITEMS = [
     "B_i", "B_ii", "B_iii", "B_iv", "B_v", "B_vi",
     "C_i_1", "C_i_2", "C_i_3",
 ]
-_SIGN_OFF_REQUIRED_FIELDS = ["approved", "prepared_by", "prepared_position", "acknowledged_by", "acknowledged_position"]
+_SIGN_OFF_REQUIRED_FIELDS = [
+    "approved", "prepared_by", "prepared_position", "prepared_signature",
+    "acknowledged_by", "acknowledged_position", "acknowledged_signature",
+]
+
+
+def _final_sign_off_complete(checklist_json: dict | None) -> bool:
+    so = (checklist_json or {}).get("sign_off", {})
+    return (
+        so.get("approved") == "Yes"
+        and all((so.get(field) or "").strip() for field in _SIGN_OFF_REQUIRED_FIELDS)
+        and bool(so.get("prepared_signed_by"))
+        and bool(so.get("acknowledged_signed_by"))
+    )
 
 
 def _is_checklist_complete(checklist_json: dict, is_ai_use: bool) -> bool:
@@ -390,6 +346,8 @@ def _is_checklist_complete(checklist_json: dict, is_ai_use: bool) -> bool:
         if not v.get("answer") or not (v.get("remarks") or "").strip():
             return False
     so = checklist_json.get("sign_off", {})
+    if so.get("approved") != "Yes":
+        return False
     for f in _SIGN_OFF_REQUIRED_FIELDS:
         if not (so.get(f) or "").strip():
             return False
@@ -404,6 +362,11 @@ async def submit_dsr(
     dsr = await _get_dsr_or_404(dsr_id, db)
     if dsr.status != "draft":
         raise HTTPException(status_code=400, detail="Only draft DSRs can be submitted")
+    if not dsr.project or dsr.project.sme_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the assigned Project SME can submit the final DSR sign-off.",
+        )
 
     # Verify checklist completeness before allowing submission
     checklist_res = await db.execute(
@@ -413,33 +376,39 @@ async def submit_dsr(
     if not checklist or not _is_checklist_complete(checklist.checklist_json or {}, dsr.is_ai_use):
         raise HTTPException(
             status_code=400,
-            detail="Checklist incomplete: fill all sections A–D and sign-off fields (excluding signatures) before submitting.",
+            detail="Checklist incomplete: fill all sections A–D and complete both Sign Off signatures before submitting.",
+        )
+    sign_off = (checklist.checklist_json or {}).get("sign_off") or {}
+    if not sign_off.get("prepared_signed_by") or not sign_off.get("acknowledged_signed_by"):
+        raise HTTPException(
+            status_code=400,
+            detail="Save both Final Approval & Sign Off signatures through the platform before submitting.",
+        )
+    acknowledged_signed_by = sign_off.get("acknowledged_signed_by")
+    if acknowledged_signed_by and acknowledged_signed_by != str(current_user.id):
+        raise HTTPException(
+            status_code=403,
+            detail="The final acknowledged signature must be submitted by the assigned Project SME.",
         )
 
-    dsr.status = "submitted"
-
-    # Activate step 1 (DGO)
-    step1_res = await db.execute(
-        select(DSRApproval).where(DSRApproval.dsr_id == dsr_id, DSRApproval.step_order == 1)
-    )
-    step1 = step1_res.scalar_one_or_none()
-    step1_approver_id = None
-    if step1:
-        step1.status = "requested"
-        step1_approver_id = step1.approver_id
+    # The completed Sign Off section is the approval. There is no separate
+    # PIC -> DM/PM -> SME -> Client approval chain for a DSR.
+    dsr.status = "approved"
+    checklist.status = "approved"
+    if not checklist.validated_at:
+        checklist.validated_by = current_user.id
+        checklist.validated_at = datetime.now(timezone.utc)
 
     db.add(AuditLog(
         user_id=current_user.id, module="dsr", action="submit",
         entity_type="dsr", entity_id=str(dsr_id),
-        details={"tracking_id": dsr.tracking_id},
+        details={
+            "tracking_id": dsr.tracking_id,
+            "approval_workflow": False,
+            "approval_method": "form_sign_off",
+        },
     ))
     await db.commit()
-
-    if step1_approver_id:
-        step1_user = await _get_user(db, step1_approver_id)
-        if step1_user:
-            await _notify_approver(db, step1_user, 1, str(dsr_id), dsr.tracking_id, current_user.full_name)
-            await db.commit()
 
     return await _get_dsr_or_404(dsr_id, db)
 
@@ -451,6 +420,11 @@ async def transition_dsr(
     current_user: Annotated[User, Depends(require_permission("dsr:approve"))],
 ) -> DataSharingRequest:
     dsr = await _get_dsr_or_404(dsr_id, db)
+    if body.target_status in {"submitted", "under_review", "approved", "rejected"}:
+        raise HTTPException(
+            status_code=400,
+            detail="DSR approval is completed in the form Sign Off section; no separate approval workflow is available.",
+        )
     try:
         validate_transition("dsr", dsr.status, body.target_status)
     except WorkflowError as e:
@@ -464,118 +438,8 @@ async def transition_dsr(
         details={"from": old_status, "to": body.target_status, "comments": body.comments},
     ))
     await db.commit()
-
-    # Fire notification async
-    event_map = {"submitted": "dsr_submitted", "approved": "dsr_approved", "rejected": "dsr_rejected"}
-    event = event_map.get(body.target_status)
-    if event:
-        send_workflow_notification.delay(
-            event=event, entity_id=str(dsr_id),
-            recipients=[],
-            context={"tracking_id": dsr.tracking_id, "actor": current_user.full_name},
-        )
     return await _get_dsr_or_404(dsr_id, db)
 
-
-# ── Approval action ────────────────────────────────────────────────────────────
-
-@router.post("/{dsr_id}/approvals/{step}", response_model=DSROut)
-async def action_approval(
-    dsr_id: uuid.UUID, step: int, body: ApprovalActionRequest, db: DB,
-    current_user: Annotated[User, Depends(require_permission("dsr:approve"))],
-) -> DataSharingRequest:
-    dsr = await _get_dsr_or_404(dsr_id, db)
-
-    approval_res = await db.execute(
-        select(DSRApproval).where(
-            DSRApproval.dsr_id == dsr_id,
-            DSRApproval.step_order == step,
-        )
-    )
-    approval = approval_res.scalar_one_or_none()
-    if not approval:
-        raise HTTPException(status_code=404, detail="Approval step not found")
-    if approval.status not in ("pending", "requested"):
-        raise HTTPException(status_code=400, detail="Approval step already actioned")
-
-    if approval.approver_id and current_user.id != approval.approver_id and not current_user.is_super_admin:
-        raise HTTPException(
-            status_code=403,
-            detail="Only the designated approver or a Super Admin can approve/reject this step.",
-        )
-
-    approval.approver_id = current_user.id
-    approval.status = "approved" if body.action == "approve" else "rejected"
-    approval.comments = body.comments
-    approval.actioned_at = datetime.now(timezone.utc)
-
-    next_approval = None
-    if body.action == "approve":
-        # Activate the next step
-        next_approval_res = await db.execute(
-            select(DSRApproval).where(
-                DSRApproval.dsr_id == dsr_id,
-                DSRApproval.step_order == step + 1,
-            )
-        )
-        next_approval = next_approval_res.scalar_one_or_none()
-        if next_approval:
-            next_approval.status = "requested"
-            dsr.status = "under_review"
-        else:
-            # No more steps — all approved
-            dsr.status = "approved"
-    else:
-        dsr.status = "rejected"
-
-    db.add(AuditLog(
-        user_id=current_user.id, module="dsr", action=f"approval_{body.action}",
-        entity_type="dsr", entity_id=str(dsr_id),
-        details={"step": step, "comments": body.comments},
-    ))
-    await db.commit()
-
-    # Post-commit notifications
-    step_label = _STEP_LABELS.get(step, f"Step {step}")
-    if body.action == "approve":
-        if next_approval:
-            next_user = await _get_user(db, next_approval.approver_id)
-            if next_user:
-                await _notify_approver(db, next_user, step + 1, str(dsr_id), dsr.tracking_id, current_user.full_name)
-                await db.commit()
-        else:
-            # Fully approved: notify requester
-            requester = await _get_user(db, dsr.requester_id)
-            if requester:
-                await notify_approval_completed(
-                    db=db,
-                    requester_id=requester.id,
-                    requester_email=requester.email,
-                    module="dsr",
-                    tracking_id=dsr.tracking_id,
-                    entity_id=str(dsr_id),
-                    status="approved",
-                    actor_name=current_user.full_name,
-                )
-                await db.commit()
-    else:
-        # Notify the requester of the rejection
-        requester = await _get_user(db, dsr.requester_id)
-        if requester:
-            await notify_approval_completed(
-                db=db,
-                requester_id=requester.id,
-                requester_email=requester.email,
-                module="dsr",
-                tracking_id=dsr.tracking_id,
-                entity_id=str(dsr_id),
-                status="rejected",
-                actor_name=current_user.full_name,
-                comments=body.comments,
-            )
-            await db.commit()
-
-    return await _get_dsr_or_404(dsr_id, db)
 
 # ── AI Compliance Checklist ────────────────────────────────────────────────────
 
@@ -609,11 +473,59 @@ async def update_checklist(
     dsr_id: uuid.UUID, body: AIChecklistUpdate, db: DB,
     current_user: Annotated[User, Depends(require_permission("dsr:update"))],
 ) -> AIComplianceChecklist:
-    checklist = await _get_checklist_or_404(dsr_id, db)
+    dsr = await _get_dsr_or_404(dsr_id, db)
+    if dsr.status == "approved":
+        raise HTTPException(status_code=400, detail="Approved DSR checklist is immutable")
+
+    checklist = dsr.ai_checklist or await _get_checklist_or_404(dsr_id, db)
     if body.checklist_json is not None:
-        checklist.checklist_json = body.checklist_json
-    # "Signed" only when both sign-off signatures are present (DM and SME steps); the pre-set
-    # "Approved? = Yes" answer alone does not sign the checklist. Final approval also signs it.
+        incoming = copy.deepcopy(body.checklist_json)
+        previous = checklist.checklist_json or {}
+        incoming_so = incoming.setdefault("sign_off", {})
+        previous_so = previous.get("sign_off", {})
+        sme_id = dsr.project.sme_id if dsr.project else None
+        sme_user = await db.get(User, sme_id) if sme_id else None
+        if sme_user:
+            # The acknowledged signer is always the project SME from the
+            # platform assignment, never a free-form approver identity.
+            incoming_so["acknowledged_by"] = sme_user.full_name
+            if sme_user.position:
+                incoming_so["acknowledged_position"] = sme_user.position
+        has_ack_signature = bool(
+            previous_so.get("acknowledged_signature") or incoming_so.get("acknowledged_signature")
+        )
+        if has_ack_signature and current_user.id != sme_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the assigned Project SME can add or change the acknowledged signature.",
+            )
+        if incoming_so.get("acknowledged_signature"):
+            incoming_so["acknowledged_signed_by"] = str(current_user.id)
+        else:
+            incoming_so.pop("acknowledged_signed_by", None)
+
+        has_prepared_signature = bool(
+            previous_so.get("prepared_signature") or incoming_so.get("prepared_signature")
+        )
+        if has_prepared_signature and current_user.id not in {dsr.requester_id, sme_id}:
+            raise HTTPException(
+                status_code=403,
+                detail="Only the DSR requester or assigned Project SME can manage the prepared signature.",
+            )
+        if incoming_so.get("prepared_signature"):
+            if (
+                previous_so.get("prepared_signature") == incoming_so.get("prepared_signature")
+                and previous_so.get("prepared_signed_by")
+            ):
+                incoming_so["prepared_signed_by"] = previous_so["prepared_signed_by"]
+            else:
+                incoming_so["prepared_signed_by"] = str(current_user.id)
+        else:
+            incoming_so.pop("prepared_signed_by", None)
+        checklist.checklist_json = incoming
+
+    # The AICK assessment has its own signed marker for the AI checklist page.
+    # Final DSR sign-off is exposed separately through is_final_signed.
     if _ai_sign_off_complete(checklist):
         if not checklist.validated_at:
             checklist.validated_by = current_user.id

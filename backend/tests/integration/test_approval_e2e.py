@@ -24,17 +24,19 @@ def _complete_dsr_checklist_payload(is_ai: bool = False) -> dict:
         "prepared_position": "Senior Data Architect",
         "acknowledged_by": "Test Head",
         "acknowledged_position": "Head of Data Governance",
+        "prepared_signature": "data:image/png;base64,AAA",
+        "acknowledged_signature": "data:image/png;base64,BBB",
     }
     return payload
 
 
-# ── 1. DSR Full Approval Lifecycle E2E ────────────────────────────────────────
+# ── 1. DSR Form Sign-Off Approval E2E ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_dsr_full_approval_lifecycle_e2e(
+async def test_dsr_signoff_approval_lifecycle_e2e(
     client: AsyncClient, auth_headers: dict[str, str], test_project
 ):
-    """E2E Test: DSR Draft -> Submitted -> Step 1 -> Step 2 -> Step 3 -> Step 4 -> Approved."""
+    """E2E Test: DSR Draft -> form Sign Off -> Approved, without approval steps."""
     # 1. Create DSR
     start_d = date.today().isoformat()
     end_d = (date.today() + timedelta(days=90)).isoformat()
@@ -55,8 +57,7 @@ async def test_dsr_full_approval_lifecycle_e2e(
     dsr_data = create_resp.json()
     dsr_id = dsr_data["id"]
     assert dsr_data["status"] == "draft"
-    assert len(dsr_data["approvals"]) == 4
-    assert all(a["status"] == "pending" for a in dsr_data["approvals"])
+    assert dsr_data["approvals"] == []
 
     # 2. Populate Checklist
     checklist_resp = await client.put(
@@ -72,69 +73,26 @@ async def test_dsr_full_approval_lifecycle_e2e(
         headers=auth_headers,
     )
     assert submit_resp.status_code == 200, submit_resp.text
-    dsr_submitted = submit_resp.json()
-    assert dsr_submitted["status"] == "submitted"
-    step1 = next(a for a in dsr_submitted["approvals"] if a["step_order"] == 1)
-    assert step1["status"] == "requested"
+    dsr_approved = submit_resp.json()
+    assert dsr_approved["status"] == "approved"
+    assert dsr_approved["approvals"] == []
+    assert dsr_approved["ai_checklist"]["status"] == "approved"
 
-    # 4. Action Step 1 (PIC Compliance)
-    s1_resp = await client.post(
+    legacy_approval_resp = await client.post(
         f"/api/v1/dsr/{dsr_id}/approvals/1",
         headers=auth_headers,
-        json={"action": "approve", "comments": "Step 1 Compliance Approved"},
+        json={"action": "approve", "comments": "No separate workflow"},
     )
-    assert s1_resp.status_code == 200, s1_resp.text
-    d_s1 = s1_resp.json()
-    assert d_s1["status"] == "under_review"
-    s1_app = next(a for a in d_s1["approvals"] if a["step_order"] == 1)
-    s2_app = next(a for a in d_s1["approvals"] if a["step_order"] == 2)
-    assert s1_app["status"] == "approved"
-    assert s1_app["comments"] == "Step 1 Compliance Approved"
-    assert s2_app["status"] == "requested"
-
-    # 5. Action Step 2 (DM / PM)
-    s2_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/approvals/2",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "Step 2 DM Approved"},
-    )
-    assert s2_resp.status_code == 200, s2_resp.text
-    d_s2 = s2_resp.json()
-    s3_app = next(a for a in d_s2["approvals"] if a["step_order"] == 3)
-    assert s3_app["status"] == "requested"
-
-    # 6. Action Step 3 (SME Sign-off)
-    s3_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/approvals/3",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "Step 3 SME Approved"},
-    )
-    assert s3_resp.status_code == 200, s3_resp.text
-    d_s3 = s3_resp.json()
-    s4_app = next(a for a in d_s3["approvals"] if a["step_order"] == 4)
-    assert s4_app["status"] == "requested"
-
-    # 7. Action Step 4 (Client / Data Owner Sign-off)
-    s4_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/approvals/4",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "Step 4 Client Final Sign-off"},
-    )
-    assert s4_resp.status_code == 200, s4_resp.text
-    d_s4 = s4_resp.json()
-    assert d_s4["status"] == "approved"
-    s4_app = next(a for a in d_s4["approvals"] if a["step_order"] == 4)
-    assert s4_app["status"] == "approved"
-    assert all(a["status"] == "approved" for a in d_s4["approvals"])
+    assert legacy_approval_resp.status_code == 404
 
 
-# ── 2. DSR Rejection Flow E2E ─────────────────────────────────────────────────
+# ── 2. DSR Sign-Off Validation E2E ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_dsr_rejection_flow_e2e(
+async def test_dsr_submission_requires_form_signatures(
     client: AsyncClient, auth_headers: dict[str, str], test_project
 ):
-    """E2E Test: DSR Rejection halts pipeline and updates status to rejected."""
+    """A DSR cannot be approved until both form Sign Off signatures exist."""
     start_d = date.today().isoformat()
     end_d = (date.today() + timedelta(days=30)).isoformat()
     create_resp = await client.post(
@@ -153,25 +111,24 @@ async def test_dsr_rejection_flow_e2e(
     assert create_resp.status_code in (200, 201)
     dsr_id = create_resp.json()["id"]
 
+    incomplete = _complete_dsr_checklist_payload(is_ai=False)
+    incomplete["sign_off"].pop("prepared_signature")
+    incomplete["sign_off"].pop("acknowledged_signature")
     await client.put(
         f"/api/v1/dsr/{dsr_id}/checklist",
         headers=auth_headers,
-        json={"checklist_json": _complete_dsr_checklist_payload(is_ai=False)},
+        json={"checklist_json": incomplete},
     )
-    await client.post(f"/api/v1/dsr/{dsr_id}/submit", headers=auth_headers)
-
-    # Reject Step 1
-    reject_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/approvals/1",
+    submit_resp = await client.post(
+        f"/api/v1/dsr/{dsr_id}/submit",
         headers=auth_headers,
-        json={"action": "reject", "comments": "Data transfer violates security policy"},
     )
-    assert reject_resp.status_code == 200
-    d_rej = reject_resp.json()
-    assert d_rej["status"] == "rejected"
-    s1 = next(a for a in d_rej["approvals"] if a["step_order"] == 1)
-    assert s1["status"] == "rejected"
-    assert s1["comments"] == "Data transfer violates security policy"
+    assert submit_resp.status_code == 400
+    assert "both Sign Off signatures" in submit_resp.json()["detail"]
+
+    detail_resp = await client.get(f"/api/v1/dsr/{dsr_id}", headers=auth_headers)
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["status"] == "draft"
 
 
 # AI Checklist completion is covered by test_aick_signed_status.py.
@@ -369,14 +326,13 @@ async def test_dq_run_governance_review_lifecycle_e2e(
     assert dq_app["status"] == "approved"
 
 
-# ── 7. Dashboard Action Items Queue E2E ───────────────────────────────────────
+# ── 7. Dashboard Excludes DSR Approval Queue E2E ───────────────────────────────
 
 @pytest.mark.asyncio
 async def test_dashboard_action_items_queue_e2e(
     client: AsyncClient, auth_headers: dict[str, str], test_project
 ):
-    """E2E Test: Dashboard reflects active approval items waiting in queue."""
-    # Create DSR and submit it so it enters Step 1 "requested"
+    """A signed DSR is approved immediately and creates no dashboard action item."""
     start_d = date.today().isoformat()
     end_d = (date.today() + timedelta(days=45)).isoformat()
     create_resp = await client.post(
@@ -403,26 +359,25 @@ async def test_dashboard_action_items_queue_e2e(
     submit_resp = await client.post(f"/api/v1/dsr/{dsr_id}/submit", headers=auth_headers)
     assert submit_resp.status_code == 200, submit_resp.text
 
+    assert submit_resp.json()["status"] == "approved"
+
     # Query Dashboard
     dash_resp = await client.get("/api/v1/dashboard", headers=auth_headers)
     assert dash_resp.status_code == 200, dash_resp.text
     dash_data = dash_resp.json()
     action_items = dash_data.get("action_items", [])
-    assert len(action_items) > 0
-    # Check that our DSR is present in action items queue with active approval step
+    # The DSR must not be present in an approval queue.
     dsr_items = [item for item in action_items if item["entity_id"] == dsr_id]
-    assert len(dsr_items) >= 1
-    assert "DSR" in dsr_items[0]["title"]
+    assert dsr_items == []
 
 
-# ── 8. In-App Bell Notifications for Next Approver E2E ────────────────────────
+# ── 8. DSR Sign-Off Does Not Create Approval Notifications E2E ─────────────────
 
 @pytest.mark.asyncio
-async def test_in_app_bell_notifications_next_approver_e2e(
-    client: AsyncClient, auth_headers: dict[str, str], test_project, auth_user
+async def test_dsr_signoff_does_not_create_approval_notifications(
+    client: AsyncClient, auth_headers: dict[str, str], test_project
 ):
-    """E2E Test: Advancing an approval step immediately generates an in-app notification for the next approver's UI bell."""
-    # 1. Create and submit a DSR
+    """Form-based DSR approval has no next approver to notify."""
     start_d = date.today().isoformat()
     end_d = (date.today() + timedelta(days=60)).isoformat()
     create_resp = await client.post(
@@ -446,37 +401,13 @@ async def test_in_app_bell_notifications_next_approver_e2e(
         headers=auth_headers,
         json={"checklist_json": _complete_dsr_checklist_payload(is_ai=False)},
     )
-    # Submit -> triggers Step 1 notification for Step 1 approver
+    # Submit completes the form-based approval.
     submit_resp = await client.post(f"/api/v1/dsr/{dsr_id}/submit", headers=auth_headers)
-    assert submit_resp.status_code == 200
+    assert submit_resp.status_code == 200, submit_resp.text
+    assert submit_resp.json()["status"] == "approved"
 
-    # 2. Check in-app notifications endpoint (which powers the header bell icon in frontend)
+    # There is no approval-chain notification for this DSR.
     notif_resp = await client.get("/api/v1/notifications", headers=auth_headers)
     assert notif_resp.status_code == 200, notif_resp.text
-    notif_data = notif_resp.json()
-    assert notif_data["unread_count"] > 0
-    items = notif_data["items"]
-    dsr_notifs = [n for n in items if n.get("entity_id") == dsr_id]
-    assert len(dsr_notifs) >= 1
-    assert "Approval Required" in dsr_notifs[0]["title"] or "DSR" in dsr_notifs[0]["title"]
-
-    # 3. Action Step 1 -> Should generate next notification for Step 2
-    s1_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/approvals/1",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "Step 1 Compliance verified"},
-    )
-    assert s1_resp.status_code == 200
-
-    # 4. Check that a new notification for Step 2 was added to notifications
-    notif_resp2 = await client.get("/api/v1/notifications", headers=auth_headers)
-    notif_data2 = notif_resp2.json()
-    assert notif_data2["unread_count"] >= 2
-    step2_notifs = [n for n in notif_data2["items"] if n.get("entity_id") == dsr_id and "Step 2" in (n.get("body") or "")]
-    assert len(step2_notifs) >= 1
-
-    # 5. Mark first notification as read
-    first_notif_id = dsr_notifs[0]["id"]
-    read_resp = await client.put(f"/api/v1/notifications/{first_notif_id}/read", headers=auth_headers)
-    assert read_resp.status_code == 200
-    assert read_resp.json()["is_read"] is True
+    dsr_notifs = [n for n in notif_resp.json()["items"] if n.get("entity_id") == dsr_id]
+    assert dsr_notifs == []

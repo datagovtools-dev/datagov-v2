@@ -19,6 +19,7 @@ interface DSRListItem {
   recipient: string;
   status: string;
   is_signed: boolean;
+  is_final_signed: boolean;
   signed_at: string | null;
   is_ai_use: boolean;
   duration_end: string;
@@ -80,7 +81,7 @@ export default function DSRListPage() {
             Data Sharing Requests
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Cross-domain data sharing workflows and multi-step approvals
+            Cross-domain data sharing requests with form-based approval and sign-off
             {data ? ` · ${data.total} request${data.total !== 1 ? "s" : ""}` : ""}
           </p>
         </div>
@@ -138,7 +139,7 @@ export default function DSRListPage() {
               <TableHead>AI Use</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Created</TableHead>
-              <TableHead>Signed</TableHead>
+              <TableHead>Final Sign-Off</TableHead>
               <TableHead>Sharing End</TableHead>
               <TableHead className="w-20 text-right">Action</TableHead>
             </TableRow>
@@ -148,33 +149,34 @@ export default function DSRListPage() {
               <TableRow><TableCell colSpan={10} className="text-center py-10 text-xs text-slate-400 font-mono">Loading…</TableCell></TableRow>
             ) : !data?.items.length ? (
               <TableRow><TableCell colSpan={10} className="text-center py-10 text-xs text-slate-400 font-mono">No requests found</TableCell></TableRow>
-            ) : data.items.map((dsr) => {
-              const signedDate = dsr.signed_at;
-              return (
-                <TableRow key={dsr.id}>
-                  <TableCell className="font-mono text-xs font-semibold text-slate-900">{dsr.tracking_id}</TableCell>
-                  <TableCell className="font-mono text-xs text-slate-500">{dsr.project_code ?? <span className="text-slate-300">—</span>}</TableCell>
-                  <TableCell className="max-w-[180px] truncate font-medium text-slate-900" title={dsr.project_name}>{dsr.project_name}</TableCell>
-                  <TableCell className="max-w-[160px] truncate text-slate-600" title={dsr.recipient}>{dsr.recipient}</TableCell>
-                  <TableCell>
-                    {dsr.is_ai_use ? <Badge variant="warning" className="text-[10px]">AI</Badge> : <span className="text-slate-300">—</span>}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={statusVariant(dsr.status)} className="text-[10px]">
-                      {dsr.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-slate-500 font-mono">{formatDate(dsr.created_at)}</TableCell>
-                  <TableCell className="text-xs text-slate-500 font-mono">{signedDate ? formatDate(signedDate) : "—"}</TableCell>
-                  <TableCell className="text-xs text-slate-500 font-mono">{dsr.project_end_date ? formatDate(dsr.project_end_date) : "—"}</TableCell>
-                  <TableCell className="text-right">
-                    <Link href={`/dsr/${dsr.id}`}>
-                      <Button size="sm" variant="outline" className="h-6.5 px-2 text-[11px]">View</Button>
-                    </Link>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
+            ) : data.items.map((dsr) => (
+              <TableRow key={dsr.id}>
+                <TableCell className="font-mono text-xs font-semibold text-slate-900">{dsr.tracking_id}</TableCell>
+                <TableCell className="font-mono text-xs text-slate-500">{dsr.project_code ?? <span className="text-slate-300">—</span>}</TableCell>
+                <TableCell className="max-w-[180px] truncate font-medium text-slate-900" title={dsr.project_name}>{dsr.project_name}</TableCell>
+                <TableCell className="max-w-[160px] truncate text-slate-600" title={dsr.recipient}>{dsr.recipient}</TableCell>
+                <TableCell>
+                  {dsr.is_ai_use ? <Badge variant="warning" className="text-[10px]">AI</Badge> : <span className="text-slate-300">—</span>}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={statusVariant(dsr.status)} className="text-[10px]">
+                    {dsr.status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
+                  </Badge>
+                </TableCell>
+                <TableCell className="text-xs text-slate-500 font-mono">{formatDate(dsr.created_at)}</TableCell>
+                <TableCell>
+                  {dsr.is_final_signed
+                    ? <Badge variant="success" className="text-[10px]">Signed</Badge>
+                    : <span className="text-xs text-slate-300">—</span>}
+                </TableCell>
+                <TableCell className="text-xs text-slate-500 font-mono">{dsr.project_end_date ? formatDate(dsr.project_end_date) : "—"}</TableCell>
+                <TableCell className="text-right">
+                  <Link href={`/dsr/${dsr.id}`}>
+                    <Button size="sm" variant="outline" className="h-6.5 px-2 text-[11px]">View</Button>
+                  </Link>
+                </TableCell>
+              </TableRow>
+            ))}
           </TableBody>
         </Table>
 

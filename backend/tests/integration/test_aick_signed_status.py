@@ -69,6 +69,12 @@ async def test_aick_signoff_controls_signed_status(client: AsyncClient, auth_hea
         json={"checklist_json": _assessment(signatures=True)},
     )
     assert signed_resp.status_code == 200, signed_resp.text
+    signed_item = next(
+        item for item in (await client.get("/api/v1/dsr?page_size=100", headers=auth_headers)).json()["items"]
+        if item["id"] == dsr_id
+    )
+    assert signed_item["is_signed"] is True
+    assert signed_item["is_final_signed"] is False
     assert await _is_signed(client, auth_headers, dsr_id) is True
 
 
