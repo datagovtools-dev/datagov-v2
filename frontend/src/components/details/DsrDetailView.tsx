@@ -3,7 +3,7 @@
 import * as React from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
-import { formatDate, formatDateTime } from "@/lib/utils";
+import { formatDate } from "@/lib/utils";
 
 export interface DsrApprovalLike {
   id: string;
@@ -36,13 +36,6 @@ export interface DsrDetailLike {
   approvals: DsrApprovalLike[];
   ai_checklist?: DsrChecklistLike | null;
 }
-
-const STEP_LABELS: Record<number, string> = {
-  1: "PIC Data Compliance Approval",
-  2: "DM Approval",
-  3: "SME Sign Off",
-  4: "Client Sign Off",
-};
 
 const CHECKLIST_TEMPLATE: { section: string; title: string; aiOnly?: boolean; items: { id: string; label: string; sub?: { id: string; label: string }[] }[] }[] = [
   {
@@ -90,20 +83,6 @@ const CHECKLIST_TEMPLATE: { section: string; title: string; aiOnly?: boolean; it
 
 function EmptyValue() {
   return <span className="text-slate-400 font-mono">-</span>;
-}
-
-function statusVariant(status: string) {
-  if (status === "approved") return "success";
-  if (status === "rejected") return "danger";
-  return "default";
-}
-
-function statusLabel(status: string) {
-  if (status === "approved") return "Approved";
-  if (status === "rejected") return "Rejected";
-  if (status === "pending") return "Not Yet";
-  if (status === "requested") return "Requested";
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function AnswerBadge({ value }: { value?: string }) {
@@ -171,56 +150,6 @@ export function DsrRequestDetailsCard({
           <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 font-mono mb-0.5">Purpose / Justification</p>
           <p className="text-slate-800 leading-relaxed">{dsr.purpose || <EmptyValue />}</p>
         </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-export function DsrApprovalTimelineCard({
-  approvals,
-  signOff,
-}: {
-  approvals: DsrApprovalLike[];
-  signOff?: Record<string, string>;
-}) {
-  return (
-    <Card>
-      <CardHeader className="pb-3 border-b border-slate-100">
-        <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
-      </CardHeader>
-      <CardContent className="pt-4">
-        <ol className="relative border-l border-slate-200 space-y-4 ml-3">
-          {[...approvals].sort((a, b) => a.step_order - b.step_order).map((step) => {
-            const displayName = step.step_order === 4 ? (signOff?.prepared_by || step.approver_name) : step.approver_name;
-            return (
-              <li key={step.id} className="ml-3.5">
-                <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
-                  step.status === "approved" ? "bg-emerald-600" :
-                  step.status === "rejected" ? "bg-rose-600" :
-                  step.status === "requested" ? "bg-slate-900" :
-                  "bg-slate-300"
-                }`} />
-                <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
-                  {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-                </p>
-                {displayName && (
-                  <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-500"}`}>
-                    {displayName}
-                  </p>
-                )}
-                <Badge variant={statusVariant(step.status)} className="mt-1 text-[10px]">
-                  {statusLabel(step.status)}
-                </Badge>
-                {step.actioned_at && (
-                  <p className="text-[10px] text-slate-400 font-mono mt-0.5">{formatDateTime(step.actioned_at)}</p>
-                )}
-                {step.comments && (
-                  <p className="text-xs text-slate-600 italic font-mono mt-1 bg-slate-50 border border-slate-100 rounded p-1.5">&ldquo;{step.comments}&rdquo;</p>
-                )}
-              </li>
-            );
-          })}
-        </ol>
       </CardContent>
     </Card>
   );
@@ -312,12 +241,9 @@ export function DsrDetailCards({
   dsr: DsrDetailLike;
   onProjectClick?: () => void;
 }) {
-  const signOff = (dsr.ai_checklist?.checklist_json?.sign_off ?? {}) as Record<string, string>;
-
   return (
     <div className="space-y-4">
       <DsrRequestDetailsCard dsr={dsr} onProjectClick={onProjectClick} />
-      <DsrApprovalTimelineCard approvals={dsr.approvals} signOff={signOff} />
       <DsrChecklistReadOnlyCard dsr={dsr} />
     </div>
   );

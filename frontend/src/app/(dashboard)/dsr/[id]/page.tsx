@@ -3,9 +3,8 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, CheckCircle2, Download, Lock, MessageSquare, Pencil, Save, X } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Save, X } from "lucide-react";
 import { api } from "@/lib/api";
-import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -429,7 +428,6 @@ function SignaturePad({
 
 function SignOffBlock({
   value, onChange, disabled, showErrors, acknowledgedReadOnly, preparedNameReadOnly, preparedPositionReadOnly,
-  activeApprovalStep, isSuperAdmin,
 }: {
   value: Record<string, string>;
   onChange: (field: string, val: string) => void;
@@ -438,8 +436,6 @@ function SignOffBlock({
   acknowledgedReadOnly?: boolean;
   preparedNameReadOnly?: boolean;      // filled from the project's Data Owner
   preparedPositionReadOnly?: boolean;  // filled from the Data Owner's position on the project
-  activeApprovalStep?: number;
-  isSuperAdmin?: boolean;
 }) {
   function err(field: string) {
     return showErrors && !value[field]?.trim() ? "border-red-500 ring-1 ring-red-400" : "";
@@ -513,13 +509,8 @@ function SignOffBlock({
                 value={value.prepared_signature || null}
                 onSign={(sig) => handleSign("prepared", sig)}
                 onClear={() => handleClear("prepared")}
-                disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 4)}
+                disabled={disabled}
               />
-              {!disabled && !isSuperAdmin && activeApprovalStep !== 4 && (
-                <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
-                  <Lock className="h-3 w-3" /> Available at Client Sign Off step
-                </p>
-              )}
             </div>
             {value.prepared_signature && value.prepared_date && (
               <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.prepared_date}</span></p>
@@ -549,13 +540,8 @@ function SignOffBlock({
                 value={value.acknowledged_signature || null}
                 onSign={(sig) => handleSign("acknowledged", sig)}
                 onClear={() => handleClear("acknowledged")}
-                disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 3)}
+                disabled={disabled}
               />
-              {!disabled && !isSuperAdmin && activeApprovalStep !== 3 && (
-                <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
-                  <Lock className="h-3 w-3" /> Available at SME Sign Off step
-                </p>
-              )}
             </div>
             {value.acknowledged_signature && value.acknowledged_date && (
               <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.acknowledged_date}</span></p>
@@ -581,16 +567,6 @@ export default function DSRDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
-  const currentUser = useAuthStore(s => s.user);
-  const isSuperAdmin = Boolean(
-    currentUser?.roles?.some((r: any) => (typeof r === "string" ? r : r.name) === "super_admin") ||
-    currentUser?.is_super_admin
-  );
-  const canAction = (approverId?: string | null) => {
-    if (!currentUser) return false;
-    if (isSuperAdmin) return true;
-    return Boolean(approverId && currentUser.id === approverId);
-  };
 
   const [editing, setEditing] = React.useState(false);
   const [form, setForm] = React.useState<Record<string, string | boolean>>({});
@@ -731,41 +707,17 @@ export default function DSRDetailPage() {
 
   const submitMutation = useMutation({
     mutationFn: () => {
-      toast.loading("Submitting DSR for approval workflow...", { id: "submit-dsr" });
+      toast.loading("Submitting DSR...", { id: "submit-dsr" });
       return api.post(`/dsr/${id}/submit`, {});
     },
     onSuccess: () => {
-      toast.success("DSR submitted successfully for review!", { id: "submit-dsr" });
+      toast.success("DSR submitted successfully!", { id: "submit-dsr" });
       qc.invalidateQueries({ queryKey: ["dsr", id] });
       qc.invalidateQueries({ queryKey: ["dsrs"] });
     },
     onError: (e: any) => {
       toast.error(e.message || "Failed to submit DSR", { id: "submit-dsr" });
       setServerError(e.message);
-    },
-  });
-
-  const [approvalComment, setApprovalComment] = React.useState<Record<number, string>>({});
-
-  const approvalMutation = useMutation({
-    mutationFn: ({ step, action }: { step: number; action: "approve" | "reject" }) => {
-      const label = action === "approve" ? "Approving" : "Rejecting";
-      toast.loading(`${label} Step ${step}...`, { id: "action-approval" });
-      return api.post(`/dsr/${id}/approvals/${step}`, {
-        action,
-        comments: approvalComment[step] ?? "",
-      });
-    },
-    onSuccess: (_, variables) => {
-      const msg = variables.action === "approve" ? "Step approved successfully!" : "Request rejected.";
-      toast.success(msg, { id: "action-approval" });
-      qc.invalidateQueries({ queryKey: ["dsr", id] });
-      qc.invalidateQueries({ queryKey: ["dsrs"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-      setApprovalComment((prev) => ({ ...prev, [variables.step]: "" }));
-    },
-    onError: (e: any) => {
-      toast.error(e.message || "Failed to action approval", { id: "action-approval" });
     },
   });
 
@@ -1012,54 +964,6 @@ export default function DSRDetailPage() {
         </div>
       </div>
 
-      {/* Top Banner: Action Required when awaiting approval */}
-      {(() => {
-        const activeStep = dsr.approvals.find((a) => a.status === "requested");
-        if (!activeStep) return null;
-        const userCanAction = canAction(activeStep.approver_id);
-        return (
-          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono">
-            <div className="flex items-center gap-2.5">
-              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-              <div>
-                <p className="text-xs font-semibold text-slate-900">
-                  {userCanAction ? "Action Required: " : "Pending Review: "}
-                  {STEP_LABELS[activeStep.step_order] ?? `Step ${activeStep.step_order}`} Pending Approval
-                </p>
-                <p className="text-[11px] text-slate-500">
-                  Assigned Approver: {activeStep.approver_name || "Project Approver"}
-                </p>
-              </div>
-            </div>
-            {userCanAction ? (
-              <div className="flex items-center gap-2 shrink-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
-                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "reject" })}
-                  disabled={approvalMutation.isPending}
-                >
-                  <X className="h-3 w-3 mr-1" /> Reject
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
-                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "approve" })}
-                  disabled={approvalMutation.isPending}
-                >
-                  <Check className="h-3 w-3 mr-1" /> Approve Step
-                </Button>
-              </div>
-            ) : (
-              <div className="text-xs text-slate-500 italic shrink-0">
-                Waiting for {activeStep.approver_name || "designated approver"} to sign-off
-              </div>
-            )}
-          </div>
-        );
-      })()}
-
       {dsr.status === "draft" && !isChecklistComplete && (
         <div className="rounded-md bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs text-amber-800 font-mono">
           Complete all checklist sections A–D and sign-off fields (excluding e-signatures) before submitting. Only &ldquo;Save as Draft&rdquo; is available until then.
@@ -1160,99 +1064,6 @@ export default function DSRDetailPage() {
           </div>
         )}
 
-        {/* Approval Timeline */}
-        <Card>
-          <CardHeader className="pb-3 border-b border-slate-100">
-            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <ol className="relative border-l border-slate-200 space-y-4 ml-3">
-              {[...dsr.approvals].sort((a, b) => a.step_order - b.step_order).map((step) => {
-                const savedPreparedBy = checklist?.checklist_json?.sign_off?.prepared_by as string | undefined;
-                const displayName = step.step_order === 4 ? (savedPreparedBy || step.approver_name) : step.approver_name;
-                const isRequested = step.status === "requested";
-
-                return (
-                <li key={step.id} className="ml-3.5">
-                  <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
-                    step.status === "approved"  ? "bg-emerald-600" :
-                    step.status === "rejected"  ? "bg-rose-600" :
-                    isRequested ? "bg-slate-900" :
-                    "bg-slate-300"
-                  }`} />
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
-                      {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-                    </p>
-                    <Badge
-                      variant={step.status === "approved" ? "success" : step.status === "rejected" ? "danger" : isRequested ? "warning" : "default"}
-                      className="text-[10px]">
-                      {step.status === "approved" ? "Approved" :
-                       step.status === "rejected"  ? "Rejected" :
-                       isRequested ? "Awaiting Action" :
-                       "Not Yet"}
-                    </Badge>
-                  </div>
-                  {displayName && (
-                    <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-600"}`}>
-                      {displayName}
-                    </p>
-                  )}
-                  {step.actioned_at && (
-                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">Actioned on {formatDateTime(step.actioned_at)}</p>
-                  )}
-                  {step.comments && (
-                    <p className="text-xs text-slate-600 italic mt-1 bg-slate-50 border border-slate-100 rounded p-1.5 font-mono">
-                      &ldquo;{step.comments}&rdquo;
-                    </p>
-                  )}
-
-                  {/* Interactive Approval Controls for Active Requested Step */}
-                  {isRequested && (
-                    canAction(step.approver_id) ? (
-                      <div className="mt-2.5 p-3 rounded-md border border-slate-200 bg-slate-50/60 space-y-2.5 font-mono">
-                        <textarea
-                          rows={2}
-                          className="input-base text-xs font-sans resize-none w-full bg-white"
-                          placeholder="Add review comments or sign-off notes (optional)…"
-                          value={approvalComment[step.step_order] ?? ""}
-                          onChange={(e) =>
-                            setApprovalComment((prev) => ({ ...prev, [step.step_order]: e.target.value }))
-                          }
-                        />
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
-                            disabled={approvalMutation.isPending}
-                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "approve" })}
-                          >
-                            <Check className="h-3 w-3 mr-1" /> Approve Step
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
-                            disabled={approvalMutation.isPending}
-                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "reject" })}
-                          >
-                            <X className="h-3 w-3 mr-1" /> Reject Request
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 p-2.5 rounded bg-slate-50 border border-slate-200 text-xs text-slate-500 font-mono italic">
-                        Waiting for {displayName || step.approver_name || "designated approver"} to review and take action.
-                      </div>
-                    )
-                  )}
-                </li>
-              );
-              })}
-            </ol>
-          </CardContent>
-        </Card>
-
         {/* Data & Insights Sharing Evaluation Checklist */}
         {checklist && (
           <Card>
@@ -1290,8 +1101,6 @@ export default function DSRDetailPage() {
                 acknowledgedReadOnly={editing}
                 preparedNameReadOnly={editing && !!dataOwner?.full_name}
                 preparedPositionReadOnly={editing && !!dataOwner?.position}
-                activeApprovalStep={dsr.approvals.find(a => a.status === "requested")?.step_order}
-                isSuperAdmin={currentUser?.is_super_admin ?? false}
               />
 
               {/* Validation error summary */}
