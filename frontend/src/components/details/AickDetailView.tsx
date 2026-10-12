@@ -3,22 +3,12 @@
 import * as React from "react";
 import { Badge } from "@/components/ui/Badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
-import { formatDate, formatDateTime } from "@/lib/utils";
-
-export interface AickApprovalLike {
-  id: string;
-  step_order: number;
-  approver_name?: string | null;
-  status: string;
-  comments?: string | null;
-  actioned_at: string | null;
-}
+import { formatDate } from "@/lib/utils";
 
 export interface AickChecklistLike {
   status: string;
   validated_at?: string | null;
   checklist_json: Record<string, any>;
-  approvals?: AickApprovalLike[];
 }
 
 export interface AickDsrLike {
@@ -44,28 +34,8 @@ export interface AickAreaLike {
   }[];
 }
 
-const STEP_LABELS: Record<number, string> = {
-  1: "PIC Data Compliance Approval",
-  2: "DM Sign-off",
-  3: "SME Sign-off",
-};
-
 function EmptyValue() {
   return <span className="text-slate-400 font-mono">-</span>;
-}
-
-function statusVariant(status: string) {
-  if (status === "approved") return "success";
-  if (status === "rejected") return "danger";
-  return "default";
-}
-
-function statusLabel(status: string) {
-  if (status === "approved") return "Approved";
-  if (status === "rejected") return "Rejected";
-  if (status === "pending") return "Not Yet";
-  if (status === "requested") return "Requested";
-  return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function riskBadgeClass(level: "HIGH" | "MEDIUM" | "LOW") {
@@ -153,58 +123,14 @@ export function AickAssessmentInformationCard({
   );
 }
 
-export function AickApprovalTimelineCard({ approvals }: { approvals: AickApprovalLike[] }) {
-  return (
-    <Card>
-      <CardHeader className="pb-3 border-b border-slate-100">
-        <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
-      </CardHeader>
-      <CardContent className="pt-4">
-        <ol className="relative border-l border-slate-200 space-y-4 ml-3">
-          {[...approvals].sort((a, b) => a.step_order - b.step_order).map((step) => (
-            <li key={step.id} className="ml-3.5">
-              <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
-                step.status === "approved" ? "bg-emerald-600" :
-                step.status === "rejected" ? "bg-rose-600" :
-                step.status === "requested" ? "bg-slate-900" :
-                "bg-slate-300"
-              }`} />
-              <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
-                {STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-              </p>
-              {step.approver_name && (
-                <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-500"}`}>
-                  {step.approver_name}
-                </p>
-              )}
-              <Badge variant={statusVariant(step.status)} className="mt-1 text-[10px]">
-                {statusLabel(step.status)}
-              </Badge>
-              {step.actioned_at && (
-                <p className="text-[10px] text-slate-400 font-mono mt-0.5">{formatDateTime(step.actioned_at)}</p>
-              )}
-              {step.comments && (
-                <p className="text-xs text-slate-600 italic font-mono mt-1 bg-slate-50 border border-slate-100 rounded p-1.5">&ldquo;{step.comments}&rdquo;</p>
-              )}
-            </li>
-          ))}
-          {approvals.length === 0 && (
-            <li className="ml-3.5 text-xs text-slate-400 italic font-mono">No approval steps configured yet.</li>
-          )}
-        </ol>
-      </CardContent>
-    </Card>
-  );
-}
-
 export function AickChecklistReadOnlyCard({
   areas,
   items,
-  isApproved,
+  isComplete,
 }: {
   areas: AickAreaLike[];
   items: Record<string, { status?: string | null; remarks?: string }>;
-  isApproved?: boolean;
+  isComplete?: boolean;
 }) {
   return (
     <Card>
@@ -215,7 +141,7 @@ export function AickChecklistReadOnlyCard({
             Instructions: Form contains validated assessment conditions and recorded remarks for this project.
           </p>
         </div>
-        {isApproved && <Badge variant="success" className="text-[10px]">Approved</Badge>}
+        {isComplete && <Badge variant="success" className="text-[10px]">Completed</Badge>}
       </CardHeader>
       <CardContent className="p-0">
         <div className="hidden lg:grid grid-cols-[3fr_80px_2fr_96px_1.5fr] gap-3 bg-slate-50 border-b border-slate-200 px-4 py-2">
@@ -331,11 +257,10 @@ export function AickDetailCards({
         onProjectClick={onProjectClick}
         onDsrClick={onDsrClick}
       />
-      <AickApprovalTimelineCard approvals={checklist.approvals ?? []} />
       <AickChecklistReadOnlyCard
         areas={areas}
         items={(draft.items ?? {}) as Record<string, { status?: string | null; remarks?: string }>}
-        isApproved={checklist.status === "approved"}
+        isComplete={checklist.status === "approved"}
       />
       <AickSignOffReadOnlyCard signOff={signOff} />
     </div>

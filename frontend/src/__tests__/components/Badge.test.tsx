@@ -9,12 +9,12 @@ describe("Badge", () => {
 
   it("applies variant class for success", () => {
     const { container } = render(<Badge variant="success">Done</Badge>);
-    expect(container.firstChild).toHaveClass("bg-green-100");
+    expect(container.firstChild).toHaveClass("bg-emerald-50");
   });
 
   it("applies variant class for danger", () => {
     const { container } = render(<Badge variant="danger">Error</Badge>);
-    expect(container.firstChild).toHaveClass("bg-red-100");
+    expect(container.firstChild).toHaveClass("bg-rose-50");
   });
 
   it("renders without variant (default)", () => {

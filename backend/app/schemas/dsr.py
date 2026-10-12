@@ -35,25 +35,12 @@ class DSRApprovalOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class AIChecklistApprovalOut(BaseModel):
-    id: uuid.UUID
-    approver_id: uuid.UUID
-    approver_role: str
-    approver_name: str = ""
-    step_order: int
-    status: str
-    comments: Optional[str] = None
-    actioned_at: Optional[datetime] = None
-    model_config = {"from_attributes": True}
-
-
 class AIChecklistOut(BaseModel):
     id: uuid.UUID
     checklist_json: dict[str, Any] = {}
     status: str = "draft"
     validated_by: Optional[uuid.UUID] = None
     validated_at: Optional[datetime] = None
-    approvals: list[AIChecklistApprovalOut] = []
     model_config = {"from_attributes": True}
 
 

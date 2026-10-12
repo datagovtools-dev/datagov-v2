@@ -1,5 +1,5 @@
-"""End-to-end integration tests for all Governance Approval workflows.
-Covers DSR, AI Compliance Checklist, DPIA, BAPD Disposal, and DQ Runs.
+"""End-to-end integration tests for active Governance Approval workflows.
+Covers DSR, DPIA, BAPD Disposal, and DQ Runs.
 """
 import uuid
 from datetime import date, timedelta, datetime, timezone
@@ -26,34 +26,6 @@ def _complete_dsr_checklist_payload(is_ai: bool = False) -> dict:
         "acknowledged_position": "Head of Data Governance",
     }
     return payload
-
-
-def _complete_ai_assessment_payload() -> dict:
-    item_ids = [
-        "before_use_1", "before_use_2", "before_use_3",
-        "input_1", "input_2", "input_3",
-        "output_1", "output_2",
-        "utilization_1", "utilization_2",
-    ]
-    return {
-        "ai_assessment": {
-            "items": {
-                item_id: {
-                    "status": "COMPLIED",
-                    "notes": "Verified and audited model compliance",
-                    "evidence_url": "https://compliance.internal/docs",
-                }
-                for item_id in item_ids
-            },
-            "sign_off": {
-                "approved": "Yes",
-                "prepared_by": "AI Governance Lead",
-                "prepared_position": "Principal AI Architect",
-                "acknowledged_by": "Ethics Officer",
-                "acknowledged_position": "Chief Compliance Officer",
-            },
-        }
-    }
 
 
 # ── 1. DSR Full Approval Lifecycle E2E ────────────────────────────────────────
@@ -202,83 +174,7 @@ async def test_dsr_rejection_flow_e2e(
     assert s1["comments"] == "Data transfer violates security policy"
 
 
-# ── 3. AI Compliance Checklist Approval Flow E2E ──────────────────────────────
-
-@pytest.mark.asyncio
-async def test_ai_checklist_approval_lifecycle_e2e(
-    client: AsyncClient, auth_headers: dict[str, str], test_project
-):
-    """E2E Test: AI Checklist Submit -> Step 1 -> Step 2 -> Step 3 -> Approved."""
-    # 1. Create DSR with is_ai_use=True
-    start_d = date.today().isoformat()
-    end_d = (date.today() + timedelta(days=60)).isoformat()
-    create_resp = await client.post(
-        "/api/v1/dsr",
-        headers=auth_headers,
-        json={
-            "project_id": str(test_project.id),
-            "dataset_name": "Customer Service Chat Logs",
-            "recipient": "GenAI Inference Cluster",
-            "purpose": "LLM Fine-tuning and RAG",
-            "is_ai_use": True,
-            "duration_start": start_d,
-            "duration_end": end_d,
-        },
-    )
-    assert create_resp.status_code in (200, 201)
-    dsr_id = create_resp.json()["id"]
-
-    # 2. Populate AI assessment checklist
-    save_resp = await client.put(
-        f"/api/v1/dsr/{dsr_id}/checklist",
-        headers=auth_headers,
-        json={"checklist_json": _complete_ai_assessment_payload()},
-    )
-    assert save_resp.status_code == 200, save_resp.text
-
-    # 3. Submit AI Checklist for approval
-    submit_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/checklist/submit",
-        headers=auth_headers,
-    )
-    assert submit_resp.status_code == 200, submit_resp.text
-    dsr_ck_sub = submit_resp.json()
-    ck_sub = dsr_ck_sub["ai_checklist"]
-    assert ck_sub["status"] == "submitted"
-    ai_s1 = next(a for a in ck_sub["approvals"] if a["step_order"] == 1)
-    assert ai_s1["status"] == "requested"
-
-    # 4. Action Step 1 (PIC Compliance)
-    s1_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/checklist/approvals/1",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "AI Step 1 Approved"},
-    )
-    assert s1_resp.status_code == 200, s1_resp.text
-    ck_s1 = s1_resp.json()["ai_checklist"]
-    assert ck_s1["status"] == "under_review"
-
-    # 5. Action Step 2 (DM)
-    s2_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/checklist/approvals/2",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "AI Step 2 Approved"},
-    )
-    assert s2_resp.status_code == 200, s2_resp.text
-    ck_s2 = s2_resp.json()["ai_checklist"]
-    ai_s3 = next(a for a in ck_s2["approvals"] if a["step_order"] == 3)
-    assert ai_s3["status"] == "requested"
-
-    # 6. Action Step 3 (SME Final Sign-off)
-    s3_resp = await client.post(
-        f"/api/v1/dsr/{dsr_id}/checklist/approvals/3",
-        headers=auth_headers,
-        json={"action": "approve", "comments": "AI Step 3 Final Sign-off"},
-    )
-    assert s3_resp.status_code == 200, s3_resp.text
-    ck_s3 = s3_resp.json()["ai_checklist"]
-    assert ck_s3["status"] == "approved"
-    assert all(a["status"] == "approved" for a in ck_s3["approvals"])
+# AI Checklist completion is covered by test_aick_signed_status.py.
 
 
 # ── 4. DPIA Approval Lifecycle E2E ────────────────────────────────────────────

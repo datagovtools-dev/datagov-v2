@@ -3,19 +3,17 @@
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, CheckCircle2, Download, Lock, Pencil, Save, X, Send } from "lucide-react";
+import { ArrowLeft, Download, Pencil, Save, X, Send } from "lucide-react";
 import { api } from "@/lib/api";
-import { useAuthStore } from "@/store/authStore";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
-import { toast } from "@/components/ui/Toast";
 import { DetailSkeleton } from "@/components/ui/LoadingState";
 import { DetailModal } from "@/components/details/DetailModal";
 import { DsrDetailCards } from "@/components/details/DsrDetailView";
 import { ProjectDetailCards } from "@/components/details/ProjectDetailView";
-import { formatDate, formatDateTime } from "@/lib/utils";
-import { printA4, pdfField, pdfBadge, pdfStatusBadge } from "@/lib/exportPdf";
+import { formatDate } from "@/lib/utils";
+import { printA4, pdfField, pdfStatusBadge } from "@/lib/exportPdf";
 
 // ── Template ──────────────────────────────────────────────────────────────────
 
@@ -133,24 +131,12 @@ interface AIDraft {
   sign_off: Record<string, string>;
 }
 
-interface AIChecklistApproval {
-  id: string;
-  approver_id?: string | null;
-  step_order: number;
-  approver_role: string;
-  approver_name: string;
-  status: string;
-  comments?: string | null;
-  actioned_at: string | null;
-}
-
 interface AIChecklist {
   id: string;
   checklist_json: Record<string, any>;
   status: string;
   validated_by: string | null;
   validated_at: string | null;
-  approvals: AIChecklistApproval[];
 }
 
 interface DSRApproval {
@@ -176,16 +162,6 @@ interface ProjectDetail {
   dgo_id: string | null; metadata_officer_id: string | null;
   dq_officer_id: string | null; pic_data_compliance_id: string | null;
 }
-
-const DSR_STEP_LABELS: Record<number, string> = {
-  1: "PIC Data Compliance Approval", 2: "DM Approval", 3: "SME Sign Off", 4: "Client Sign Off",
-};
-
-const AICK_STEP_LABELS: Record<number, string> = {
-  1: "PIC Data Compliance Approval",
-  2: "DM Sign-off",
-  3: "SME Sign-off",
-};
 
 const DSR_CHECKLIST_TEMPLATE: { section: string; title: string; aiOnly?: boolean; items: { id: string; label: string; sub?: { id: string; label: string }[] }[] }[] = [
   {
@@ -439,13 +415,11 @@ function SignaturePad({ value, onSign, onClear, disabled }: {
 
 // ── SignOff ───────────────────────────────────────────────────────────────────
 
-function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalStep, isSuperAdmin }: {
+function SignOffSection({ value, onChange, disabled, showErrors }: {
   value: Record<string, string>;
   onChange: (field: string, val: string) => void;
   disabled?: boolean;
   showErrors?: boolean;
-  activeApprovalStep?: number;
-  isSuperAdmin?: boolean;
 }) {
   function handleSign(prefix: "prepared" | "acknowledged", sig: string) {
     onChange(`${prefix}_signature`, sig);
@@ -495,13 +469,8 @@ function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalS
               value={value.prepared_signature || null}
               onSign={(sig) => handleSign("prepared", sig)}
               onClear={() => handleClear("prepared")}
-              disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 2)}
+              disabled={disabled}
             />
-            {!disabled && !isSuperAdmin && activeApprovalStep !== 2 && (
-              <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
-                <Lock className="h-3 w-3" /> Available at DM Sign-off step
-              </p>
-            )}
           </div>
           {value.prepared_date && (
             <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.prepared_date}</span></p>
@@ -524,13 +493,8 @@ function SignOffSection({ value, onChange, disabled, showErrors, activeApprovalS
               value={value.acknowledged_signature || null}
               onSign={(sig) => handleSign("acknowledged", sig)}
               onClear={() => handleClear("acknowledged")}
-              disabled={disabled || (!isSuperAdmin && activeApprovalStep !== 3)}
+              disabled={disabled}
             />
-            {!disabled && !isSuperAdmin && activeApprovalStep !== 3 && (
-              <p className="text-xs text-surface-400 flex items-center gap-1 mt-1">
-                <Lock className="h-3 w-3" /> Available at SME Sign-off step
-              </p>
-            )}
           </div>
           {value.acknowledged_date && (
             <p className="text-xs text-surface-400">Signed on: <span className="font-medium text-surface-600">{value.acknowledged_date}</span></p>
@@ -547,16 +511,6 @@ export default function AIChecklistDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const qc = useQueryClient();
-  const currentUser = useAuthStore(s => s.user);
-  const isSuperAdmin = Boolean(
-    currentUser?.roles?.some((r: any) => (typeof r === "string" ? r : r.name) === "super_admin") ||
-    currentUser?.is_super_admin
-  );
-  const canAction = (approverId?: string | null) => {
-    if (!currentUser) return false;
-    if (isSuperAdmin) return true;
-    return Boolean(approverId && currentUser.id === approverId);
-  };
 
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState<AIDraft | null>(null);
@@ -682,30 +636,6 @@ export default function AIChecklistDetailPage() {
     },
   });
 
-  const [approvalComment, setApprovalComment] = React.useState<Record<number, string>>({});
-
-  const approvalMutation = useMutation({
-    mutationFn: ({ step, action }: { step: number; action: "approve" | "reject" }) => {
-      const label = action === "approve" ? "Approving" : "Rejecting";
-      toast.loading(`${label} Step ${step}...`, { id: "aick-approval" });
-      return api.post(`/dsr/${id}/checklist/approvals/${step}`, {
-        action,
-        comments: approvalComment[step] ?? "",
-      });
-    },
-    onSuccess: (_, variables) => {
-      const msg = variables.action === "approve" ? "Step approved successfully!" : "Checklist rejected.";
-      toast.success(msg, { id: "aick-approval" });
-      qc.invalidateQueries({ queryKey: ["dsr", id] });
-      qc.invalidateQueries({ queryKey: ["ai-checklist"] });
-      qc.invalidateQueries({ queryKey: ["dashboard"] });
-      setApprovalComment((prev) => ({ ...prev, [variables.step]: "" }));
-    },
-    onError: (e: any) => {
-      toast.error(e.message || "Failed to action approval", { id: "aick-approval" });
-    },
-  });
-
   function handleSaveAsDraft() {
     if (!draft) return;
     saveMutation.mutate();
@@ -755,23 +685,6 @@ export default function AIChecklistDetailPage() {
       })
     ).join("");
 
-    const checklist = dsr.ai_checklist;
-    const ackApprovals = (checklist?.approvals ?? []).sort((a, b) => a.step_order - b.step_order);
-    const approvalRows = ackApprovals.map((s) => {
-      const label = AICK_STEP_LABELS[s.step_order] ?? `Step ${s.step_order}`;
-      const statusBadge =
-        s.status === "approved" ? pdfBadge("Approved", "approved") :
-        s.status === "rejected" ? pdfBadge("Rejected", "rejected") :
-        s.status === "requested" ? pdfBadge("Requested", "pending") :
-        pdfBadge("Not Yet", "draft");
-      return `<li style="margin-bottom:10px">
-        <span>
-          <div class="tl-label">${label} ${statusBadge}</div>
-          <div class="tl-meta">${s.approver_name || "—"}${s.actioned_at ? " · " + formatDateTime(s.actioned_at) : ""}</div>
-        </span>
-      </li>`;
-    }).join("");
-
     const signOffHtml = `<div class="section">
       <div class="section-title">Sign Off</div>
       <div style="margin-bottom:8px">${pdfField("Approved?", so.approved)}</div>
@@ -816,11 +729,6 @@ export default function AIChecklistDetailPage() {
         </p>
       </div>
 
-      ${approvalRows ? `<div class="section">
-        <div class="section-title">Approval Timeline</div>
-        <ol class="tl-list">${approvalRows}</ol>
-      </div>` : ""}
-
       <div class="section">
         <div class="section-title">GEN AI Protection Checklist</div>
         <table>
@@ -851,13 +759,11 @@ export default function AIChecklistDetailPage() {
   const checklist = dsr.ai_checklist;
   const checklistStatus = checklist?.status ?? "draft";
   const isDraft = checklistStatus === "draft";
-  const isApproved = checklistStatus === "approved";
+  const isComplete = checklistStatus === "approved";
 
   const activeDraft = draft ?? emptyDraft();
   const complete = isAIChecklistComplete(activeDraft);
   const docNumber = dsr.tracking_id.replace("DSR", "AICK");
-
-  const aickApprovals = [...(checklist?.approvals ?? [])].sort((a, b) => a.step_order - b.step_order);
 
   const statusBadgeVariant =
     checklistStatus === "approved"    ? "approved" :
@@ -866,7 +772,7 @@ export default function AIChecklistDetailPage() {
     "draft";
 
   const statusBadgeLabel =
-    checklistStatus === "approved"    ? "Approved" :
+    checklistStatus === "approved"    ? "Completed" :
     checklistStatus === "rejected"    ? "Rejected" :
     checklistStatus === "submitted"   ? "Submitted" :
     checklistStatus === "under_review"? "Under Review" :
@@ -910,7 +816,7 @@ export default function AIChecklistDetailPage() {
                   onClick={handleSubmit}
                   loading={submitMutation.isPending}
                   disabled={!complete}
-                  title={!complete ? "Complete all assessment items and sign-off fields before submitting" : "Submit for approval"}
+                  title={!complete ? "Complete all assessment items and sign-off fields before submitting" : "Submit checklist"}
                 >
                   <Send className="h-3.5 w-3.5 mr-1" /> Submit
                 </Button>
@@ -926,7 +832,7 @@ export default function AIChecklistDetailPage() {
                   onClick={handleSubmit}
                   loading={submitMutation.isPending}
                   disabled={!complete}
-                  title={!complete ? "Complete all assessment items and sign-off fields before submitting" : "Submit for approval"}
+                  title={!complete ? "Complete all assessment items and sign-off fields before submitting" : "Submit checklist"}
                 >
                   <Send className="h-3.5 w-3.5 mr-1" /> Submit
                 </Button>
@@ -937,54 +843,6 @@ export default function AIChecklistDetailPage() {
           </div>
         </div>
       </div>
-
-      {/* Top Banner: Action Required when awaiting approval */}
-      {(() => {
-        const activeStep = aickApprovals.find((a) => a.status === "requested");
-        if (!activeStep) return null;
-        const userCanAction = canAction(activeStep.approver_id);
-        return (
-          <div className="rounded-md border border-amber-200 bg-amber-50/70 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono">
-            <div className="flex items-center gap-2.5">
-              <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse shrink-0" />
-              <div>
-                <p className="text-xs font-semibold text-slate-900">
-                  {userCanAction ? "Action Required: " : "Pending Review: "}
-                  {AICK_STEP_LABELS[activeStep.step_order] ?? `Step ${activeStep.step_order}`} Pending Approval
-                </p>
-                <p className="text-[11px] text-slate-500">
-                  Assigned Approver: {activeStep.approver_name || "Project Approver"}
-                </p>
-              </div>
-            </div>
-            {userCanAction ? (
-              <div className="flex items-center gap-2 shrink-0">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
-                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "reject" })}
-                  disabled={approvalMutation.isPending}
-                >
-                  <X className="h-3 w-3 mr-1" /> Reject
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
-                  onClick={() => approvalMutation.mutate({ step: activeStep.step_order, action: "approve" })}
-                  disabled={approvalMutation.isPending}
-                >
-                  <Check className="h-3 w-3 mr-1" /> Approve Step
-                </Button>
-              </div>
-            ) : (
-              <div className="text-xs text-slate-500 italic shrink-0">
-                Waiting for {activeStep.approver_name || "designated approver"} to sign-off
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       {/* Amber banner when draft and incomplete */}
       {isDraft && !complete && (
@@ -1035,99 +893,6 @@ export default function AIChecklistDetailPage() {
           </CardContent>
         </Card>
 
-        {/* Approval Timeline */}
-        <Card>
-          <CardHeader className="pb-3 border-b border-slate-100">
-            <CardTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">Approval Timeline</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <ol className="relative border-l border-slate-200 space-y-4 ml-3">
-              {aickApprovals.map((step) => {
-                const isRequested = step.status === "requested";
-                return (
-                <li key={step.id} className="ml-3.5">
-                  <div className={`absolute -left-1 w-2.5 h-2.5 rounded-full border border-white ${
-                    step.status === "approved"  ? "bg-emerald-600" :
-                    step.status === "rejected"  ? "bg-rose-600" :
-                    isRequested ? "bg-slate-900" :
-                    "bg-slate-300"
-                  }`} />
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <p className={`text-xs font-semibold font-mono ${step.status === "pending" ? "text-slate-400" : "text-slate-900"}`}>
-                      {AICK_STEP_LABELS[step.step_order] ?? `Step ${step.step_order}`}
-                    </p>
-                    <Badge
-                      variant={step.status === "approved" ? "success" : step.status === "rejected" ? "danger" : isRequested ? "warning" : "default"}
-                      className="text-[10px]">
-                      {step.status === "approved" ? "Approved" :
-                       step.status === "rejected"  ? "Rejected" :
-                       isRequested ? "Awaiting Action" :
-                       "Not Yet"}
-                    </Badge>
-                  </div>
-                  {step.approver_name && (
-                    <p className={`text-xs ${step.status === "pending" ? "text-slate-400" : "text-slate-600"}`}>
-                      {step.approver_name}
-                    </p>
-                  )}
-                  {step.actioned_at && (
-                    <p className="text-[10px] text-slate-400 font-mono mt-0.5">Actioned on {formatDateTime(step.actioned_at)}</p>
-                  )}
-                  {step.comments && (
-                    <p className="text-xs text-slate-600 italic mt-1 bg-slate-50 border border-slate-100 rounded p-1.5 font-mono">
-                      &ldquo;{step.comments}&rdquo;
-                    </p>
-                  )}
-
-                  {/* Interactive Approval Controls for Active Requested Step */}
-                  {isRequested && (
-                    canAction(step.approver_id) ? (
-                      <div className="mt-2.5 p-3 rounded-md border border-slate-200 bg-slate-50/60 space-y-2.5 font-mono">
-                        <textarea
-                          rows={2}
-                          className="input-base text-xs font-sans resize-none w-full bg-white"
-                          placeholder="Add review comments or sign-off notes (optional)…"
-                          value={approvalComment[step.step_order] ?? ""}
-                          onChange={(e) =>
-                            setApprovalComment((prev) => ({ ...prev, [step.step_order]: e.target.value }))
-                          }
-                        />
-                        <div className="flex items-center gap-2">
-                          <Button
-                            size="sm"
-                            className="h-7.5 text-xs bg-slate-900 hover:bg-slate-800 text-white font-medium"
-                            disabled={approvalMutation.isPending}
-                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "approve" })}
-                          >
-                            <Check className="h-3 w-3 mr-1" /> Approve Step
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7.5 text-xs text-rose-700 hover:bg-rose-50 border-rose-200 font-medium"
-                            disabled={approvalMutation.isPending}
-                            onClick={() => approvalMutation.mutate({ step: step.step_order, action: "reject" })}
-                          >
-                            <X className="h-3 w-3 mr-1" /> Reject Request
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 p-2.5 rounded bg-slate-50 border border-slate-200 text-xs text-slate-500 font-mono italic">
-                        Waiting for {step.approver_name || "designated approver"} to review and take action.
-                      </div>
-                    )
-                  )}
-                </li>
-              );
-              })}
-              {aickApprovals.length === 0 && (
-                <li className="ml-3.5 text-xs text-slate-400 italic font-mono">No approval steps configured yet.</li>
-              )}
-            </ol>
-          </CardContent>
-        </Card>
-
         {/* Checklist Table */}
         <Card>
           <CardHeader className="pb-3 border-b border-slate-100 flex items-center justify-between">
@@ -1137,8 +902,8 @@ export default function AIChecklistDetailPage() {
                 Instructions: Fill the status with "Yes/No" based on assessment condition and record remarks if criteria are not met.
               </p>
             </div>
-            {isApproved && (
-              <Badge variant="success" className="text-[10px]">Approved</Badge>
+            {isComplete && (
+              <Badge variant="success" className="text-[10px]">Completed</Badge>
             )}
           </CardHeader>
           <CardContent className="p-0">
@@ -1215,8 +980,6 @@ export default function AIChecklistDetailPage() {
               onChange={setSignOff}
               disabled={!editing}
               showErrors={showErrors}
-              activeApprovalStep={aickApprovals.find(a => a.status === "requested")?.step_order}
-              isSuperAdmin={currentUser?.is_super_admin ?? false}
             />
           </CardContent>
         </Card>

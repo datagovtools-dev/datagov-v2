@@ -92,6 +92,7 @@ class AIComplianceChecklist(Base):
 
 
 class AIChecklistApproval(Base):
+    """Legacy rows retained for historical data; no active AICK approval workflow uses them."""
     __tablename__ = "ai_checklist_approvals"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)

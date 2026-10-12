@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.security import hash_password
 from app.models.user import Role, User, UserProjectRole
 from app.models.project import Project
-from app.models.dsr import DataSharingRequest, DSRApproval, AIChecklistApproval, AIComplianceChecklist
+from app.models.dsr import DataSharingRequest, DSRApproval, AIComplianceChecklist
 from app.models.dpia import DPIARecord, DPIAApproval
 from app.models.bapd import BAPDRecord, BAPDApproval, RetentionPolicy
 from app.models.metadata import MetadataRecord

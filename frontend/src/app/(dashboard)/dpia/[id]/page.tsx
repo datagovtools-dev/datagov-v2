@@ -187,10 +187,6 @@ const DSR_STEP_LABELS_MAP: Record<number, string> = {
   1: "PIC Data Compliance Approval", 2: "DM Approval", 3: "SME Sign Off", 4: "Client Sign Off",
 };
 
-const AICK_STEP_LABELS_MAP: Record<number, string> = {
-  1: "PIC Data Compliance Approval", 2: "DM Sign-off", 3: "SME Sign-off",
-};
-
 // ── Helper components ─────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: string }) {
@@ -300,7 +296,7 @@ export default function DPIADetailPage() {
         recipient: string; is_ai_use: boolean; is_signed: boolean; signed_at: string | null;
         created_at: string;
         approvals: { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[];
-        ai_checklist: { id: string; status: string; validated_at: string | null; checklist_json: Record<string, any>; approvals: { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[] } | null;
+        ai_checklist: { id: string; status: string; validated_at: string | null; checklist_json: Record<string, any> } | null;
       }>(`/dsr/${dsr.id}`);
     },
     enabled: !!dpia?.project_id,
@@ -547,7 +543,6 @@ export default function DPIADetailPage() {
   const aickRaw = dsrCj?.ai_assessment as Record<string, any> | undefined;
   const aickItems = (aickRaw?.items ?? {}) as Record<string, { status: string | null; remarks: string }>;
   const aickSignOff = aickRaw?.sign_off as Record<string, string> | undefined;
-  const aickApprovals = (dsrForDpia?.ai_checklist?.approvals ?? []) as { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[];
   const dsrApprovals = (dsrForDpia?.approvals ?? []) as { id: string; step_order: number; approver_name: string; status: string; actioned_at: string | null }[];
 
   return (
@@ -1178,7 +1173,6 @@ export default function DPIADetailPage() {
               project_name: dpia.project_name ?? project?.project_name ?? "-",
               ai_checklist: {
                 ...dsrForDpia.ai_checklist,
-                approvals: aickApprovals,
               },
             }}
             areas={AICK_AREAS_DEF}
