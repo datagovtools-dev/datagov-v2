@@ -26,6 +26,7 @@ from app.schemas.dsr import (
 )
 from app.worker.tasks.notifications import send_workflow_notification
 from app.services.notification_service import notify_approval_requested, notify_approval_completed
+from app.services.tracking_ids import next_yearly_tracking_id
 
 router = APIRouter(prefix="/dsr", tags=["dsr"])
 DB = Annotated[AsyncSession, Depends(get_db)]
@@ -55,11 +56,9 @@ _DPIA_DEFAULT_GOVERNANCE: dict = {
 
 
 async def _next_dpia_tracking_id(db: AsyncSession) -> str:
-    year = date.today().year
-    count = (await db.execute(
-        select(func.count()).where(extract("year", DPIARecord.created_at) == year)
-    )).scalar_one()
-    return f"DPIA-{year}-{count + 1:04d}"
+    return await next_yearly_tracking_id(
+        db, DPIARecord, DPIARecord.tracking_id, "DPIA"
+    )
 
 
 _DSR_OPTS = [
@@ -81,18 +80,10 @@ def _end_of_day(d: date) -> date:
     return d
 
 
-def _next_tracking_id(year: int, seq: int) -> str:
-    return f"DSR-{year}-{seq:04d}"
-
-
 async def _gen_tracking_id(db: AsyncSession) -> str:
-    year = datetime.now(timezone.utc).year
-    count = (await db.execute(
-        select(func.count()).where(
-            func.extract("year", DataSharingRequest.created_at) == year
-        )
-    )).scalar_one()
-    return _next_tracking_id(year, count + 1)
+    return await next_yearly_tracking_id(
+        db, DataSharingRequest, DataSharingRequest.tracking_id, "DSR"
+    )
 
 
 async def _find_approver_for_role(

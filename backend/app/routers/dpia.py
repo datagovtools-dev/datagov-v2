@@ -22,6 +22,7 @@ from app.schemas.dpia import (
 )
 from app.worker.tasks.notifications import send_workflow_notification
 from app.services.notification_service import notify_approval_requested, notify_approval_completed
+from app.services.tracking_ids import next_yearly_tracking_id
 
 router = APIRouter(prefix="/dpia", tags=["dpia"])
 DB = Annotated[AsyncSession, Depends(get_db)]
@@ -75,13 +76,9 @@ _DEFAULT_GOVERNANCE: dict = {
 
 
 async def _next_tracking_id(db: AsyncSession) -> str:
-    year = date.today().year
-    count = (await db.execute(
-        select(func.count()).where(
-            extract("year", DPIARecord.created_at) == year
-        )
-    )).scalar_one()
-    return f"DPIA-{year}-{count + 1:04d}"
+    return await next_yearly_tracking_id(
+        db, DPIARecord, DPIARecord.tracking_id, "DPIA"
+    )
 
 
 async def _get_dpia_or_404(dpia_id: uuid.UUID, db: AsyncSession) -> DPIARecord:
