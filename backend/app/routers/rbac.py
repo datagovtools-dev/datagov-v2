@@ -3,12 +3,16 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, get_db
+from app.core.security import hash_password
+from app.core.redis_client import deny_token, get_active_session_jtis, remove_user_session
+from app.config import get_settings
 from app.core.rbac import (
     require_permission,
+    require_super_admin,
     _ROLE_PERMISSIONS,
     MENU_DEFINITIONS,
     ACTIVITY_DEFINITIONS,
@@ -22,6 +26,7 @@ from app.schemas.rbac import (
     AccessMatrixOut, AssignRoleRequest, BulkUpdateMatrixRequest, MenuAccessItem, ActivityItem,
     PermissionsResponse, RevokeRoleRequest, RoleCreate, RoleMatrixEntry,
     RoleOut, RolePermissionsOut, RoleUpdate, UpdateRolePermissionsRequest, UserProjectRoleOut, UserSummary,
+    AdminPasswordResetRequest,
 )
 
 router = APIRouter(prefix="/rbac", tags=["rbac"])
@@ -105,7 +110,7 @@ async def get_access_matrix(
 async def update_access_matrix(
     body: BulkUpdateMatrixRequest,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> AccessMatrixOut:
     """Batch update access matrix for multiple roles simultaneously."""
     for item in body.roles:
@@ -140,7 +145,7 @@ async def update_role_permissions(
     role_id: int,
     body: UpdateRolePermissionsRequest,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> RoleOut:
     """Update permissions, accessible menus, and activities for a single role."""
     result = await db.execute(select(Role).where(Role.id == role_id))
@@ -194,7 +199,7 @@ async def update_role_permissions(
 async def reset_role_permissions_to_defaults(
     role_id: int,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> RoleOut:
     """Reset a role's permissions back to system governance factory defaults."""
     result = await db.execute(select(Role).where(Role.id == role_id))
@@ -236,7 +241,7 @@ async def reset_role_permissions_to_defaults(
 async def create_role(
     body: RoleCreate,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> RoleOut:
     existing = await db.execute(select(Role).where(Role.name == body.name))
     if existing.scalar_one_or_none():
@@ -268,7 +273,7 @@ async def update_role(
     role_id: int,
     body: RoleUpdate,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> RoleOut:
     result = await db.execute(select(Role).where(Role.id == role_id))
     role = result.scalar_one_or_none()
@@ -308,7 +313,7 @@ async def update_role(
 async def delete_role(
     role_id: int,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> None:
     result = await db.execute(select(Role).where(Role.id == role_id))
     role = result.scalar_one_or_none()
@@ -397,6 +402,67 @@ async def list_users(
     return out
 
 
+@router.post("/users/{user_id}/password-reset", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_user_password(
+    user_id: uuid.UUID,
+    body: AdminPasswordResetRequest,
+    db: DB,
+    current_user: Annotated[User, Depends(require_permission("user:password_reset"))],
+) -> None:
+    """Reset a user's password; restricted to users with the password-reset capability."""
+    role_names = (await db.execute(
+        select(Role.name)
+        .join(UserProjectRole, UserProjectRole.role_id == Role.id)
+        .where(UserProjectRole.user_id == current_user.id, UserProjectRole.revoked_at.is_(None))
+    )).scalars().all()
+    if "super_admin" not in role_names:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only super_admin can reset user passwords")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    password_hash = hash_password(body.password.get_secret_value())
+    version_result = await db.execute(
+        update(User)
+        .where(User.id == user_id)
+        .values(
+            password_hash=password_hash,
+            session_version=func.coalesce(User.session_version, 0) + 1,
+        )
+        .returning(User.session_version)
+    )
+    new_version = version_result.scalar_one_or_none()
+    if new_version is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.password_hash = password_hash
+    target.session_version = new_version
+    db.add(AuditLog(
+        user_id=current_user.id,
+        module="auth",
+        action="admin_password_reset",
+        entity_type="user",
+        entity_id=str(target.id),
+        details={"target_email": target.email},
+    ))
+    await db.commit()
+
+    # The session version invalidates every pre-reset access and refresh token.
+    # Redis cleanup is best-effort and only removes stale registry entries.
+    try:
+        settings = get_settings()
+        active_jtis = await get_active_session_jtis(str(target.id))
+        for jti in active_jtis:
+            try:
+                await deny_token(jti, settings.refresh_token_expire_days * 86400)
+                await remove_user_session(str(target.id), jti)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 @router.get("/users/{user_id}/roles", response_model=list[UserProjectRoleOut])
 async def get_user_roles(
     user_id: uuid.UUID,
@@ -426,7 +492,7 @@ async def assign_role(
     user_id: uuid.UUID,
     body: AssignRoleRequest,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> UserProjectRoleOut:
     # Verify user exists
     u = await db.execute(select(User).where(User.id == user_id))
@@ -476,7 +542,7 @@ async def revoke_role(
     user_id: uuid.UUID,
     assignment_id: uuid.UUID,
     db: DB,
-    current_user: Annotated[User, Depends(require_permission("user:read"))],
+    current_user: Annotated[User, Depends(require_super_admin())],
 ) -> None:
     result = await db.execute(
         select(UserProjectRole).where(

@@ -5,12 +5,12 @@ from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import extract, func, select
+from sqlalchemy import extract, func, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.deps import get_db
-from app.core.rbac import require_permission
+from app.core.deps import CurrentUser, get_db
+from app.core.rbac import _user_has_permission, require_permission
 from app.core.workflow import validate_transition, WorkflowError
 from app.models.dpia import DPIAApproval, DPIARecord
 from app.models.dsr import (
@@ -106,6 +106,27 @@ async def _get_dsr_or_404(dsr_id: uuid.UUID, db: AsyncSession) -> DataSharingReq
     return dsr
 
 
+async def _require_dsr_access(
+    dsr: DataSharingRequest,
+    db: AsyncSession,
+    current_user: User,
+    permission: str = "dsr:read",
+) -> None:
+    if _user_has_permission(current_user, permission):
+        return
+    project = await db.get(Project, dsr.project_id)
+    if project and current_user.id in {project.sme_id, dsr.requester_id}:
+        return
+    raise HTTPException(status_code=403, detail="You are not assigned to this DSR workflow")
+
+
+def _dsr_actor_scope(current_user: User):
+    return or_(
+        Project.sme_id == current_user.id,
+        DataSharingRequest.requester_id == current_user.id,
+    )
+
+
 # ── DSA ───────────────────────────────────────────────────────────────────────
 
 @router.get("/agreements", response_model=list[DSAOut])
@@ -131,7 +152,7 @@ async def create_agreement(
 @router.get("", response_model=PaginatedDSR)
 async def list_dsrs(
     db: DB,
-    _: Annotated[User, Depends(require_permission("dsr:read"))],
+    current_user: CurrentUser,
     search: str = Query(default=""),
     status_filter: str = Query(default="", alias="status"),
     project_id: uuid.UUID | None = Query(default=None),
@@ -185,6 +206,9 @@ async def list_dsrs(
             AIComplianceChecklist.status.is_(None)
             | AIComplianceChecklist.status.notin_(["submitted", "under_review", "approved", "rejected"]),
         )
+
+    if not _user_has_permission(current_user, "dsr:read"):
+        q = q.where(_dsr_actor_scope(current_user))
 
     total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
     rows = (await db.execute(
@@ -292,9 +316,11 @@ async def create_dsr(
 @router.get("/{dsr_id}", response_model=DSROut)
 async def get_dsr(
     dsr_id: uuid.UUID, db: DB,
-    _: Annotated[User, Depends(require_permission("dsr:read"))],
+    current_user: CurrentUser,
 ) -> DataSharingRequest:
-    return await _get_dsr_or_404(dsr_id, db)
+    dsr = await _get_dsr_or_404(dsr_id, db)
+    await _require_dsr_access(dsr, db, current_user)
+    return dsr
 
 
 @router.put("/{dsr_id}", response_model=DSROut)
@@ -357,9 +383,10 @@ def _is_checklist_complete(checklist_json: dict, is_ai_use: bool) -> bool:
 @router.post("/{dsr_id}/submit", response_model=DSROut)
 async def submit_dsr(
     dsr_id: uuid.UUID, db: DB,
-    current_user: Annotated[User, Depends(require_permission("dsr:create"))],
+    current_user: CurrentUser,
 ) -> DataSharingRequest:
     dsr = await _get_dsr_or_404(dsr_id, db)
+    await _require_dsr_access(dsr, db, current_user, "dsr:create")
     if dsr.status != "draft":
         raise HTTPException(status_code=400, detail="Only draft DSRs can be submitted")
     if not dsr.project or dsr.project.sme_id != current_user.id:
@@ -457,8 +484,10 @@ async def _get_checklist_or_404(dsr_id: uuid.UUID, db: AsyncSession) -> AICompli
 @router.get("/{dsr_id}/checklist", response_model=AIChecklistOut)
 async def get_checklist(
     dsr_id: uuid.UUID, db: DB,
-    _: Annotated[User, Depends(require_permission("dsr:read"))],
+    current_user: CurrentUser,
 ) -> AIComplianceChecklist:
+    dsr = await _get_dsr_or_404(dsr_id, db)
+    await _require_dsr_access(dsr, db, current_user)
     return await _get_checklist_or_404(dsr_id, db)
 
 
@@ -471,9 +500,10 @@ def _ai_sign_off_complete(checklist: AIComplianceChecklist) -> bool:
 @router.put("/{dsr_id}/checklist", response_model=AIChecklistOut)
 async def update_checklist(
     dsr_id: uuid.UUID, body: AIChecklistUpdate, db: DB,
-    current_user: Annotated[User, Depends(require_permission("dsr:update"))],
+    current_user: CurrentUser,
 ) -> AIComplianceChecklist:
     dsr = await _get_dsr_or_404(dsr_id, db)
+    await _require_dsr_access(dsr, db, current_user, "dsr:update")
     if dsr.status == "approved":
         raise HTTPException(status_code=400, detail="Approved DSR checklist is immutable")
 

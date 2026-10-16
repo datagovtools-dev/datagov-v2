@@ -2,12 +2,12 @@ from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func, select, case
+from sqlalchemy import func, select, case, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentUser, get_db
-from app.models.bapd import BAPDRecord
+from app.models.bapd import BAPDApproval, BAPDRecord
 from app.models.dpia import DPIARecord
 from app.models.dq import DQRun
 from app.models.dsr import DataSharingRequest
@@ -82,18 +82,34 @@ async def get_dashboard(db: DB, current_user: CurrentUser) -> DashboardResponse:
     action_items: list[ActionItem] = []
 
     _DPIA_STEP_NAMES = {1: "PIC Compliance Review", 2: "DM/PM Approval"}
-    _BAPD_STEP_NAMES = {1: "Data Owner Sign-Off", 2: "DGO Compliance Review"}
 
     # DPIAs under review
     dpias_res = await db.execute(
         select(DPIARecord)
-        .options(selectinload(DPIARecord.approvals))
+        .options(selectinload(DPIARecord.approvals), selectinload(DPIARecord.project))
         .where(DPIARecord.status.in_(["submitted", "under_review"]))
         .order_by(DPIARecord.created_at.asc())
         .limit(10)
     )
     for dpia in dpias_res.scalars().all():
-        active_step = next((a for a in sorted(dpia.approvals, key=lambda x: x.step_order) if a.status == "requested"), None)
+        def _assigned_to_current_user(approval) -> bool:
+            if current_user.is_super_admin or approval.approver_id == current_user.id:
+                return True
+            project = dpia.project
+            if not project:
+                return False
+            if approval.approver_role == "pic_compliance":
+                return project.pic_data_compliance_id == current_user.id
+            if approval.approver_role == "dm_pm":
+                return current_user.id in {project.delivery_manager_id, project.project_manager_id}
+            return False
+
+        active_step = next((
+            a for a in sorted(dpia.approvals, key=lambda x: x.step_order)
+            if a.status == "requested" and _assigned_to_current_user(a)
+        ), None)
+        if active_step is None:
+            continue
         step_label = _DPIA_STEP_NAMES.get(active_step.step_order, f"Step {active_step.step_order}") if active_step else "Under Review"
         action_items.append(ActionItem(
             module="dpia",
@@ -104,23 +120,41 @@ async def get_dashboard(db: DB, current_user: CurrentUser) -> DashboardResponse:
             due_label=None,
         ))
 
-    # BAPDs needing approval
+    # BAPDs awaiting Final Approval & Sign Off from the assigned Project SME,
+    # plus legacy approval steps assigned to the current user.
     bapds_res = await db.execute(
         select(BAPDRecord)
-        .options(selectinload(BAPDRecord.approvals))
-        .where(BAPDRecord.status.in_(["submitted", "under_review", "pending_approval"]))
+        .join(Project, BAPDRecord.project_id == Project.id)
+        .outerjoin(BAPDApproval, BAPDApproval.bapd_id == BAPDRecord.id)
+        .where(
+            or_(
+                and_(
+                    BAPDRecord.status == "draft",
+                    or_(
+                        BAPDRecord.approval_method == "form_sign_off",
+                        and_(BAPDRecord.approval_method.is_(None), BAPDApproval.id.is_(None)),
+                    ),
+                    Project.sme_id == current_user.id,
+                ),
+                and_(
+                    BAPDRecord.status.in_(["submitted", "under_review"]),
+                    BAPDApproval.status.in_(["pending", "requested"]),
+                    or_(BAPDApproval.approver_id == current_user.id, current_user.is_super_admin),
+                ),
+            )
+        )
         .order_by(BAPDRecord.expiry_date.asc())
-        .limit(10)
+        .limit(20)
     )
-    for bapd in bapds_res.scalars().all():
-        active_step = next((a for a in sorted(bapd.approvals, key=lambda x: x.step_order) if a.status == "requested"), None)
-        step_label = _BAPD_STEP_NAMES.get(active_step.step_order, f"Step {active_step.step_order}") if active_step else "Dual Approval"
+    for bapd in bapds_res.scalars().unique().all():
         days_left = (bapd.expiry_date - today).days if bapd.expiry_date else None
         urgency = "high" if days_left is not None and days_left <= 7 else "medium"
+        is_legacy = bool(bapd.approvals) or bapd.approval_method == "legacy_dual_approval"
+        action_label = "Legacy Approval Step" if is_legacy else "Final Approval & Sign Off"
         action_items.append(ActionItem(
             module="bapd",
             entity_id=str(bapd.id),
-            title=f"BAPD {str(bapd.id)[:8]} — {step_label}",
+            title=f"BAPD {str(bapd.id)[:8]} — {action_label}",
             status=bapd.status,
             urgency=urgency,
             due_label=f"Expires in {days_left}d" if days_left is not None else None,

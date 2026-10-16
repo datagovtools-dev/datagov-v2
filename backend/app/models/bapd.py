@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, date
-from sqlalchemy import String, Text, ForeignKey, DateTime, Date, SmallInteger, Integer, func
+from sqlalchemy import String, Text, ForeignKey, DateTime, Date, SmallInteger, Integer, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import Uuid
 from app.database import Base
@@ -29,6 +29,8 @@ class BAPDRecord(Base):
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     responsible_party_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("users.id"), nullable=False)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="draft", index=True)
+    approval_method: Mapped[str | None] = mapped_column(String(30), nullable=True, default="form_sign_off")
+    sign_off_json: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     pod_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     executed_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(), ForeignKey("users.id"), nullable=True)
@@ -38,6 +40,26 @@ class BAPDRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     approvals: Mapped[list["BAPDApproval"]] = relationship("BAPDApproval", back_populates="bapd", lazy="selectin")
+    target_datasets: Mapped[list["BAPDTargetDataset"]] = relationship(
+        "BAPDTargetDataset",
+        back_populates="bapd",
+        cascade="all, delete-orphan",
+        lazy="selectin",
+        order_by="BAPDTargetDataset.display_order",
+    )
+
+
+class BAPDTargetDataset(Base):
+    __tablename__ = "bapd_target_datasets"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    bapd_id: Mapped[uuid.UUID] = mapped_column(Uuid(), ForeignKey("bapd_records.id", ondelete="CASCADE"), nullable=False, index=True)
+    dataset_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    dataset_location: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    display_order: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+
+    bapd: Mapped["BAPDRecord"] = relationship("BAPDRecord", back_populates="target_datasets")
 
 
 class BAPDApproval(Base):

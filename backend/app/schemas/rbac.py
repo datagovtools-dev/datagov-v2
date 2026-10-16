@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, SecretStr
 
 
 class MenuAccessItem(BaseModel):
@@ -75,6 +75,10 @@ class PermissionsResponse(BaseModel):
     permissions: list[str]
     accessible_menus: list[MenuAccessItem] = []
     permitted_activities: list[ActivityItem] = []
+
+
+class AdminPasswordResetRequest(BaseModel):
+    password: SecretStr = Field(min_length=12, max_length=128)
 
 
 class UserSummary(BaseModel):

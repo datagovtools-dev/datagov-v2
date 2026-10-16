@@ -19,8 +19,11 @@ interface BAPDListItem {
   customer_name?: string | null;
   dataset_name: string;
   dataset_location: string;
+  dataset_count: number;
   expiry_date: string;
   status: string;
+  approval_method: string;
+  is_final_signed: boolean;
   version: number;
   responsible_party_name?: string | null;
   created_by_name?: string | null;
@@ -69,7 +72,7 @@ export default function BAPDListPage() {
     queryFn: () => api.get<EligibleDataset[]>("/bapd/eligible-datasets"),
   });
 
-  const { data, isLoading } = useQuery<PaginatedBAPD>({
+  const { data, isLoading, isError, error: listError } = useQuery<PaginatedBAPD>({
     queryKey: ["bapds", statusFilter, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), page_size: "20" });
@@ -91,7 +94,7 @@ export default function BAPDListPage() {
             Extermination Records (BAPD)
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Bulk archive & purge of data with dual mandatory sign-offs and Proof of Deletion (POD)
+            Bulk archive & purge of data with Final Approval & Sign Off and Proof of Deletion (POD)
             {data ? ` · ${data.total} record${data.total !== 1 ? "s" : ""}` : ""}
           </p>
         </div>
@@ -178,6 +181,7 @@ export default function BAPDListPage() {
               <TableHead>Location</TableHead>
               <TableHead>Expiry Date</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Sign-Off</TableHead>
               <TableHead>POD Proof</TableHead>
               <TableHead>Executed</TableHead>
               <TableHead>Version</TableHead>
@@ -186,15 +190,18 @@ export default function BAPDListPage() {
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              <TableRow><TableCell colSpan={9} className="text-center py-10 text-xs text-slate-400 font-mono">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10} className="text-center py-10 text-xs text-slate-400 font-mono">Loading…</TableCell></TableRow>
+            ) : isError ? (
+              <TableRow><TableCell colSpan={10} className="text-center py-10 text-xs text-rose-600 font-mono">Unable to load BAPD records: {listError instanceof Error ? listError.message : "request failed"}</TableCell></TableRow>
             ) : !filtered?.length ? (
-              <TableRow><TableCell colSpan={9} className="text-center py-10 text-xs text-slate-400 font-mono">No BAPD records found.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10} className="text-center py-10 text-xs text-slate-400 font-mono">No BAPD records found.</TableCell></TableRow>
             ) : (
               filtered.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="font-medium text-slate-900">
                     <Link href={`/bapd/${r.id}`} className="hover:underline font-semibold">
                       {r.dataset_name}
+                      {r.dataset_count > 1 && <span className="ml-1.5 text-[10px] font-normal text-blue-600">+{r.dataset_count - 1} datasets</span>}
                     </Link>
                   </TableCell>
                   <TableCell className="text-xs text-slate-700">
@@ -214,6 +221,15 @@ export default function BAPDListPage() {
                     <Badge variant={statusVariant(r.status)} className="text-[10px] uppercase font-mono">
                       {r.status.replace("_", " ")}
                     </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {r.approval_method === "legacy_dual_approval" ? (
+                      <Badge variant="neutral" className="text-[10px] uppercase font-mono">Legacy</Badge>
+                    ) : (
+                      <Badge variant={r.is_final_signed ? "success" : "warning"} className="text-[10px] uppercase font-mono">
+                        {r.is_final_signed ? "Complete" : "Pending"}
+                      </Badge>
+                    )}
                   </TableCell>
                   <TableCell>
                     {r.pod_file_path ? (

@@ -39,6 +39,20 @@ async def deny_token(jti: str, ttl_seconds: int) -> None:
     await r.setex(f"{DENYLIST_PREFIX}{jti}", ttl_seconds, "1")
 
 
+async def consume_token(jti: str, ttl_seconds: int) -> bool:
+    """Atomically deny-list a token and report whether it was unused."""
+    if not is_redis_enabled():
+        raise RuntimeError("Redis is required for single-use token consumption")
+    r = await get_redis()
+    created = await r.set(
+        f"{DENYLIST_PREFIX}{jti}",
+        "1",
+        ex=ttl_seconds,
+        nx=True,
+    )
+    return bool(created)
+
+
 async def is_token_denied(jti: str) -> bool:
     if not is_redis_enabled():
         return False

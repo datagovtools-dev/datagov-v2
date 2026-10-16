@@ -39,6 +39,24 @@ export async function errorDetail(res: Response): Promise<string> {
   return httpErrorHelp(res.status);
 }
 
+let refreshPromise: Promise<string> | null = null;
+
+async function refreshAccessToken(): Promise<string> {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const refreshRes = await fetch(`${BASE}/auth/refresh`, { method: "POST", credentials: "include" });
+      if (!refreshRes.ok) throw new ApiError(refreshRes.status, { detail: await errorDetail(refreshRes) });
+      const body = await refreshRes.json() as { access_token?: string };
+      if (!body.access_token) throw new ApiError(502, { detail: "Refresh response did not include an access token" });
+      useAuthStore.getState().setToken(body.access_token);
+      return body.access_token;
+    })().finally(() => {
+      refreshPromise = null;
+    });
+  }
+  return refreshPromise;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = useAuthStore.getState().accessToken;
   const headers: HeadersInit = {
@@ -51,20 +69,23 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   // Try token refresh on 401
   if (res.status === 401) {
-    const refreshRes = await fetch(`${BASE}/auth/refresh`, { method: "POST", credentials: "include" });
-    if (refreshRes.ok) {
-      const { access_token } = await refreshRes.json();
-      useAuthStore.getState().setToken(access_token);
-      const retry = await fetch(`${BASE}${path}`, {
-        ...init,
-        headers: { ...headers, Authorization: `Bearer ${access_token}` },
-        credentials: "include",
-      });
-      if (!retry.ok) throw new ApiError(retry.status, { detail: await errorDetail(retry) });
-      return retry.json() as Promise<T>;
+    let accessToken: string;
+    try {
+      accessToken = await refreshAccessToken();
+    } catch (error) {
+      useAuthStore.getState().logout();
+      if (error instanceof ApiError && error.status === 401) throw error;
+      throw new ApiError(401, { detail: "Session expired" });
     }
-    useAuthStore.getState().logout();
-    throw new ApiError(401, { detail: "Session expired" });
+
+    const retry = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: { ...headers, Authorization: `Bearer ${accessToken}` },
+      credentials: "include",
+    });
+    if (!retry.ok) throw new ApiError(retry.status, { detail: await errorDetail(retry) });
+    if (retry.status === 204) return undefined as T;
+    return retry.json() as Promise<T>;
   }
 
   if (!res.ok) throw new ApiError(res.status, { detail: await errorDetail(res) });

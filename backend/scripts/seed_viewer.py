@@ -12,12 +12,11 @@ VIEWER_NAME     = os.getenv("VIEWER_NAME",     "Read-Only Viewer")
 VIEWER_POSITION = os.getenv("VIEWER_POSITION", "Internal Auditor")  # job title in the company
 
 async def main():
-    from passlib.context import CryptContext
     from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
     from sqlalchemy import select
     from app.models.user import Role, User, UserProjectRole
+    from app.core.security import hash_password
 
-    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
     engine  = create_async_engine(DATABASE_URL, echo=False)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
@@ -41,7 +40,7 @@ async def main():
                 full_name=VIEWER_NAME,
                 email=VIEWER_EMAIL,
                 position=VIEWER_POSITION,
-                password_hash=pwd_ctx.hash(VIEWER_PASSWORD),
+                password_hash=hash_password(VIEWER_PASSWORD),
                 is_active=True,
             )
             db.add(user)
@@ -70,7 +69,7 @@ async def main():
     await engine.dispose()
     print("\n✅ Viewer account ready.")
     print(f"   Email    : {VIEWER_EMAIL}")
-    print(f"   Password : {VIEWER_PASSWORD}")
+    print("   Password : supplied through the environment")
 
 if __name__ == "__main__":
     asyncio.run(main())

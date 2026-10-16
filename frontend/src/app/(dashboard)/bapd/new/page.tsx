@@ -21,6 +21,7 @@ interface ProjectOption {
 interface UserOption { id: string; full_name: string; email: string; }
 interface RetentionPolicy { id: string; dataset_type: string; retention_days: number; policy_reference: string | null; }
 interface TableInfo { table_name: string; column_count: number; source_type: string; }
+interface DatasetTarget { dataset_name: string; dataset_location: string; source_type?: string | null; }
 
 export default function NewBAPDPage() {
   return <Suspense><NewBAPDForm /></Suspense>;
@@ -33,6 +34,7 @@ function NewBAPDForm() {
     project_id: "",
     dataset_name: params.get("dataset") ?? "",
     dataset_location: params.get("location") ?? "",
+    datasets: [] as DatasetTarget[],
     retention_policy_id: params.get("policy") ?? "",
     expiry_date: "",
     reason: "",
@@ -93,11 +95,53 @@ function NewBAPDForm() {
     setErrors((e) => { const n = { ...e }; delete n[field]; return n; });
   }
 
+  function toggleProjectTable(table: TableInfo) {
+    const target: DatasetTarget = {
+      dataset_name: table.table_name,
+      dataset_location: `db://${table.source_type.toLowerCase()}/${table.table_name}`,
+      source_type: table.source_type,
+    };
+    setForm((current) => {
+      const exists = current.datasets.some((item) => item.dataset_name === target.dataset_name && item.dataset_location === target.dataset_location);
+      const datasets = exists
+        ? current.datasets.filter((item) => item.dataset_name !== target.dataset_name || item.dataset_location !== target.dataset_location)
+        : [...current.datasets, target];
+      const first = datasets[0];
+      return {
+        ...current,
+        datasets,
+        dataset_name: first?.dataset_name ?? (exists ? "" : current.dataset_name),
+        dataset_location: first?.dataset_location ?? (exists ? "" : current.dataset_location),
+      };
+    });
+    setErrors((current) => {
+      const next = { ...current };
+      delete next.dataset_name;
+      delete next.dataset_location;
+      delete next.datasets;
+      return next;
+    });
+  }
+
+  function removeDataset(index: number) {
+    setForm((current) => {
+      const datasets = current.datasets.filter((_, itemIndex) => itemIndex !== index);
+      const first = datasets[0];
+      return {
+        ...current,
+        datasets,
+        dataset_name: first?.dataset_name ?? "",
+        dataset_location: first?.dataset_location ?? "",
+      };
+    });
+  }
+
   function validate() {
     const e: Record<string, string> = {};
     if (!form.project_id) e.project_id = "Required";
-    if (!form.dataset_name.trim()) e.dataset_name = "Required";
-    if (!form.dataset_location.trim()) e.dataset_location = "Required";
+    if (!form.dataset_name.trim() && form.datasets.length === 0) e.datasets = "Select or enter at least one dataset";
+    if (!form.dataset_name.trim() && form.datasets.length === 0) e.dataset_name = "Required";
+    if (!form.dataset_location.trim() && form.datasets.length === 0) e.dataset_location = "Required";
     if (!form.expiry_date) e.expiry_date = "Required";
     if (!form.responsible_party_id) e.responsible_party_id = "Required";
     if (!form.reason.trim()) e.reason = "Required";
@@ -138,7 +182,7 @@ function NewBAPDForm() {
             Irreversible Permanent Deletion Action
           </h4>
           <p className="text-xs text-rose-800 mt-0.5 leading-relaxed">
-            A BAPD request will permanently purge the specified dataset once dual approval is granted. Sign-off from both the designated Data Owner and Data Compliance Officer is strictly mandatory.
+            A BAPD request will permanently purge the specified dataset once Final Approval &amp; Sign Off is complete. The Project Data Owner prepares the request and the assigned Project SME provides the final acknowledgement.
           </p>
         </div>
       </div>
@@ -186,25 +230,36 @@ function NewBAPDForm() {
               {projectTables.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1 pt-1">
                   <span className="text-[10px] text-slate-400 font-mono flex items-center gap-0.5">
-                    <Database className="h-2.5 w-2.5" /> Project Tables:
+                    <Database className="h-2.5 w-2.5" /> Select project tables:
                   </span>
-                  {projectTables.map((t) => (
-                    <button
-                      key={t.table_name}
-                      type="button"
-                      onClick={() => {
-                        set("dataset_name", t.table_name);
-                        if (!form.dataset_location) {
-                          set("dataset_location", `db://${t.source_type.toLowerCase()}/${t.table_name}`);
-                        }
-                      }}
-                      className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 hover:bg-blue-50 hover:text-blue-700 font-mono text-slate-600 border border-slate-200 transition-colors"
-                    >
-                      {t.table_name}
-                    </button>
+                  {projectTables.map((t) => {
+                    const selected = form.datasets.some((item) => item.dataset_name === t.table_name && item.dataset_location === `db://${t.source_type.toLowerCase()}/${t.table_name}`);
+                    return (
+                      <button
+                        key={t.table_name}
+                        type="button"
+                        onClick={() => toggleProjectTable(t)}
+                        className={`text-[10px] px-1.5 py-0.5 rounded font-mono border transition-colors ${selected ? "bg-blue-100 text-blue-800 border-blue-300" : "bg-slate-100 hover:bg-blue-50 hover:text-blue-700 text-slate-600 border-slate-200"}`}
+                        aria-pressed={selected}
+                      >
+                        {selected ? "✓ " : ""}{t.table_name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {form.datasets.length > 0 && (
+                <div className="mt-2 rounded border border-blue-100 bg-blue-50/50 p-2 space-y-1">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-800">Selected datasets ({form.datasets.length})</p>
+                  {form.datasets.map((dataset, index) => (
+                    <div key={`${dataset.dataset_location}-${index}`} className="flex items-center justify-between gap-2 text-[11px] font-mono text-slate-700">
+                      <span className="truncate">{dataset.dataset_name} <span className="text-slate-400">· {dataset.dataset_location}</span></span>
+                      <button type="button" onClick={() => removeDataset(index)} className="text-rose-600 hover:text-rose-800" aria-label={`Remove ${dataset.dataset_name}`}>Remove</button>
+                    </div>
                   ))}
                 </div>
               )}
+              {errors.datasets && <p className="text-[11px] font-medium text-rose-600 font-mono">{errors.datasets}</p>}
             </div>
             <div className="md:col-span-2">
               <Input
@@ -320,7 +375,7 @@ function NewBAPDForm() {
               I understand and confirm that this BAPD action is permanent and legally binding
             </label>
             <p className="text-[11px] text-slate-500 mt-0.5 font-mono">
-              Once dual approval is executed, all associated data tables, backups, and artifacts will be permanently purged.
+              Once Final Approval &amp; Sign Off is complete, the dataset can be permanently purged and the Proof of Deletion generated.
             </p>
             {errors.confirmed && (
               <p className="text-[11px] font-medium text-rose-600 font-mono mt-1">{errors.confirmed}</p>

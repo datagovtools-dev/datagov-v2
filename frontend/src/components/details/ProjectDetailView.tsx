@@ -30,6 +30,7 @@ export interface UserOptionLike {
   id: string;
   full_name: string;
   email: string;
+  position?: string | null;
 }
 
 export interface OwnerRecordLike {

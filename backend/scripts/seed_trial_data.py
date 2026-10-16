@@ -13,18 +13,16 @@ from datetime import date, datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.core.security import hash_password
 
 DATABASE_URL = os.getenv("DATABASE_URL", "") or get_settings().database_url
 if not DATABASE_URL:
     print("ERROR: DATABASE_URL not set")
     sys.exit(1)
-
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 TRIAL_USERS = [
     {"full_name": "Ahmad Fauzi",        "email": "ahmad.fauzi@company.com"},
@@ -65,7 +63,7 @@ async def main():
                     id=uuid.uuid4(),
                     full_name=u["full_name"],
                     email=u["email"],
-                    password_hash=pwd_ctx.hash("User1234!"),
+                    password_hash=hash_password("User1234!"),
                     is_active=True,
                 )
                 db.add(new_user)
@@ -221,7 +219,7 @@ async def main():
     print(f"   SME      : {sme.full_name} ({sme.email})")
     print(f"   DM       : {dm.full_name} ({dm.email})")
     print(f"   PM       : {pm.full_name} ({pm.email})")
-    print(f"\n   All user passwords: User1234!")
+    print("\n   User passwords: supplied through the configured seed process")
 
 
 if __name__ == "__main__":

@@ -6,20 +6,24 @@ Run inside the api container after migrations:
 
 Or with custom credentials:
   ADMIN_EMAIL=admin@company.com ADMIN_PASSWORD=MyPass123! python scripts/seed_admin.py
+
+To explicitly reset an existing admin after legacy hashes are disabled:
+  RESET_EXISTING_ADMIN=true ADMIN_PASSWORD='[REDACTED]' python scripts/seed_admin.py
 """
 import asyncio
 import os
 import sys
+from datetime import datetime, timezone
 
 # Allow running from the /app directory inside Docker
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from passlib.context import CryptContext
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 import uuid
 
 from app.config import get_settings
+from app.core.security import hash_password
 
 DATABASE_URL = os.getenv("DATABASE_URL", "") or get_settings().database_url
 if not DATABASE_URL:
@@ -27,10 +31,14 @@ if not DATABASE_URL:
     sys.exit(1)
 
 ADMIN_EMAIL    = os.getenv("ADMIN_EMAIL",    "admin@governance.local")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Admin1234!")
+admin_password_env = os.getenv("ADMIN_PASSWORD")
 ADMIN_NAME     = os.getenv("ADMIN_NAME",     "Super Administrator")
+RESET_EXISTING_ADMIN = os.getenv("RESET_EXISTING_ADMIN", "false").strip().lower() == "true"
 
-pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+if RESET_EXISTING_ADMIN and not admin_password_env:
+    print("ERROR: ADMIN_PASSWORD must be provided when RESET_EXISTING_ADMIN=true")
+    sys.exit(1)
+ADMIN_PASSWORD: str = admin_password_env or "Admin1234!"
 
 DEFAULT_ROLES = [
     ("super_admin",        "Full access to all modules and settings"),
@@ -83,14 +91,26 @@ async def main():
         )).scalar_one_or_none()
 
         if existing_user:
-            print(f"  [OK] User already exists: {ADMIN_EMAIL}")
+            if RESET_EXISTING_ADMIN:
+                await db.execute(
+                    update(User)
+                    .where(User.id == existing_user.id)
+                    .values(
+                        password_hash=hash_password(ADMIN_PASSWORD),
+                        session_version=func.coalesce(User.session_version, 0) + 1,
+                    )
+                )
+                await db.commit()
+                print(f"  [OK] Existing admin password reset: {ADMIN_EMAIL}")
+            else:
+                print(f"  [OK] User already exists: {ADMIN_EMAIL}")
             user = existing_user
         else:
             user = User(
                 id=uuid.uuid4(),
                 full_name=ADMIN_NAME,
                 email=ADMIN_EMAIL,
-                password_hash=pwd_ctx.hash(ADMIN_PASSWORD),
+                password_hash=hash_password(ADMIN_PASSWORD),
                 is_active=True,
             )
             db.add(user)
@@ -104,15 +124,18 @@ async def main():
         )).scalar_one_or_none()
 
         if super_admin_role:
-            existing_assignment = (await db.execute(
-                select(UserProjectRole).where(
+            active_assignments = (await db.execute(
+                select(UserProjectRole)
+                .where(
                     UserProjectRole.user_id == user.id,
                     UserProjectRole.role_id == super_admin_role.id,
-                    UserProjectRole.project_id == None,
+                    UserProjectRole.project_id.is_(None),
+                    UserProjectRole.revoked_at.is_(None),
                 )
-            )).scalar_one_or_none()
+                .order_by(UserProjectRole.assigned_at, UserProjectRole.id)
+            )).scalars().all()
 
-            if not existing_assignment:
+            if not active_assignments:
                 db.add(UserProjectRole(
                     user_id=user.id,
                     role_id=super_admin_role.id,
@@ -122,14 +145,20 @@ async def main():
                 await db.commit()
                 print(f"  + Assigned super_admin role to {ADMIN_EMAIL}")
             else:
-                print(f"  [OK] super_admin role already assigned")
+                duplicate_count = len(active_assignments) - 1
+                for duplicate in active_assignments[1:]:
+                    duplicate.revoked_at = datetime.now(timezone.utc)
+                if duplicate_count:
+                    await db.commit()
+                    print(f"  [OK] super_admin role already assigned; revoked {duplicate_count} duplicate assignment(s)")
+                else:
+                    print(f"  [OK] super_admin role already assigned")
 
     await engine.dispose()
     print("\n[OK] Seed complete!")
     print(f"\n   Login URL : http://localhost:3000/login")
     print(f"   Email     : {ADMIN_EMAIL}")
-    print(f"   Password  : {ADMIN_PASSWORD}")
-    print("\n   [!] Change the password after first login!")
+    print("   Password  : supplied through the environment")
 
 
 if __name__ == "__main__":

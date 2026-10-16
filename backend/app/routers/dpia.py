@@ -5,12 +5,12 @@ from datetime import date, datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, extract
+from sqlalchemy import func, select, extract, exists, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.deps import CurrentUser, get_db
-from app.core.rbac import require_permission
+from app.core.rbac import _user_has_permission, require_permission
 from app.core.workflow import WorkflowError, validate_transition
 from app.models.dpia import DPIAApproval, DPIARecord
 from app.models.dsr import DataSharingRequest
@@ -91,10 +91,38 @@ async def _get_dpia_or_404(dpia_id: uuid.UUID, db: AsyncSession) -> DPIARecord:
     return record
 
 
+async def _require_dpia_access(
+    record: DPIARecord,
+    db: AsyncSession,
+    current_user: User,
+    permission: str = "dpia:read",
+) -> None:
+    if _user_has_permission(current_user, permission):
+        return
+    if record.created_by == current_user.id or record.responsible_party_id == current_user.id:
+        return
+    project = await db.get(Project, record.project_id)
+    if project and current_user.id in {
+        project.pic_data_compliance_id,
+        project.delivery_manager_id,
+        project.project_manager_id,
+    }:
+        return
+    assigned = await db.scalar(
+        select(exists().where(
+            DPIAApproval.dpia_id == record.id,
+            DPIAApproval.approver_id == current_user.id,
+        ))
+    )
+    if assigned:
+        return
+    raise HTTPException(status_code=403, detail="You are not assigned to this DPIA workflow")
+
+
 @router.get("", response_model=PaginatedDPIA)
 async def list_dpias(
     db: DB,
-    _: Annotated[User, Depends(require_permission("dpia:read"))],
+    current_user: CurrentUser,
     project_id: uuid.UUID | None = Query(default=None),
     status_filter: str = Query(default="", alias="status"),
     year: int | None = Query(default=None),
@@ -114,6 +142,23 @@ async def list_dpias(
     )
 
     base = select(DPIARecord)
+    if not _user_has_permission(current_user, "dpia:read"):
+        base = base.where(or_(
+            DPIARecord.created_by == current_user.id,
+            DPIARecord.responsible_party_id == current_user.id,
+            exists().where(
+                DPIAApproval.dpia_id == DPIARecord.id,
+                DPIAApproval.approver_id == current_user.id,
+            ),
+            exists().where(
+                Project.id == DPIARecord.project_id,
+                or_(
+                    Project.pic_data_compliance_id == current_user.id,
+                    Project.delivery_manager_id == current_user.id,
+                    Project.project_manager_id == current_user.id,
+                ),
+            ).correlate(DPIARecord),
+        ))
     if project_id:
         base = base.where(DPIARecord.project_id == project_id)
     if status_filter:
@@ -132,6 +177,23 @@ async def list_dpias(
         .outerjoin(dsr_latest, DPIARecord.project_id == dsr_latest.c.project_id)
         .outerjoin(Project, DPIARecord.project_id == Project.id)
     )
+    if not _user_has_permission(current_user, "dpia:read"):
+        q = q.where(or_(
+            DPIARecord.created_by == current_user.id,
+            DPIARecord.responsible_party_id == current_user.id,
+            exists().where(
+                DPIAApproval.dpia_id == DPIARecord.id,
+                DPIAApproval.approver_id == current_user.id,
+            ),
+            exists().where(
+                Project.id == DPIARecord.project_id,
+                or_(
+                    Project.pic_data_compliance_id == current_user.id,
+                    Project.delivery_manager_id == current_user.id,
+                    Project.project_manager_id == current_user.id,
+                ),
+            ).correlate(DPIARecord),
+        ))
     if project_id:
         q = q.where(DPIARecord.project_id == project_id)
     if status_filter:
@@ -228,9 +290,11 @@ async def create_dpia(
 @router.get("/{dpia_id}", response_model=DPIAOut)
 async def get_dpia(
     dpia_id: uuid.UUID, db: DB,
-    _: Annotated[User, Depends(require_permission("dpia:read"))],
+    current_user: CurrentUser,
 ) -> DPIARecord:
-    return await _get_dpia_or_404(dpia_id, db)
+    record = await _get_dpia_or_404(dpia_id, db)
+    await _require_dpia_access(record, db, current_user)
+    return record
 
 
 @router.put("/{dpia_id}", response_model=DPIAOut)
@@ -295,7 +359,7 @@ async def submit_dpia(
 @router.post("/{dpia_id}/approvals/{step}", response_model=DPIAOut)
 async def action_dpia_approval(
     dpia_id: uuid.UUID, step: int, body: ApprovalActionRequest, db: DB,
-    current_user: Annotated[User, Depends(require_permission("dpia:approve"))],
+    current_user: CurrentUser,
 ) -> DPIARecord:
     record = await _get_dpia_or_404(dpia_id, db)
     approval_res = await db.execute(
@@ -310,7 +374,23 @@ async def action_dpia_approval(
     if approval.status not in ("pending", "requested"):
         raise HTTPException(status_code=400, detail="Approval step already actioned")
 
-    if approval.approver_id and current_user.id != approval.approver_id and not current_user.is_super_admin:
+    project = await db.get(Project, record.project_id)
+    designated_by_project = (
+        project is not None
+        and (
+            (approval.approver_role == "pic_compliance" and project.pic_data_compliance_id == current_user.id)
+            or (
+                approval.approver_role == "dm_pm"
+                and current_user.id in {project.delivery_manager_id, project.project_manager_id}
+            )
+        )
+    )
+    if (
+        current_user.id != approval.approver_id
+        and not designated_by_project
+        and not current_user.is_super_admin
+        and not _user_has_permission(current_user, "dpia:approve")
+    ):
         raise HTTPException(
             status_code=403,
             detail="Only the designated approver or a Super Admin can approve/reject this step.",

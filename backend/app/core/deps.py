@@ -106,6 +106,9 @@ async def get_current_user(
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise exc
+    current_version = user.session_version or 0
+    if current_version > 0 and payload.get("sv") != current_version:
+        raise exc
     return user
 
 
@@ -122,8 +125,17 @@ async def get_refresh_token_payload(
     if payload.get("type") != "refresh":
         raise exc
     jti = payload.get("jti")
-    if jti and await is_token_denied(jti):
-        raise exc
+    if jti:
+        try:
+            if await is_token_denied(jti):
+                raise exc
+        except HTTPException:
+            raise
+        except Exception as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Refresh token service unavailable",
+            ) from error
     return payload
 
 

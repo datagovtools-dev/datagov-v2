@@ -196,14 +196,87 @@ async def test_dpia_approval_lifecycle_e2e(
     assert all(a["status"] == "approved" for a in dp_s2["approvals"])
 
 
-# ── 5. BAPD Dual Approval and Disposal Execution E2E ──────────────────────────
-
 @pytest.mark.asyncio
-async def test_bapd_dual_approval_and_execution_lifecycle_e2e(
+async def test_bapd_prepared_signature_requires_configured_data_owner(
     client: AsyncClient, auth_headers: dict[str, str], test_project, auth_user
 ):
-    """E2E Test: BAPD Draft -> Submitted -> Step 1 -> Step 2 -> Approved -> Execute Disposal & POD."""
-    # 1. Create BAPD
+    create_resp = await client.post(
+        "/api/v1/bapd",
+        headers=auth_headers,
+        json={
+            "project_id": str(test_project.id),
+            "dataset_name": "Unconfigured Data Owner Dataset",
+            "dataset_location": "db://sqlite/no-data-owner",
+            "expiry_date": date.today().isoformat(),
+            "reason": "Testing fail-closed prepared signer authorization",
+            "responsible_party_id": str(auth_user.id),
+        },
+    )
+    assert create_resp.status_code in (200, 201), create_resp.text
+    bapd_id = create_resp.json()["id"]
+
+    signoff_resp = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=auth_headers,
+        json={"version": create_resp.json()["version"], "sign_off": {
+            "prepared_signature": "data:image/png;base64,PREPARED",
+            "prepared_date": date.today().isoformat(),
+        }},
+    )
+    assert signoff_resp.status_code == 403
+    assert "Data Owner" in signoff_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_bapd_null_workflow_marker_cannot_execute_without_signoff(
+    client: AsyncClient, auth_headers: dict[str, str], db: AsyncSession, test_project, auth_user
+):
+    from app.models.bapd import BAPDRecord
+
+    create_resp = await client.post(
+        "/api/v1/bapd",
+        headers=auth_headers,
+        json={
+            "project_id": str(test_project.id),
+            "dataset_name": "Null Workflow Marker Dataset",
+            "dataset_location": "db://sqlite/null-workflow",
+            "expiry_date": date.today().isoformat(),
+            "reason": "Testing null approval method execution guard",
+            "responsible_party_id": str(auth_user.id),
+        },
+    )
+    assert create_resp.status_code in (200, 201), create_resp.text
+    bapd_id = create_resp.json()["id"]
+    record = await db.get(BAPDRecord, uuid.UUID(bapd_id))
+    record.approval_method = None
+    record.status = "approved"
+    await db.commit()
+
+    execute_resp = await client.post(
+        f"/api/v1/bapd/{bapd_id}/execute",
+        headers=auth_headers,
+        json={"confirmation_phrase": "DELETE PERMANENTLY"},
+    )
+    assert execute_resp.status_code == 400
+    assert "sign off" in execute_resp.json()["detail"].lower()
+
+
+# ── 5. BAPD Form Sign-Off and Disposal Execution E2E ───────────────────────────
+
+@pytest.mark.asyncio
+async def test_bapd_form_signoff_and_execution_lifecycle_e2e(
+    client: AsyncClient, auth_headers: dict[str, str], db: AsyncSession, test_project, auth_user
+):
+    """BAPD Draft -> Final Approval & Sign Off -> Approved -> Execute -> POD."""
+    from app.models.metadata import DataOwnerSteward
+    db.add(DataOwnerSteward(
+        project_id=test_project.id,
+        role_type="data_owner",
+        full_name=auth_user.full_name,
+        email=auth_user.email,
+        position="Project Data Owner",
+    ))
+    await db.commit()
     exp_d = date.today().isoformat()
     create_resp = await client.post(
         "/api/v1/bapd",
@@ -213,7 +286,7 @@ async def test_bapd_dual_approval_and_execution_lifecycle_e2e(
             "dataset_name": "Expired Temporary Staging Data",
             "dataset_location": "gs://datagov-staging-temp/2025/q4",
             "expiry_date": exp_d,
-            "reason": "Retention window of 90 days expired as per GDPR/UU PDP Article 27",
+            "reason": "Retention window expired as per the approved retention policy",
             "responsible_party_id": str(auth_user.id),
         },
     )
@@ -221,60 +294,386 @@ async def test_bapd_dual_approval_and_execution_lifecycle_e2e(
     bapd_data = create_resp.json()
     bapd_id = bapd_data["id"]
     assert bapd_data["status"] == "draft"
-    assert len(bapd_data["approvals"]) == 2
+    assert bapd_data["approvals"] == []
+    assert bapd_data["is_final_signed"] is False
 
-    # 2. Transition to submitted
-    trans_resp = await client.post(
+    dashboard_resp = await client.get("/api/v1/dashboard", headers=auth_headers)
+    assert dashboard_resp.status_code == 200, dashboard_resp.text
+    dashboard_bapd = [
+        item for item in dashboard_resp.json().get("action_items", [])
+        if item["entity_id"] == bapd_id
+    ]
+    assert len(dashboard_bapd) == 1
+    assert "Final Approval & Sign Off" in dashboard_bapd[0]["title"]
+
+    incomplete_submit = await client.post(
+        f"/api/v1/bapd/{bapd_id}/submit", headers=auth_headers
+    )
+    assert incomplete_submit.status_code == 400
+
+    signoff = {
+        "approved": "Yes",
+        "prepared_by": "Project Data Owner",
+        "prepared_position": "Data Owner",
+        "prepared_signature": "data:image/png;base64,PREPARED",
+        "prepared_date": date.today().isoformat(),
+        "acknowledged_by": "free-form value must be normalized",
+        "acknowledged_position": "free-form position must be normalized",
+        "acknowledged_signature": "data:image/png;base64,ACKNOWLEDGED",
+        "acknowledged_date": date.today().isoformat(),
+    }
+    signoff_resp = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=auth_headers,
+        json={"version": bapd_data["version"], "sign_off": signoff},
+    )
+    assert signoff_resp.status_code == 200, signoff_resp.text
+    saved = signoff_resp.json()
+    assert saved["sign_off"]["acknowledged_by"] == auth_user.full_name
+    assert saved["sign_off"]["acknowledged_signed_by"] == str(auth_user.id)
+    assert saved["is_final_signed"] is True
+
+    refetched = await client.get(f"/api/v1/bapd/{bapd_id}", headers=auth_headers)
+    assert refetched.status_code == 200
+    replay_save = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=auth_headers,
+        json={"version": refetched.json()["version"], "sign_off": refetched.json()["sign_off"]},
+    )
+    assert replay_save.status_code == 200, replay_save.text
+
+    legacy_transition = await client.post(
         f"/api/v1/bapd/{bapd_id}/transition",
         headers=auth_headers,
-        json={"target_status": "submitted", "comments": "Submitting BAPD for data destruction review"},
+        json={"target_status": "submitted"},
     )
-    assert trans_resp.status_code == 200, trans_resp.text
-    b_sub = trans_resp.json()
-    assert b_sub["status"] == "submitted"
-    s1 = next(a for a in b_sub["approvals"] if a["step_order"] == 1)
-    assert s1["status"] == "requested"
+    assert legacy_transition.status_code == 400
 
-    # 3. Action Step 1 (Data Owner / DGO)
-    s1_resp = await client.post(
+    legacy_approval = await client.post(
         f"/api/v1/bapd/{bapd_id}/approvals/1",
         headers=auth_headers,
-        json={"action": "approve", "comments": "Data Owner confirms data is eligible for purge"},
+        json={"action": "approve"},
     )
-    assert s1_resp.status_code == 200, s1_resp.text
-    b_s1 = s1_resp.json()
-    assert b_s1["status"] == "under_review"
-    s2 = next(a for a in b_s1["approvals"] if a["step_order"] == 2)
-    assert s2["status"] == "requested"
+    assert legacy_approval.status_code == 400
 
-    # 4. Action Step 2 (Compliance Officer)
-    s2_resp = await client.post(
-        f"/api/v1/bapd/{bapd_id}/approvals/2",
+    submit_resp = await client.post(
+        f"/api/v1/bapd/{bapd_id}/submit", headers=auth_headers
+    )
+    assert submit_resp.status_code == 200, submit_resp.text
+    approved = submit_resp.json()
+    assert approved["status"] == "approved"
+    assert approved["approvals"] == []
+
+    bypass_exec = await client.post(
+        f"/api/v1/bapd/{bapd_id}/transition",
         headers=auth_headers,
-        json={"action": "approve", "comments": "Compliance Officer verifies disposal mandate"},
+        json={"target_status": "executed"},
     )
-    assert s2_resp.status_code == 200, s2_resp.text
-    b_s2 = s2_resp.json()
-    assert b_s2["status"] == "approved"
+    assert bypass_exec.status_code == 400
 
-    # 5. Execute Data Disposal
+    invalid_exec_resp = await client.post(
+        f"/api/v1/bapd/{bapd_id}/execute",
+        headers=auth_headers,
+        json={"confirmation_phrase": "DELETE"},
+    )
+    assert invalid_exec_resp.status_code == 400
+
     exec_resp = await client.post(
         f"/api/v1/bapd/{bapd_id}/execute",
         headers=auth_headers,
+        json={"confirmation_phrase": "DELETE PERMANENTLY"},
     )
     assert exec_resp.status_code == 200, exec_resp.text
-    b_exec = exec_resp.json()
-    assert b_exec["status"] == "executed"
-    assert b_exec["pod_file_path"] is not None
-    assert b_exec["executed_at"] is not None
+    executed = exec_resp.json()
+    assert executed["status"] == "executed"
+    assert executed["pod_file_path"] is not None
+    assert executed["executed_at"] is not None
 
-    # 6. Fetch Proof of Deletion (POD)
     pod_resp = await client.get(
-        f"/api/v1/bapd/{bapd_id}/pod",
-        headers=auth_headers,
+        f"/api/v1/bapd/{bapd_id}/pod", headers=auth_headers
     )
     assert pod_resp.status_code == 200, pod_resp.text
     assert len(pod_resp.content) > 0
+
+
+@pytest.mark.asyncio
+async def test_bapd_signoff_requires_both_signatures(
+    client: AsyncClient, auth_headers: dict[str, str], db: AsyncSession, test_project, auth_user
+):
+    from app.models.metadata import DataOwnerSteward
+    db.add(DataOwnerSteward(
+        project_id=test_project.id,
+        role_type="data_owner",
+        full_name=auth_user.full_name,
+        email=auth_user.email,
+        position="Project Data Owner",
+    ))
+    await db.commit()
+    create_resp = await client.post(
+        "/api/v1/bapd",
+        headers=auth_headers,
+        json={
+            "project_id": str(test_project.id),
+            "dataset_name": "Incomplete Sign-Off Dataset",
+            "dataset_location": "db://sqlite/incomplete",
+            "expiry_date": date.today().isoformat(),
+            "reason": "Testing incomplete sign-off validation",
+            "responsible_party_id": str(auth_user.id),
+        },
+    )
+    assert create_resp.status_code in (200, 201), create_resp.text
+    bapd_id = create_resp.json()["id"]
+
+    signoff_resp = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=auth_headers,
+        json={
+            "version": create_resp.json()["version"],
+            "sign_off": {
+                "approved": "Yes",
+                "prepared_by": "Project Data Owner",
+                "prepared_position": "Data Owner",
+                "prepared_signature": "data:image/png;base64,PREPARED",
+            }
+        },
+    )
+    assert signoff_resp.status_code == 200, signoff_resp.text
+
+    submit_resp = await client.post(
+        f"/api/v1/bapd/{bapd_id}/submit", headers=auth_headers
+    )
+    assert submit_resp.status_code == 400
+    assert "sign" in submit_resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_bapd_acknowledged_signature_requires_project_sme(
+    client: AsyncClient, auth_headers: dict[str, str], db: AsyncSession, test_project, auth_user
+):
+    from app.core.security import create_access_token, hash_password
+    from app.models.user import Role, User, UserProjectRole
+    from sqlalchemy import select
+
+    other_user = User(
+        id=uuid.uuid4(),
+        full_name="Non SME Reviewer",
+        email=f"reviewer_{uuid.uuid4().hex[:8]}@vibecode.id",
+        password_hash=hash_password("test-only-password"),
+        position="Reviewer",
+        is_active=True,
+    )
+    db.add(other_user)
+    await db.flush()
+    super_admin_role = (await db.execute(
+        select(Role).where(Role.name == "super_admin")
+    )).scalar_one()
+    db.add(UserProjectRole(
+        user_id=other_user.id,
+        role_id=super_admin_role.id,
+        assigned_by=auth_user.id,
+    ))
+    await db.commit()
+
+    create_resp = await client.post(
+        "/api/v1/bapd",
+        headers=auth_headers,
+        json={
+            "project_id": str(test_project.id),
+            "dataset_name": "SME Authorization Dataset",
+            "dataset_location": "db://sqlite/sme-check",
+            "expiry_date": date.today().isoformat(),
+            "reason": "Testing Project SME authorization",
+            "responsible_party_id": str(auth_user.id),
+        },
+    )
+    assert create_resp.status_code in (200, 201), create_resp.text
+    bapd_id = create_resp.json()["id"]
+    other_headers = {
+        "Authorization": f"Bearer {create_access_token(str(other_user.id), roles=['super_admin'])}"
+    }
+
+    approval_change_resp = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=other_headers,
+        json={"version": create_resp.json()["version"], "sign_off": {"approved": "Yes"}},
+    )
+    assert approval_change_resp.status_code == 403
+
+    signoff_resp = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=other_headers,
+        json={
+            "version": create_resp.json()["version"],
+            "sign_off": {
+                "approved": "Yes",
+                "acknowledged_signature": "data:image/png;base64,ACKNOWLEDGED",
+            }
+        },
+    )
+    assert signoff_resp.status_code == 403
+    assert "Project SME" in signoff_resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_bapd_signoff_signature_cannot_be_cleared_by_unauthorized_user(
+    client: AsyncClient, auth_headers: dict[str, str], db: AsyncSession, test_project, auth_user
+):
+    from app.core.security import create_access_token, hash_password
+    from app.models.metadata import DataOwnerSteward
+    from app.models.user import Role, User, UserProjectRole
+    from sqlalchemy import select
+
+    db.add(DataOwnerSteward(
+        project_id=test_project.id,
+        role_type="data_owner",
+        full_name=auth_user.full_name,
+        email=auth_user.email,
+        position="Project Data Owner",
+    ))
+    other_user = User(
+        id=uuid.uuid4(),
+        full_name="Unauthorized Sign-Off Editor",
+        email=f"editor_{uuid.uuid4().hex[:8]}@vibecode.id",
+        password_hash=hash_password("test-only-password"),
+        position="Reviewer",
+        is_active=True,
+    )
+    db.add(other_user)
+    await db.flush()
+    super_admin_role = (await db.execute(select(Role).where(Role.name == "super_admin"))).scalar_one()
+    db.add(UserProjectRole(user_id=other_user.id, role_id=super_admin_role.id, assigned_by=auth_user.id))
+    await db.commit()
+
+    create_resp = await client.post(
+        "/api/v1/bapd",
+        headers=auth_headers,
+        json={
+            "project_id": str(test_project.id),
+            "dataset_name": "Protected Sign-Off Dataset",
+            "dataset_location": "db://sqlite/protected-signoff",
+            "expiry_date": date.today().isoformat(),
+            "reason": "Testing signature immutability authorization",
+            "responsible_party_id": str(auth_user.id),
+        },
+    )
+    assert create_resp.status_code in (200, 201), create_resp.text
+    bapd_id = create_resp.json()["id"]
+
+    initial = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=auth_headers,
+        json={"version": create_resp.json()["version"], "sign_off": {
+            "approved": "Yes",
+            "prepared_signature": "data:image/png;base64,PREPARED",
+            "prepared_date": date.today().isoformat(),
+            "acknowledged_signature": "data:image/png;base64,ACKNOWLEDGED",
+            "acknowledged_date": date.today().isoformat(),
+        }},
+    )
+    assert initial.status_code == 200, initial.text
+
+    other_headers = {
+        "Authorization": f"Bearer {create_access_token(str(other_user.id), roles=['super_admin'])}"
+    }
+    replay_attempt = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=other_headers,
+        json={"version": initial.json()["version"], "sign_off": {
+            "acknowledged_signature": initial.json()["sign_off"]["acknowledged_signature"],
+        }},
+    )
+    assert replay_attempt.status_code == 403
+
+    prepared_replay_attempt = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=other_headers,
+        json={"version": initial.json()["version"], "sign_off": {
+            "prepared_signature": initial.json()["sign_off"]["prepared_signature"],
+        }},
+    )
+    assert prepared_replay_attempt.status_code == 403
+
+    clear_attempt = await client.put(
+        f"/api/v1/bapd/{bapd_id}/sign-off",
+        headers=other_headers,
+        json={"version": initial.json()["version"], "sign_off": {
+            "prepared_signature": "",
+            "prepared_date": "",
+            "acknowledged_signature": "",
+            "acknowledged_date": "",
+        }},
+    )
+    assert clear_attempt.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_legacy_bapd_cannot_skip_preceding_approval_step(
+    client: AsyncClient, auth_headers: dict[str, str], db: AsyncSession, test_project, auth_user
+):
+    from app.models.bapd import BAPDApproval, BAPDRecord
+
+    record = BAPDRecord(
+        project_id=test_project.id,
+        dataset_name="Legacy Ordered Approval Dataset",
+        dataset_location="db://sqlite/legacy-order",
+        expiry_date=date.today(),
+        reason="Testing legacy approval ordering",
+        responsible_party_id=auth_user.id,
+        status="under_review",
+        approval_method="legacy_dual_approval",
+        created_by=auth_user.id,
+    )
+    db.add(record)
+    await db.flush()
+    db.add_all([
+        BAPDApproval(
+            bapd_id=record.id,
+            approver_id=auth_user.id,
+            approver_role="data_owner",
+            step_order=1,
+            status="requested",
+        ),
+        BAPDApproval(
+            bapd_id=record.id,
+            approver_id=auth_user.id,
+            approver_role="compliance_officer",
+            step_order=2,
+            status="requested",
+        ),
+    ])
+    await db.commit()
+
+    response = await client.post(
+        f"/api/v1/bapd/{record.id}/approvals/2",
+        headers=auth_headers,
+        json={"action": "approve"},
+    )
+    assert response.status_code == 400
+    assert "preceding" in response.json()["detail"].lower()
+
+    transition = await client.post(
+        f"/api/v1/bapd/{record.id}/transition",
+        headers=auth_headers,
+        json={"target_status": "approved"},
+    )
+    assert transition.status_code == 400
+
+    record.status = "approved"
+    await db.commit()
+    execute = await client.post(
+        f"/api/v1/bapd/{record.id}/execute",
+        headers=auth_headers,
+        json={"confirmation_phrase": "DELETE PERMANENTLY"},
+    )
+    assert execute.status_code == 400
+    assert "legacy" in execute.json()["detail"].lower()
+
+    invalid_action = await client.post(
+        f"/api/v1/bapd/{record.id}/approvals/1",
+        headers=auth_headers,
+        json={"action": "skip"},
+    )
+    assert invalid_action.status_code == 422
 
 
 # ── 6. Data Quality Run Review Flow E2E ───────────────────────────────────────

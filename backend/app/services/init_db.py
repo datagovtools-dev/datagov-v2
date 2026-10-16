@@ -82,11 +82,9 @@ async def seed_initial_data_if_needed(db: AsyncSession) -> None:
                     assigned_by=user.id,
                 ))
         else:
-            # Ensure password hash is valid
-            user.password_hash = hash_password(u["password"])
-            user.is_active = True
+            # Preserve existing account state. Admin resets, user-managed
+            # credentials, and explicit account disablement must survive startup.
             user.position = u.get("position")
-            
         user_map[u["email"]] = user
 
     # 3. Seed Sample Project PRJ-2026-001 if none exists

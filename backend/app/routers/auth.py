@@ -3,7 +3,7 @@ from datetime import timedelta, timezone, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, SecretStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,10 +11,13 @@ from app.config import get_settings
 from app.core.deps import CurrentUser, get_refresh_token_payload
 from app.core.rbac import ROLE_SESSION_LIMITS
 from app.core.redis_client import (
-    deny_token, is_token_denied,
+    consume_token, deny_token,
     add_user_session, remove_user_session, get_active_session_jtis,
 )
-from app.core.security import create_access_token, create_refresh_token, decode_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token, create_refresh_token, decode_token,
+    hash_password, verify_password,
+)
 from app.database import get_db
 from app.models.user import AuditLog, User, UserProjectRole, Role
 
@@ -28,7 +31,7 @@ REFRESH_COOKIE_MAX_AGE = settings.refresh_token_expire_days * 86400
 
 class LoginRequest(BaseModel):
     email: str
-    password: str
+    password: SecretStr
 
 
 class TokenResponse(BaseModel):
@@ -59,7 +62,7 @@ class UserOut(BaseModel):
 class RegisterRequest(BaseModel):
     full_name: str
     email: EmailStr
-    password: str
+    password: SecretStr
 
 
 # --- Helpers ---
@@ -134,13 +137,14 @@ async def login(
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(body.password, user.password_hash):
+    password = body.password.get_secret_value()
+    if not user or not verify_password(password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
 
-    access_token = create_access_token(str(user.id))
-    refresh_token = create_refresh_token(str(user.id))
+    access_token = create_access_token(str(user.id), session_version=user.session_version or 0)
+    refresh_token = create_refresh_token(str(user.id), session_version=user.session_version or 0)
 
     # Track session and enforce concurrent limit
     rt_payload = decode_token(refresh_token)
@@ -169,18 +173,31 @@ async def refresh(
 ) -> TokenResponse:
     user_id_str: str = payload["sub"]
     old_jti: str | None = payload.get("jti")
+    if not old_jti:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing refresh token")
 
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id_str)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    if (user.session_version or 0) > 0 and payload.get("sv") != (user.session_version or 0):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing refresh token")
 
-    access_token = create_access_token(user_id_str)
-    new_refresh = create_refresh_token(user_id_str)
+    try:
+        consumed = await consume_token(old_jti, settings.refresh_token_expire_days * 86400)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Refresh token service unavailable",
+        ) from exc
+    if not consumed:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing refresh token")
 
-    # Rotate session tracking: remove old JTI, register new one
-    if old_jti:
-        await remove_user_session(user_id_str, old_jti)
+    access_token = create_access_token(user_id_str, session_version=user.session_version or 0)
+    new_refresh = create_refresh_token(user_id_str, session_version=user.session_version or 0)
+
+    # Rotate session tracking after atomically consuming the old JTI.
+    await remove_user_session(user_id_str, old_jti)
     rt_payload = decode_token(new_refresh)
     await add_user_session(user_id_str, rt_payload["jti"], int(rt_payload["exp"]))
 
@@ -263,7 +280,7 @@ async def register(
     user = User(
         full_name=body.full_name,
         email=body.email,
-        password_hash=hash_password(body.password),
+        password_hash=hash_password(body.password.get_secret_value()),
     )
     db.add(user)
     await db.flush()

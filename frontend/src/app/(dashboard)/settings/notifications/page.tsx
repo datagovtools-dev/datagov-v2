@@ -16,7 +16,7 @@ const MODULE_LABELS: Record<string, { label: string; desc: string }> = {
   dsr: { label: "Data Sharing (DSR)", desc: "New sharing requests, review requests, and approvals" },
   dpia: { label: "Privacy Assessments (DPIA)", desc: "Risk matrix submissions and DPO sign-offs" },
   ropa: { label: "ROPA Records", desc: "Article 30 processing activity updates" },
-  bapd: { label: "Data Extermination (BAPD)", desc: "Disposal requests and dual approvals" },
+  bapd: { label: "Data Extermination (BAPD)", desc: "Disposal requests and Final Approval & Sign Off" },
   dq: { label: "Data Quality Inspections", desc: "Anomaly alerts, threshold violations, and test runs" },
   metadata: { label: "Metadata & Lineage", desc: "Catalog syncs, AI definition changes, and schema updates" },
   auth: { label: "Authentication & Security", desc: "Login alerts, password changes, and sessions" },

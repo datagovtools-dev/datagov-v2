@@ -25,6 +25,7 @@ import {
   Eye,
   Trash2,
   Calendar,
+  KeyRound,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
@@ -37,6 +38,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/Card";
 import { TableSkeleton } from "@/components/ui/LoadingState";
 import { toast } from "@/components/ui/Toast";
 import { formatDateTime } from "@/lib/utils";
+import { useAuthStore } from "@/store/authStore";
 
 interface MenuAccessItem {
   id: string;
@@ -106,6 +108,8 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
 
 export default function UsersPage() {
   const qc = useQueryClient();
+  const currentUser = useAuthStore((state) => state.user);
+  const canResetPasswords = Boolean(currentUser?.is_super_admin || currentUser?.roles?.includes("super_admin"));
   const [search, setSearch] = React.useState("");
   const [assignOpen, setAssignOpen] = React.useState(false);
   const [accessProfileOpen, setAccessProfileOpen] = React.useState(false);
@@ -113,6 +117,10 @@ export default function UsersPage() {
   const [selectedUser, setSelectedUser] = React.useState<UserSummary | null>(null);
   const [roleId, setRoleId] = React.useState("");
   const [assignError, setAssignError] = React.useState("");
+  const [resetOpen, setResetOpen] = React.useState(false);
+  const [resetPassword, setResetPassword] = React.useState("");
+  const [resetPasswordConfirm, setResetPasswordConfirm] = React.useState("");
+  const [resetError, setResetError] = React.useState("");
 
   const { data: users = [], isLoading: usersLoading } = useQuery<UserSummary[]>({
     queryKey: ["users", search],
@@ -158,6 +166,48 @@ export default function UsersPage() {
       toast.error(e.message || "Gagal mencabut role");
     },
   });
+
+  const resetPasswordMutation = useMutation({
+    mutationFn: () => api.post<void>(`/rbac/users/${selectedUser!.id}/password-reset`, { password: resetPassword }),
+    onSuccess: () => {
+      toast.success("Password user berhasil di-reset");
+      setResetOpen(false);
+      setResetPassword("");
+      setResetPasswordConfirm("");
+      setResetError("");
+    },
+    onError: (e: any) => {
+      setResetError(e.message || "Gagal mereset password user");
+    },
+  });
+
+  function openResetPassword(user: UserSummary) {
+    setSelectedUser(user);
+    setResetPassword("");
+    setResetPasswordConfirm("");
+    setResetError("");
+    setResetOpen(true);
+  }
+
+  function closeResetPassword() {
+    setResetOpen(false);
+    setResetPassword("");
+    setResetPasswordConfirm("");
+    setResetError("");
+  }
+
+  function submitResetPassword() {
+    if (resetPassword.length < 12 || resetPassword.length > 128) {
+      setResetError("Password harus berisi 12–128 karakter.");
+      return;
+    }
+    if (resetPassword !== resetPasswordConfirm) {
+      setResetError("Konfirmasi password tidak sama.");
+      return;
+    }
+    setResetError("");
+    resetPasswordMutation.mutate();
+  }
 
   // Find selected role details for live capability preview during assignment
   const selectedRoleOption = roles.find((r) => String(r.id) === roleId);
@@ -362,6 +412,18 @@ export default function UsersPage() {
                             <Eye className="h-3 w-3 mr-1 text-slate-500" />
                             Profile
                           </Button>
+                          {canResetPasswords && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              title="Reset user password"
+                              onClick={() => openResetPassword(user)}
+                              className="h-7 px-2 text-xs font-medium text-amber-700 border-amber-200 hover:bg-amber-50"
+                            >
+                              <KeyRound className="h-3 w-3 mr-1" />
+                              Reset Password
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             onClick={() => {
@@ -612,6 +674,60 @@ export default function UsersPage() {
           <ModalFooter>
             <Button variant="secondary" size="sm" className="h-8 text-xs font-mono" onClick={() => setAccessProfileOpen(false)}>
               Close
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      {/* Admin Password Reset Modal */}
+      <Modal open={resetOpen} onOpenChange={(open) => {
+        if (open) setResetOpen(true);
+        else closeResetPassword();
+      }}>
+        <ModalContent size="md">
+          <ModalHeader className="border-b border-slate-100 pb-3">
+            <ModalTitle className="text-sm font-semibold font-mono uppercase tracking-wider text-slate-800">
+              Admin Reset Password — {selectedUser?.full_name}
+            </ModalTitle>
+          </ModalHeader>
+          <ModalBody className="space-y-3 pt-3">
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Set a new password for <span className="font-mono font-semibold">{selectedUser?.email}</span>. Existing refresh sessions will be revoked.
+            </p>
+            <div>
+              <label className="text-xs font-semibold text-slate-700 mb-1 block">New password</label>
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                placeholder="Minimum 12 characters"
+                maxLength={128}
+                className="h-8 text-xs font-mono"
+                disabled={resetPasswordMutation.isPending}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-700 mb-1 block">Confirm new password</label>
+              <Input
+                type="password"
+                autoComplete="new-password"
+                value={resetPasswordConfirm}
+                onChange={(e) => setResetPasswordConfirm(e.target.value)}
+                placeholder="Re-enter the new password"
+                maxLength={128}
+                className="h-8 text-xs font-mono"
+                disabled={resetPasswordMutation.isPending}
+              />
+            </div>
+            {resetError && <p className="text-xs text-rose-600 font-mono">{resetError}</p>}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="secondary" size="sm" className="h-8 text-xs font-mono" onClick={closeResetPassword} disabled={resetPasswordMutation.isPending}>
+              Cancel
+            </Button>
+            <Button size="sm" className="h-8 text-xs font-medium" onClick={submitResetPassword} loading={resetPasswordMutation.isPending}>
+              Reset Password
             </Button>
           </ModalFooter>
         </ModalContent>

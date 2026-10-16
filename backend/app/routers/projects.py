@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import CurrentUser, get_db
-from app.core.rbac import require_permission, require_super_admin
+from app.core.rbac import _user_has_permission, require_permission, require_super_admin
 from app.models.project import PROJECT_CODE_PATTERN, Project
 from app.models.user import AuditLog, User
 from app.schemas.project import (
@@ -133,12 +133,14 @@ async def get_project_deletion_preview(
 async def get_project(
     project_id: uuid.UUID,
     db: DB,
-    _: Annotated[User, Depends(require_permission("project:read"))],
+    current_user: CurrentUser,
 ) -> Project:
     result = await db.execute(select(Project).where(Project.id == project_id))
     project = result.scalar_one_or_none()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    if not _user_has_permission(current_user, "project:read") and project.sme_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Permission denied: project is not assigned to this approval actor")
     return project
 
 

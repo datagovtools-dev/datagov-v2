@@ -33,8 +33,8 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "MAIN",
     items: [
-      { label: "Data Assets Catalog", href: "/projects", icon: FolderOpen },
       { label: "Executive Dashboard", href: "/dashboard", icon: LayoutDashboard },
+      { label: "Data Assets Catalog", href: "/projects", icon: FolderOpen },
       { label: "Data Sharing (DSR)", href: "/dsr", icon: Share2 },
       { label: "AI/ML Checklist (AICK)", href: "/ai-checklist", icon: Bot },
       { label: "Privacy Impact (DPIA)", href: "/dpia", icon: ShieldCheck },
@@ -44,12 +44,9 @@ const NAV_GROUPS: NavGroup[] = [
   },
 
   {
-    title: "GOVERN",
-    items: [{ label: "ROPA Records", href: "/ropa", icon: ClipboardList }],
-  },
-  {
     title: "CONTROL",
     items: [
+      { label: "ROPA Records", href: "/ropa", icon: ClipboardList },
       { label: "Extermination (BAPD)", href: "/bapd", icon: Trash2 },
       { label: "Audit Telemetry", href: "/audit", icon: History },
     ],
